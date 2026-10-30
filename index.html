@@ -4,37 +4,64 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CHRONO DUEL</title>
+  <!-- フォント（オフラインでは読み込めないが、その場合は端末の標準フォントで表示される） -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&family=Shippori+Mincho+B1:wght@700;800&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <div id="app">
+<!-- 1280×720 の「舞台」。ウィンドウの大きさに合わせて main.js が拡大縮小する -->
+<div id="stage">
+  <div class="bg-clock" aria-hidden="true"></div>
 
   <!-- ===== タイトル ===== -->
   <section id="screen-title" class="screen active">
+    <div class="sparks" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
     <div class="title-box">
-      <h1>CHRONO DUEL</h1>
-      <p class="subtitle">同時詠唱デッキ構築カードバトル</p>
-      <div class="menu">
-        <button class="btn primary" data-go="setup">対戦する</button>
-        <button class="btn" data-go="builder">デッキ構築</button>
-        <button class="btn" data-go="rules">遊び方</button>
+      <div class="logo-emblem" aria-hidden="true">
+        <div class="gear g1"></div><div class="gear g2"></div>
+        <div class="dial"><i class="hand-h"></i><i class="hand-m"></i></div>
       </div>
-      <p class="version">prototype v0.1</p>
+      <h1 class="logo">CHRONO DUEL</h1>
+      <p class="subtitle">― 同時詠唱デッキ構築カードバトル ―</p>
+      <div class="menu">
+        <button class="btn primary big" data-go="setup">⚔ 対戦する</button>
+        <button class="btn big" data-go="builder">📜 デッキ構築</button>
+        <button class="btn big" data-go="rules">📖 遊び方</button>
+      </div>
+      <p class="version">prototype v0.6</p>
     </div>
   </section>
 
   <!-- ===== 対戦準備 ===== -->
   <section id="screen-setup" class="screen">
-    <div class="panel narrow">
-      <h2>対戦準備</h2>
-      <label>あなたのデッキ <select id="setup-my-deck"></select></label>
-      <label>CPUのデッキ <select id="setup-cpu-deck"></select></label>
-      <label>CPUの強さ <select id="setup-level"></select></label>
-      <p id="setup-error" class="error"></p>
-      <div class="row">
-        <button class="btn" data-go="title">戻る</button>
-        <button class="btn primary" id="btn-start">対戦開始</button>
+    <div class="setup">
+      <header class="screen-head">
+        <button class="btn ghost" data-go="title">◀ 戻る</button>
+        <h2>対戦準備</h2>
+        <div class="level-pick" id="level-pick"></div>
+      </header>
+      <div class="setup-cols">
+        <div class="setup-col">
+          <h3><span class="who me">あなた</span>のデッキ</h3>
+          <div class="deck-tiles" id="tiles-me"></div>
+        </div>
+        <div class="vs">VS</div>
+        <div class="setup-col">
+          <h3><span class="who op">CPU</span>のデッキ</h3>
+          <div class="deck-tiles" id="tiles-cpu"></div>
+        </div>
       </div>
+      <footer class="setup-foot">
+        <p id="setup-error" class="error"></p>
+        <button class="btn primary big" id="btn-start">対戦開始</button>
+      </footer>
+      <!-- 選択値の保持用（画面には出さない） -->
+      <select id="setup-my-deck" hidden></select>
+      <select id="setup-cpu-deck" hidden></select>
+      <select id="setup-level" hidden></select>
     </div>
   </section>
 
@@ -43,6 +70,7 @@
     <div class="builder">
       <div class="builder-pool">
         <div class="builder-head">
+          <button class="btn ghost" data-go="title">◀</button>
           <h2>カード一覧</h2>
           <div id="pool-filter" class="tabs"></div>
         </div>
@@ -147,35 +175,55 @@
   <!-- ===== 対戦 ===== -->
   <section id="screen-battle" class="screen">
     <div class="battle">
-      <div class="board">
+      <div class="board" id="board">
+        <!-- 相手 -->
         <div class="side side-op" id="side-1">
           <div class="pbar" id="pbar-1"></div>
-          <div class="castbar" id="cast-1"></div>
-          <div class="field" id="field-1"></div>
+          <div class="row-zone">
+            <div class="pedestal" id="cast-1"></div>
+            <div class="field" id="field-1"></div>
+          </div>
         </div>
+        <!-- 中央：フェーズの時計 -->
         <div class="midline">
-          <div id="phase-label"></div>
+          <div class="mid-rule"></div>
+          <div class="phase-clock" id="phase-clock">
+            <div class="pc-ring" id="phase-ring"></div>
+            <div class="pc-num"><small>PHASE</small><b id="phase-num">1</b></div>
+          </div>
+          <div class="phase-text" id="phase-label"></div>
           <div class="phase-gauge"><div id="phase-fill"></div></div>
         </div>
+        <!-- 自分 -->
         <div class="side side-me" id="side-0">
-          <div class="field" id="field-0"></div>
-          <div class="castbar" id="cast-0"></div>
+          <div class="row-zone">
+            <div class="pedestal" id="cast-0"></div>
+            <div class="field" id="field-0"></div>
+          </div>
           <div class="pbar" id="pbar-0"></div>
         </div>
         <div class="hand" id="hand"></div>
       </div>
       <aside class="sidebar">
-        <div class="clock" id="clock">3:00</div>
+        <div class="clock-box">
+          <div class="clock-label">残り時間</div>
+          <div class="clock" id="clock">3:00</div>
+        </div>
+        <div class="log-head">戦いの記録</div>
         <div class="log" id="log"></div>
-        <button class="btn small" id="btn-pause">一時停止 (Esc)</button>
+        <button class="btn small" id="btn-pause">❚❚ 一時停止 (Esc)</button>
       </aside>
     </div>
+    <!-- 演出用のレイヤー -->
+    <div class="fx" id="fx"></div>
+    <div class="vignette" id="vignette"></div>
+    <div class="phase-banner" id="phase-banner"></div>
     <div class="toast" id="toast"></div>
     <div class="target-banner hidden" id="target-banner"></div>
     <div class="choice hidden" id="choice">
       <div class="choice-box">
         <div class="choice-prompt" id="choice-prompt"></div>
-        <div class="choice-timer" id="choice-timer"></div>
+        <div class="choice-timer"><div class="ct-bar"><i id="choice-bar"></i></div><span id="choice-timer"></span></div>
         <div class="choice-cards" id="choice-cards"></div>
         <p class="hint">選択中は時間が止まっています。カードをクリック、または数字キーで選択</p>
       </div>
@@ -190,6 +238,10 @@
       <div class="row" id="overlay-buttons"></div>
     </div>
   </div>
+
+  <!-- マウスを乗せたカードの拡大表示 -->
+  <div id="card-preview" class="card-preview hidden"></div>
+</div>
 </div>
 
 <script src="js/cards.js"></script>

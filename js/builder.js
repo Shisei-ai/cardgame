@@ -170,7 +170,7 @@
         li.style.setProperty('--tc', Cards.TYPES[c.type].color);
         li.innerHTML = `<span class="dl-cost">${c.cost}</span><span class="dl-name">${c.icon} ${esc(c.name)}</span>
           <button data-d="-1">−</button><b>${state.cards[c.id]}</b><button data-d="1">＋</button>`;
-        li.title = UI.cardTip(c);
+        li.dataset.cid = c.id; // マウスを乗せると拡大表示
         li.onclick = (e) => { const d = e.target.dataset.d; if (d) add(c.id, Number(d)); };
         list.appendChild(li);
       });

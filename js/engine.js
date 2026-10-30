@@ -572,12 +572,12 @@
     _hitUnit(unit, amount) {
       const n = Math.max(0, amount - (unit.armor || 0));
       unit.hp -= n;
+      this._emit({ type: 'unitHit', unit, amount: n }); // 画面の演出用
       return n;
     }
 
     damageUnit(owner, unit, amount) {
       this._hitUnit(unit, amount);
-      this._emit({ type: 'unitDamage', player: owner.index, unit, amount });
       this._cleanup();
     }
 

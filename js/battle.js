@@ -4,7 +4,8 @@
  * 描画の考え方:
  *   ・requestAnimationFrame で毎フレーム game.update(経過秒) を呼ぶ
  *   ・手札や体力など「構造」の描画は、状態が変わったとき（signature が変化したとき）だけ作り直す
- *   ・詠唱ゲージや時計など「連続的に変わるもの」は毎フレーム幅や文字だけ更新する
+ *   ・詠唱の進み具合や時計など「連続的に変わるもの」は毎フレーム値だけ更新する
+ *   ・演出（攻撃の光・ダメージ数値など）は、エンジンが出すイベント（onEvent）をきっかけに再生する
  *
  * 選択の操作（どちらも選んでいる間は時間が止まる）:
  *   ・対象選択モード：対象を選ぶカードを使おうとすると入る。光っているクリーチャーをクリック
@@ -14,18 +15,22 @@
 (function (root) {
   'use strict';
   const { Cards, Engine, AI, UI } = root;
-  const { $, esc } = UI;
+  const { $, esc, fx } = UI;
 
   const ME = 0, OP = 1;
   const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
   const TARGET_TIME = 5; // 対象選択の制限時間（秒）
+  const PORTRAITS = ['🧙', '🤖'];
 
   const B = {
     game: null, ai: null, raf: 0, last: 0, paused: false,
-    sig: '', logShown: 0, setup: null, unitEls: [new Map(), new Map()],
+    sig: '', logShown: 0, setup: null,
+    unitEls: [new Map(), new Map()], // 場にいるクリーチャーの要素（uid → 要素）
+    elByUid: new Map(),              // 倒れて消えていく途中の要素も含む（演出の位置を求めるため）
     targeting: null, // { idx, card, uids, timeLeft } 対象選択モード中
     choiceKey: null, // 表示中の選択画面（同じ選択を作り直さないため）
     picked: [],      // 選択画面で選んだ番号
+    castKey: ['', ''], // 台座に表示中の詠唱（同じものを作り直さないため）
   };
 
   function start(setup) {
@@ -36,19 +41,20 @@
     B.ai = new AI.AI(B.game, OP, setup.level);
     B.game.players[ME].human = true; // 効果の途中での選択を画面で行う
     B.game.onEvent = onEvent;
-    B.targeting = null;
-    B.choiceKey = null;
-    closeChoice();
     B.paused = false;
     B.sig = '';
     B.logShown = 0;
     B.unitEls = [new Map(), new Map()];
-    $('#log').innerHTML = '';
-    $('#field-0').innerHTML = '';
-    $('#field-1').innerHTML = '';
+    B.elByUid = new Map();
+    B.targeting = null;
+    B.choiceKey = null;
+    B.castKey = ['', ''];
+    closeChoice();
+    ['#log', '#field-0', '#field-1', '#fx', '#cast-0', '#cast-1'].forEach((s) => { $(s).innerHTML = ''; });
+    $('#vignette').classList.remove('on');
     UI.closeOverlay();
     UI.showScreen('battle');
-    UI.toast('バトル開始！');
+    showBanner('BATTLE START', '同時詠唱の決闘、開始');
     B.last = performance.now();
     B.raf = requestAnimationFrame(loop);
   }
@@ -92,6 +98,7 @@
       if (valid.length) {
         B.targeting = { idx, card: c, uids: valid.map((v) => v.unit.uid), timeLeft: TARGET_TIME };
         B.sig = ''; // 描画を更新して対象を光らせる
+        UI.hidePreview();
         return;
       }
     }
@@ -129,6 +136,20 @@
     if (i >= 0) tryPlay(i);
   }
 
+  function togglePause() {
+    if (!B.game || B.game.over) return;
+    B.paused = !B.paused;
+    if (B.paused) {
+      UI.overlay('一時停止', '<p class="result-sub">時間は止まっています</p>', [
+        { label: '降参してタイトルへ', onClick: () => { stop(); UI.closeOverlay(); UI.showScreen('title'); } },
+        { label: '再開', primary: true, onClick: togglePause },
+      ]);
+    } else {
+      UI.closeOverlay();
+      B.last = performance.now();
+    }
+  }
+
   // ───────────── 効果の途中での選択画面 ─────────────
   function renderChoice() {
     const g = B.game;
@@ -146,8 +167,10 @@
         box.appendChild(el);
       });
       $('#choice').classList.remove('hidden');
+      UI.hidePreview();
     }
     $('#choice-timer').textContent = `残り ${Math.max(0, pd.timeLeft).toFixed(1)} 秒（時間切れならランダム）　${B.picked.length} / ${pd.count}`;
+    $('#choice-bar').style.width = Math.max(0, (pd.timeLeft / g.cfg.choiceTime) * 100) + '%';
   }
 
   function toggleChoice(i) {
@@ -169,176 +192,216 @@
     $('#choice').classList.add('hidden');
   }
 
-  function togglePause() {
-    if (!B.game || B.game.over) return;
-    B.paused = !B.paused;
-    if (B.paused) {
-      UI.overlay('一時停止', '', [
-        { label: '降参してタイトルへ', onClick: () => { stop(); UI.closeOverlay(); UI.showScreen('title'); } },
-        { label: '再開', primary: true, onClick: togglePause },
-      ]);
-    } else {
-      UI.closeOverlay();
-      B.last = performance.now();
-    }
-  }
-
   // ───────────── 演出 ─────────────
+  /** 要素が描画された後に処理したいとき用（イベントは描画の前に届くため） */
+  const later = (fn) => requestAnimationFrame(() => requestAnimationFrame(fn));
+  const portraitOf = (pi) => $(`#pbar-${pi} .portrait`);
+  const unitElOf = (unit) => B.elByUid.get(unit.uid);
+
   function onEvent(ev) {
     switch (ev.type) {
-      case 'damage':
-        if (ev.amount > 0) { flashSide(ev.player, 'hit'); floatText(ev.player, '-' + ev.amount, 'dmg'); }
-        else if (ev.absorbed) floatText(ev.player, '🔰' + ev.absorbed, 'heal');
-        break;
-      case 'heal':
-        flashSide(ev.player, 'healed');
-        floatText(ev.player, '+' + ev.amount, 'heal');
-        break;
-      case 'attack': {
-        // 攻撃したユニットを少し前に突き出すアニメーション（描画の後で適用）
-        requestAnimationFrame(() => {
-          const el = B.unitEls[ev.player].get(ev.unit.uid);
-          if (!el) return;
-          el.classList.remove('attacking');
-          void el.offsetWidth; // アニメーションを再始動させるための定番テクニック
-          el.classList.add('attacking');
-        });
+      case 'damage': {
+        const pt = portraitOf(ev.player);
+        if (ev.amount > 0) {
+          UI.pulseClass($('#side-' + ev.player), 'hit', 350);
+          if (pt) { const p = UI.stagePoint(pt); fx.float(p.x + 40, p.y, '-' + ev.amount, 'dmg'); }
+          if (ev.player === ME && ev.amount >= 5) UI.pulseClass($('#board'), 'shake', 350);
+        } else if (ev.absorbed && pt) {
+          const p = UI.stagePoint(pt);
+          fx.float(p.x + 40, p.y, '🔰' + ev.absorbed, 'shield');
+        }
         break;
       }
-      case 'counter':
+      case 'heal': {
+        UI.pulseClass($('#side-' + ev.player), 'healed', 450);
+        const pt = portraitOf(ev.player);
+        if (pt) { const p = UI.stagePoint(pt); fx.float(p.x + 40, p.y, '+' + ev.amount, 'heal'); }
+        break;
+      }
+      case 'unitHit':
+        if (ev.amount <= 0) break;
+        later(() => {
+          const el = unitElOf(ev.unit);
+          if (!el) return;
+          UI.pulseClass(el, 'hitflash', 300);
+          const p = UI.stagePoint(el, 0.35);
+          fx.float(p.x, p.y, '-' + ev.amount, 'dmg small');
+        });
+        break;
+      case 'attack':
+        later(() => {
+          const el = unitElOf(ev.unit);
+          if (!el) return;
+          UI.pulseClass(el, 'attacking', 320);
+          const from = UI.stagePoint(el, 0.4);
+          const tgtEl = ev.target ? unitElOf(ev.target) : portraitOf(1 - ev.player);
+          if (tgtEl) fx.bolt(from, UI.stagePoint(tgtEl, 0.45), ev.player === ME ? '#8fd0ff' : '#ff9a6b');
+        });
+        break;
+      case 'play': {
+        // 使ったカードが手札（相手なら画面上）から台座へ飛んでいく
+        const ped = $('#cast-' + ev.player);
+        const to = UI.stagePoint(ped);
+        to.x -= 50;
+        const from = ev.player === ME ? UI.stagePoint($('#hand'), 0.6) : { x: to.x + 40, y: -60 };
+        fx.flyCard(ev.card, from, to);
+        break;
+      }
+      case 'counter': {
+        const p = UI.stagePoint($('#cast-' + ev.player));
+        fx.stamp(p, '打ち消し！', '#ff6b8a');
         UI.toast(ev.player === ME ? `【${ev.card.name}】を打ち消された！` : `【${ev.card.name}】を打ち消した！`);
         break;
+      }
       case 'phase':
-        UI.toast(`第${ev.phase}フェーズ`, 800);
+        showBanner(`PHASE ${ev.phase}`, 'マナ回復・2枚ドロー');
         break;
     }
   }
 
-  function flashSide(pi, cls) {
-    const el = $('#side-' + pi);
-    el.classList.remove(cls);
-    void el.offsetWidth;
-    el.classList.add(cls);
-    setTimeout(() => el.classList.remove(cls), 250);
-  }
-
-  function floatText(pi, text, cls) {
-    const box = $('#pbar-' + pi + ' .hpbox');
-    if (!box) return;
-    const r = box.getBoundingClientRect();
-    const el = document.createElement('div');
-    el.className = 'float ' + cls;
-    el.textContent = text;
-    el.style.left = r.right + 8 + Math.random() * 20 + 'px';
-    el.style.top = r.top - 6 + 'px';
-    document.body.appendChild(el);
-    setTimeout(() => el.remove(), 1000);
+  function showBanner(big, small) {
+    const el = $('#phase-banner');
+    el.innerHTML = `<b>${esc(big)}</b><span>${esc(small)}</span>`;
+    UI.pulseClass(el, 'show', 1200);
   }
 
   // ───────────── 描画 ─────────────
   function render() {
     const g = B.game;
     // 秒単位の残り時間も signature に含め、表示の数字が変わる時だけ作り直す
-    const sig = g.version + '|' + g.players.map((p) => [Math.ceil(p.silence), Math.ceil(p.haste), Math.ceil(p.curse)].join(',')).join('|');
+    const sig = g.version + '|' + g.players.map((p) => [Math.ceil(p.silence), Math.ceil(p.haste), Math.ceil(p.curse), Math.ceil(p.stun)].join(',')).join('|');
     if (sig !== B.sig) {
       B.sig = sig;
-      g.players.forEach((p) => { renderPbar(p); renderField(p); renderCastHead(p); });
+      g.players.forEach((p) => { renderPbar(p); renderField(p); renderCast(p); });
       renderHand();
       renderLog();
+      $('#vignette').classList.toggle('on', g.players[ME].hp <= 10 && !g.over);
     }
     renderChoice();
     // 対象選択モードの案内
     const tb = $('#target-banner');
     if (B.targeting) {
       tb.classList.remove('hidden');
-      tb.textContent = `【${B.targeting.card.name}】の対象（${B.targeting.card.target.label || 'クリーチャー'}）を選んでください … 残り ${Math.max(0, B.targeting.timeLeft).toFixed(1)} 秒　／　右クリック・Esc でキャンセル`;
+      tb.textContent = `🎯【${B.targeting.card.name}】の対象（${B.targeting.card.target.label || 'クリーチャー'}）を選んでください … 残り ${Math.max(0, B.targeting.timeLeft).toFixed(1)} 秒　／　右クリック・Esc でキャンセル`;
     } else {
       tb.classList.add('hidden');
     }
     // 【自律】の次の攻撃までのゲージ
     g.players.forEach((p) => p.field.forEach((u) => {
       if (!u.auto) return;
-      const bar = B.unitEls[p.index].get(u.uid);
-      const f = bar && bar.querySelector('.u-auto i');
+      const el = B.unitEls[p.index].get(u.uid);
+      const f = el && el.querySelector('.u-auto i');
       if (f) f.style.width = (100 * (1 - u.autoT / u.auto)).toFixed(0) + '%';
     }));
-    // 毎フレーム更新するもの
+    // 詠唱の進み具合
     g.players.forEach((p) => {
-      const fill = $('#cast-' + p.index + ' .cb-fill');
-      if (fill && p.casting) fill.style.width = (100 * (1 - p.casting.remain / p.casting.total)).toFixed(1) + '%';
-      const left = $('#cast-' + p.index + ' .cb-left');
-      if (left && p.casting) left.textContent = (p.casting.remain / (p.haste > 0 ? 2 : 1)).toFixed(1) + 's';
+      if (!p.casting) return;
+      const ring = $(`#cast-${p.index} .pd-ring`);
+      if (ring) ring.style.setProperty('--p', (1 - p.casting.remain / p.casting.total).toFixed(3));
+      const left = $(`#cast-${p.index} .pd-left`);
+      if (left) left.innerHTML = `${(p.casting.remain / (p.haste > 0 ? 2 : 1)).toFixed(1)}<small>秒</small>`;
     });
-    $('#phase-fill').style.width = (100 * (1 - g.phaseTimer / g.cfg.phaseTime)) + '%';
-    $('#phase-label').textContent = `第${g.phase}フェーズ　次まで ${Math.max(0, g.phaseTimer).toFixed(1)}s`;
+    // フェーズの時計と試合の残り時間
+    const pp = 1 - g.phaseTimer / g.cfg.phaseTime;
+    $('#phase-ring').style.setProperty('--p', pp.toFixed(3));
+    $('#phase-fill').style.width = (pp * 100) + '%';
+    $('#phase-num').textContent = g.phase;
+    $('#phase-label').textContent = `次のフェーズまで ${Math.max(0, g.phaseTimer).toFixed(1)} 秒`;
     const rest = Math.max(0, g.cfg.matchTime - g.time);
     const clock = $('#clock');
     clock.textContent = `${Math.floor(rest / 60)}:${String(Math.floor(rest % 60)).padStart(2, '0')}`;
     clock.classList.toggle('low', rest < 30);
   }
 
+  function statusChips(p) {
+    const st = [];
+    const add = (cls, text) => st.push(`<span class="status ${cls}">${text}</span>`);
+    if (p.stun > 0) add('silence', `⌛停止 ${Math.ceil(p.stun)}s`);
+    if (p.silence > 0) add('silence', `⛓封印 ${Math.ceil(p.silence)}s`);
+    if (p.haste > 0) add('haste', `⏩加速 ${Math.ceil(p.haste)}s`);
+    if (p.curse > 0) add('curse', `💀呪い ${Math.ceil(p.curse)}s`);
+    if (p.shield > 0) add('shield', `🔰防壁 ${p.shield}`);
+    if (p.instantNext) add('haste', '💫次は即時詠唱');
+    if (p.spellDiscount) add('haste', `📚次の呪文-${p.spellDiscount}`);
+    if (p.manaDebt) add('curse', `💸次 マナ-${p.manaDebt}`);
+    if (p.skipDraw) add('curse', `📓次 ドロー-${p.skipDraw}`);
+    if (p.bonusDraw) add('haste', `📈次 ドロー+${p.bonusDraw}`);
+    if (p.bonusMana) add('haste', `🐷次 マナ+${p.bonusMana}`);
+    if (p.regen) add('haste', `🌿再生 あと${p.regen}回`);
+    if (p.phaseDiscount) add('haste', `⚙️コスト-${p.phaseDiscount}`);
+    return st.join('');
+  }
+
   function renderPbar(p) {
     const g = B.game;
     const hpPct = Math.max(0, (p.hp / g.cfg.startHP) * 100);
+    const el = $('#pbar-' + p.index);
+    // 初回だけ骨組みを作り、以後は中身だけ更新する（体力の「減った分の残像」を動かすため）
+    if (!el.firstChild) {
+      el.innerHTML = `
+        <div class="portrait">${PORTRAITS[p.index]}</div>
+        <span class="pname">${esc(p.name)}</span>
+        <div class="hpbox"><div class="hptrail"></div><div class="hpfill"></div><div class="hptext"></div></div>
+        <div class="mana"></div>
+        <div class="pinfo"></div>
+        <div class="statuses"></div>`;
+    }
+    el.querySelector('.hpfill').style.width = hpPct + '%';
+    el.querySelector('.hptrail').style.width = hpPct + '%';
+    el.querySelector('.hpbox').classList.toggle('low', p.hp <= 10);
+    el.querySelector('.hptext').textContent = `♥ ${Math.max(0, p.hp)} / ${g.cfg.startHP}`;
     let pips = '';
     const n = Math.max(p.maxMana, p.mana);
     for (let i = 0; i < n; i++) pips += `<span class="pip ${i < p.mana ? (i >= p.maxMana ? 'extra' : 'on') : ''}"></span>`;
-    const st = [];
-    if (p.stun > 0) st.push(`<span class="status silence">⌛停止 ${Math.ceil(p.stun)}s</span>`);
-    if (p.silence > 0) st.push(`<span class="status silence">⛓封印 ${Math.ceil(p.silence)}s</span>`);
-    if (p.haste > 0) st.push(`<span class="status haste">⏩加速 ${Math.ceil(p.haste)}s</span>`);
-    if (p.curse > 0) st.push(`<span class="status curse">💀呪い ${Math.ceil(p.curse)}s</span>`);
-    if (p.shield > 0) st.push(`<span class="status shield">🔰防壁 ${p.shield}</span>`);
-    if (p.instantNext) st.push('<span class="status haste">💫次は即時詠唱</span>');
-    if (p.spellDiscount) st.push(`<span class="status haste">📚次の呪文-${p.spellDiscount}</span>`);
-    if (p.manaDebt) st.push(`<span class="status curse">💸次フェーズ マナ-${p.manaDebt}</span>`);
-    if (p.skipDraw) st.push(`<span class="status curse">📓次フェーズ ドロー-${p.skipDraw}</span>`);
-    if (p.bonusDraw) st.push(`<span class="status haste">📈次フェーズ ドロー+${p.bonusDraw}</span>`);
-    if (p.bonusMana) st.push(`<span class="status haste">🐷次フェーズ マナ+${p.bonusMana}</span>`);
-    if (p.regen) st.push(`<span class="status haste">🌿再生 あと${p.regen}回</span>`);
-    if (p.phaseDiscount) st.push(`<span class="status haste">⚙️このフェーズ コスト-${p.phaseDiscount}</span>`);
-    $('#pbar-' + p.index).innerHTML = `
-      <span class="pname">${esc(p.name)}</span>
-      <div class="hpbox"><div class="hpfill" style="width:${hpPct}%"></div><div class="hptext">♥ ${Math.max(0, p.hp)} / ${g.cfg.startHP}</div></div>
-      <div class="mana">${pips}<span class="mtext">${p.mana}/${p.maxMana}</span></div>
-      <span class="pinfo">手札 ${p.hand.length}　山札 ${p.deck.length}　<span class="grave" title="${esc(graveTip(p))}">墓地 ${p.grave.length}</span></span>
-      ${st.join('')}`;
+    el.querySelector('.mana').innerHTML = `${pips}<span class="mtext">${p.mana}/${p.maxMana}</span>`;
+    el.querySelector('.pinfo').innerHTML = `<span>🂠 手札 ${p.hand.length}</span><span>📚 山札 ${p.deck.length}</span><span class="grave" title="${esc(graveTip(p))}">⚰ 墓地 ${p.grave.length}</span>`;
+    el.querySelector('.statuses').innerHTML = statusChips(p);
   }
-
-  const g2 = () => B.game;
 
   function graveTip(p) {
     if (!p.grave.length) return '墓地は空';
     const counts = {};
     p.grave.forEach((id) => { counts[id] = (counts[id] || 0) + 1; });
-    const creatures = B.game.graveCreatures(p);
-    return `墓地 ${p.grave.length}枚（うちクリーチャー${creatures}体）\n` +
+    return `墓地 ${p.grave.length}枚（うちクリーチャー${B.game.graveCreatures(p)}体）\n` +
       Object.entries(counts).map(([id, n]) => `${Cards.get(id).name}${n > 1 ? ' ×' + n : ''}`).join('\n');
   }
 
-  function renderCastHead(p) {
+  /** 詠唱の台座：詠唱中のカードと、進み具合の枠、対象を表示する */
+  function renderCast(p) {
     const el = $('#cast-' + p.index);
     const c = p.casting && p.casting.card;
+    const tu = c && p.casting.target != null ? B.game.findUnit(p.casting.target) : null;
+    const key = c ? c.id + ':' + p.casting.start + ':' + (tu ? tu.unit.uid : '') : 'none';
+    if (B.castKey[p.index] === key) return;
+    B.castKey[p.index] = key;
     el.classList.toggle('active', !!c);
     if (!c) {
-      el.innerHTML = `<span class="cb-empty">${p.index === ME ? '（詠唱なし）' : '（相手は詠唱していない）'}</span>`;
+      el.innerHTML = '<div class="pd-empty">詠唱なし</div>';
       return;
     }
-    const tu = p.casting.target != null ? B.game.findUnit(p.casting.target) : null;
     el.innerHTML = `
-      <span class="cb-name">${c.icon} ${esc(c.name)}</span>
-      ${tu ? `<span class="cb-target">→ 対象：${esc(tu.unit.name)}</span>` : ''}
-      <span class="cb-text">${c.type === 'creature' ? `⚔${c.atk} ♥${c.hp} ` : ''}${esc(Cards.fullText(c))}</span>
-      <div class="cb-gauge"><div class="cb-fill"></div></div>
-      <span class="cb-left"></span>`;
+      <div class="pd-ring"></div>
+      <div class="pd-info">
+        <div class="pd-label">${p.index === ME ? '詠唱中' : '相手が詠唱中！'}</div>
+        <div class="pd-left"></div>
+        ${tu ? `<div class="pd-target">🎯 ${esc(tu.unit.name)}</div>` : ''}
+      </div>`;
+    el.querySelector('.pd-ring').appendChild(UI.cardEl(c));
   }
 
   // 場のクリーチャーは uid ごとに要素を使い回す（毎回作り直すと召喚アニメが繰り返されるため）
   function renderField(p) {
+    const g = B.game;
     const box = $('#field-' + p.index);
     const map = B.unitEls[p.index];
     const alive = new Set(p.field.map((u) => u.uid));
-    for (const [uid, el] of map) if (!alive.has(uid)) { el.remove(); map.delete(uid); }
+    for (const [uid, el] of map) {
+      if (alive.has(uid)) continue;
+      // 倒れたクリーチャーは、消える演出の後で取り除く
+      map.delete(uid);
+      el.classList.add('dying');
+      setTimeout(() => { el.remove(); B.elByUid.delete(uid); }, 450);
+    }
     p.field.forEach((u) => {
       let el = map.get(u.uid);
       if (!el) {
@@ -347,38 +410,45 @@
         const uid = u.uid;
         el.onclick = () => chooseTarget(uid);
         map.set(u.uid, el);
+        B.elByUid.set(u.uid, el);
         box.appendChild(el);
       }
       const d = Cards.get(u.id);
       const kw = [
-        u.guard && (u.spent ? '守護(済)' : '守護'), u.stealth && '潜伏', u.lifesteal && '吸血',
+        u.guard && (u.spent ? '守護(済)' : '守護'), u.stealth && '潜伏', g.hasLifesteal(p, u) && '吸血',
         u.pierce && '貫通', u.undying && !u.usedUndying && '不屈', u.armor && '堅牢',
         u.auto && `自律${u.auto}s`, u.muted && '沈黙',
       ].filter(Boolean).join('・');
       const tIdx = B.targeting ? B.targeting.uids.indexOf(u.uid) : -1;
+      const aimed = g.players.some((q) => q.casting && q.casting.target === u.uid);
+      const atk = g.atkOf(p, u);
       el.classList.toggle('guard', !!u.guard);
       el.classList.toggle('muted', !!u.muted);
       el.classList.toggle('targetable', tIdx >= 0);
-      // 相手が詠唱中のカードの対象になっていたら印を付ける
-      const aimed = g2().players.some((q) => q.casting && q.casting.target === u.uid);
       el.classList.toggle('aimed', aimed);
-      const atk = B.game.atkOf(p, u);
       el.classList.toggle('spent', !!(u.guard && u.spent));
       el.classList.toggle('token', !!u.token);
-      el.innerHTML = `<div class="u-name">${esc(u.name)}${d.text && !u.muted ? ' ✦' : ''}</div><div class="u-icon">${u.icon}</div>
-        <div class="u-kw">${kw}</div><div class="u-stats"><span class="atk${atk > u.atk ? ' boosted' : ''}">⚔${atk}</span><span class="hp">♥${u.hp}</span></div>
+      el.dataset.cid = u.id;
+      el.dataset.now = `場の状態：攻撃力 ${atk} ／ 体力 ${u.hp}${kw ? '　' + kw : ''}${u.guard && u.spent ? '（このフェーズは既に受け止めた）' : ''}`;
+      el.innerHTML = `
+        <div class="u-art">${u.icon}</div>
+        <div class="u-name">${esc(u.name)}${d.text && !u.muted ? ' ✦' : ''}</div>
+        <div class="u-kw">${kw}</div>
+        <div class="u-stat atk${atk > u.atk ? ' boosted' : ''}"><b>${atk}</b></div>
+        <div class="u-stat hp${u.hp < u.maxHp ? ' hurt' : ''}">${u.hp}</div>
         ${u.auto ? '<div class="u-auto"><i></i></div>' : ''}
         ${tIdx >= 0 ? `<div class="u-tnum">${KEYS[tIdx]}</div>` : ''}
         ${aimed ? '<div class="u-aim">🎯</div>' : ''}`;
-      el.title = UI.cardTip(d) + (u.guard && u.spent ? '\n（このフェーズは既に攻撃を受け止めた）' : '');
     });
   }
 
+  /** 手札は扇形に並べる */
   function renderHand() {
     const g = B.game;
     const p = g.players[ME];
     const box = $('#hand');
     box.innerHTML = '';
+    const n = p.hand.length;
     p.hand.forEach((id, i) => {
       const c = Cards.get(id);
       const chk = g.canPlay(ME, i);
@@ -390,6 +460,9 @@
         key: KEYS[i], cost: g.costOf(p, id), cast: g.castOf(p, id),
         badge: chk.ok ? (sac || (full ? `⚠${p.field[0].name}と入替` : '')) : chk.reason,
       });
+      const off = i - (n - 1) / 2;
+      el.style.setProperty('--r', (off * 3.2).toFixed(1) + 'deg');
+      el.style.setProperty('--y', (Math.abs(off) ** 1.6 * 3).toFixed(1) + 'px');
       el.classList.add(chk.ok ? 'playable' : 'disabled');
       if (B.targeting && B.targeting.idx === i) el.classList.add('selecting');
       el.onclick = () => tryPlay(i);
@@ -406,7 +479,7 @@
       const l = logs[i];
       const d = document.createElement('div');
       d.className = `${l.kind} ${l.who != null ? 'who-' + l.who : ''}`;
-      d.textContent = l.text;
+      d.textContent = l.kind === 'phase' ? `― ${l.text} ―` : l.text;
       box.appendChild(d);
     }
     B.logShown = logs.length;
@@ -416,11 +489,16 @@
 
   function showResult() {
     const g = B.game;
-    const title = g.winner === ME ? '勝利！' : g.winner === OP ? '敗北…' : '引き分け';
     const [me, op] = g.players;
-    const row = (label, a, b) => `<tr><td>${label}</td><td>${a}</td><td>${b}</td></tr>`;
+    const cls = g.winner === ME ? 'win' : g.winner === OP ? 'lose' : 'draw';
+    const big = { win: 'VICTORY', lose: 'DEFEAT', draw: 'DRAW' }[cls];
+    const jp = { win: '勝利！', lose: '敗北…', draw: '引き分け' }[cls];
+    const row = (label, a, b, higherIsBetter = true) => {
+      const ba = higherIsBetter ? a > b : a < b;
+      return `<tr><td>${label}</td><td class="${ba ? 'best' : ''}">${a}</td><td class="${!ba && a !== b ? 'best' : ''}">${b}</td></tr>`;
+    };
     const body = `
-      <p>${g.endReason}（${Math.floor(g.time / 60)}分${Math.floor(g.time % 60)}秒）</p>
+      <div class="result-sub">${jp}　${g.endReason}（${Math.floor(g.time / 60)}分${Math.floor(g.time % 60)}秒）</div>
       <table class="result-stats">
         <tr><th></th><th>あなた</th><th>${esc(op.name)}</th></tr>
         ${row('残り体力', Math.max(0, me.hp), Math.max(0, op.hp))}
@@ -428,12 +506,13 @@
         ${row('使ったカード', me.stats.cardsPlayed, op.stats.cardsPlayed)}
         ${row('打ち消した回数', me.stats.countered, op.stats.countered)}
       </table>`;
+    $('#vignette').classList.remove('on');
     setTimeout(() => {
-      UI.overlay(title, body, [
+      UI.overlay(`<div class="result-title ${cls}">${big}</div>`, body, [
         { label: 'タイトルへ', onClick: () => { UI.closeOverlay(); UI.showScreen('title'); } },
         { label: 'もう一度', primary: true, onClick: () => start(B.setup) },
-      ]);
-    }, 600);
+      ], true);
+    }, 700);
   }
 
   function init() {

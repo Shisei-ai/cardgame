@@ -3,7 +3,7 @@
  */
 (function (root) {
   'use strict';
-  const { AI, Engine, Presets, Storage2, UI, Builder, Battle } = root;
+  const { AI, Cards, Engine, Presets, Storage2, UI, Builder, Battle } = root;
   const { $, esc } = UI;
 
   // data-go="画面名" を持つボタンで画面を切り替える
@@ -13,17 +13,58 @@
   });
 
   // ───── 対戦準備画面 ─────
+  // デッキはタイルで選ぶ。選んだ値は隠した <select> に入れておき、開始時にそこから読む
+
+  /** デッキを代表するカード3枚のアイコン（枚数が多く、コストが高い順） */
+  function deckIcons(cards) {
+    return Object.entries(cards)
+      .map(([id, n]) => ({ c: Cards.get(id), n }))
+      .sort((a, b) => b.n - a.n || b.c.cost - a.c.cost)
+      .slice(0, 3).map((x) => x.c.icon).join('');
+  }
+
+  function renderTiles(boxSel, selectSel, decks, withRandom) {
+    const box = $(boxSel);
+    const sel = $(selectSel);
+    const items = (withRandom ? [{ value: 'random', name: 'ランダム', desc: 'プリセットからランダムに選ぶ', icons: '❔', preset: true }] : [])
+      .concat(decks.map((d) => ({ ...d, icons: deckIcons(d.cards) })));
+    sel.innerHTML = items.map((d) => `<option value="${esc(d.value)}"></option>`).join('');
+    box.innerHTML = '';
+    items.forEach((d) => {
+      const t = document.createElement('button');
+      t.className = 'deck-tile';
+      t.dataset.value = d.value;
+      t.innerHTML = `<div class="dt-icons">${d.icons}</div>
+        <div><div class="dt-name">${esc(d.name)}</div><div class="dt-desc">${esc(d.desc || '')}</div></div>
+        ${d.preset ? '' : '<span class="dt-badge">自作</span>'}`;
+      t.onclick = () => { sel.value = d.value; syncTiles(box, sel); };
+      box.appendChild(t);
+    });
+  }
+  function syncTiles(box, sel) {
+    box.querySelectorAll('.deck-tile').forEach((t) => t.classList.toggle('on', t.dataset.value === sel.value));
+  }
+
   UI.onScreen('setup', () => {
     const decks = UI.allDecks();
     const s = Storage2.loadSettings();
-    const opts = decks.map((d) => `<option value="${esc(d.value)}">${esc(d.name)}（${UI.countOf(d.cards)}枚）</option>`).join('');
-    $('#setup-my-deck').innerHTML = opts;
-    $('#setup-cpu-deck').innerHTML = '<option value="random">ランダム</option>' + opts;
-    $('#setup-level').innerHTML = Object.entries(AI.LEVELS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
+    renderTiles('#tiles-me', '#setup-my-deck', decks, false);
+    renderTiles('#tiles-cpu', '#setup-cpu-deck', decks, true);
+    // CPUの強さ
+    const lv = $('#setup-level');
+    lv.innerHTML = Object.keys(AI.LEVELS).map((k) => `<option value="${k}"></option>`).join('');
+    lv.value = s.level || 'normal';
+    const pick = $('#level-pick');
+    pick.innerHTML = '<span>CPUの強さ</span>' + Object.entries(AI.LEVELS).map(([k, v]) => `<button data-lv="${k}">${v.label}</button>`).join('');
+    const syncLv = () => pick.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.lv === lv.value));
+    pick.onclick = (e) => { const k = e.target.dataset.lv; if (k) { lv.value = k; syncLv(); } };
+    syncLv();
     // 前回の選択を復元
     if (s.myDeck && decks.some((d) => d.value === s.myDeck)) $('#setup-my-deck').value = s.myDeck;
     if (s.cpuDeck) $('#setup-cpu-deck').value = s.cpuDeck;
-    $('#setup-level').value = s.level || 'normal';
+    if (!$('#setup-cpu-deck').value) $('#setup-cpu-deck').value = 'random';
+    syncTiles($('#tiles-me'), $('#setup-my-deck'));
+    syncTiles($('#tiles-cpu'), $('#setup-cpu-deck'));
     $('#setup-error').textContent = '';
   });
 
