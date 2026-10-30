@@ -236,3 +236,30 @@ select, input[type=text] {
 .deck-list .dl-cost { width: 18px; text-align: center; color: #a5c4ff; font-weight: bold; }
 .deck-list .dl-name { flex: 1; }
 .deck-list button { background: #333; border: none; border-radius: 3px; width: 22px; cursor: pointer; }
+
+/* ============ 対象選択・効果の途中での選択 ============ */
+.target-banner {
+  position: absolute; top: 27%; left: 40%; transform: translate(-50%, -50%);
+  background: #1a1408ee; border: 2px solid var(--accent); border-radius: 8px; padding: 8px 16px;
+  font-size: 14px; color: #ffe39a; pointer-events: none; z-index: 20; white-space: nowrap;
+}
+.unit.targetable { cursor: pointer; border-color: #ffe14a; box-shadow: 0 0 14px #ffe14a; animation: pulseT .8s infinite; }
+@keyframes pulseT { 50% { box-shadow: 0 0 4px #ffe14a; } }
+.unit .u-tnum {
+  position: absolute; top: -10px; right: -8px; background: #ffe14a; color: #000; font-weight: bold;
+  border-radius: 50%; width: 20px; height: 20px; display: grid; place-items: center; font-size: 12px;
+}
+.unit.aimed { outline: 2px dashed #ff6b6b; outline-offset: 2px; }
+.unit .u-aim { position: absolute; top: -10px; left: -6px; font-size: 16px; }
+.unit.muted { filter: grayscale(.8); }
+.unit .u-auto { position: absolute; left: 4px; right: 4px; bottom: -6px; height: 4px; background: #000; border-radius: 2px; overflow: hidden; }
+.unit .u-auto i { display: block; height: 100%; background: #6bd4ff; }
+.card.selecting { transform: translateY(-14px); box-shadow: 0 0 16px #ffe14a; border-color: #ffe14a; }
+.castbar .cb-target { color: #ff9a8a; font-weight: bold; font-size: 13px; }
+.card .c-target { position: absolute; top: 15px; right: 4px; font-size: 11px; }
+.choice { position: absolute; inset: 0; background: #000a; display: flex; align-items: center; justify-content: center; z-index: 40; }
+.choice-box { background: var(--bg2); border: 2px solid var(--accent); border-radius: 10px; padding: 16px 24px; max-width: 90%; text-align: center; }
+.choice-prompt { font-size: 18px; font-weight: bold; color: #ffe39a; }
+.choice-timer { font-size: 13px; color: var(--muted); margin: 4px 0 14px; }
+.choice-cards { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; padding: 6px 0 12px; }
+.choice-cards .card.picked { outline: 3px solid #ffe14a; transform: translateY(-8px); }

@@ -38,6 +38,7 @@
       ${card.hpCost ? `<div class="c-hpcost" title="代償：体力${card.hpCost}">♥${card.hpCost}</div>` : ''}
       ${card.sacCost ? `<div class="c-saccost" title="生贄：味方${card.sacCost}体">🔪${card.sacCost}</div>` : ''}
       <div class="c-cast${castCls}">${castLabel}</div>
+      ${card.target ? `<div class="c-target" title="対象を選ぶ：${esc(card.target.label || '')}">🎯</div>` : ''}
       <div class="c-name">${esc(card.name)}</div>
       <div class="c-icon">${card.icon}</div>
       <div class="c-type">${Cards.TYPES[card.type].label}</div>
@@ -58,7 +59,8 @@
     const lines = [`${card.name}（${Cards.TYPES[card.type].label}）`, `コスト${card.cost}${extra} / ${castLabel}`];
     if (card.type === 'creature') lines.push(`攻撃力${card.atk} / 体力${card.hp}`);
     lines.push(Cards.fullText(card, true));
-    const kws = Cards.keywords(card).map((k) => k.replace(/\d+$/, ''));
+    const kws = Cards.keywords(card).map((k) => k.replace(/\d+秒?$/, ''));
+    if (card.target) kws.push('対象');
     if (card.hpCost) kws.push('代償');
     if (card.sacCost) kws.push('生贄');
     kws.forEach((k) => { if (Cards.KEYWORD_HELP[k]) lines.push(`・${k}：${Cards.KEYWORD_HELP[k]}`); });

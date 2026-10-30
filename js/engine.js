@@ -18,6 +18,20 @@
  *   onAllyPlay   自分がカードを使った時       onEnemyPlay  相手がカードを使った時
  *   onBlock      守護としてクリーチャーの攻撃を受け止めた時
  *   onAllyDiscard 自分がカードを捨てた時
+ *   onAllySummon 他の味方が場に出た時
+ *   onLifeLoss   自分（プレイヤー）が体力を失った時（第2引数 'damage'=ダメージ / 'self'=代償や自傷）
+ *   onHeal       自分（プレイヤー）が体力を回復した時
+ *   onGrow       このクリーチャーが強化された（+X/+Yを得た）時
+ *   autoAttack   【自律】この秒数ごとに自動で攻撃する
+ *
+ * ■ 対象を選ぶカード
+ *   target: { side: 'enemy' | 'ally' | 'any', optional, filter(g, me, unit, owner), label }
+ *   対象はカードを使う時に決め（詠唱中は相手にも見える）、発動時にいなくなっていれば不発。
+ *   効果側には ctx.target = { unit, owner } が渡される。
+ *
+ * ■ 効果の途中での選択（捨てるカードを選ぶ、など）
+ *   g.choose(p, { kind, options, count, prompt }, callback) を使う。
+ *   AI は即座に選び、人間のプレイヤーなら選択が終わるまで時間が止まる（最大 choiceTime 秒）。
  *
  * ■ カード自体の能力
  *   onDiscard    このカードが手札から捨てられた時（狂気）
@@ -50,6 +64,8 @@
     fieldLimit: 5,      // 場に出せるクリーチャーの上限（満杯で召喚すると一番古い味方が倒れる）
     fatigue: 2,         // 山札切れで引こうとしたときのダメージ
     shieldCap: 10,      // 防壁の上限
+    choiceTime: 6,      // 人間が効果の途中で選択するときの制限時間（秒）。この間は時間が止まる
+    maxTriggerDepth: 10, // 誘発が誘発を呼ぶ連鎖の上限（無限ループ防止）
     guardRetaliate: false, // 守護が攻撃を受け止めた時、攻撃してきたクリーチャーに反撃するか（反撃すると守護が強すぎた）
     deckSize: 40,       // デッキ枚数
     maxCopies: 4,       // 同名カードの上限枚数
@@ -103,6 +119,8 @@
       this.onEvent = null;    // 画面側が演出用に購読するコールバック
       this.uidSeq = 1;
       this._cleaning = false;
+      this._depth = 0;        // 誘発の連鎖の深さ
+      this.pending = null;    // 人間の選択待ち { player, kind, options, count, prompt, cb, timeLeft }
       this.players = [0, 1].map((i) => this._makePlayer(i, opts.decks[i], (opts.names || [])[i]));
       this.players.forEach((p) => {
         this._shuffle(p.deck);
@@ -135,6 +153,8 @@
         skipDraw: 0,        // 次のフェーズ開始時に引く枚数を減らす（禁断の知識など）
         manaDebt: 0,        // 次のフェーズ開始時に失うマナ（魔力の前借り）
         lastSacrificed: [], // 直前に生贄にしたクリーチャー（死の呼び手などが参照）
+        human: false,       // 人間が操作するか（効果の途中での選択を画面に任せる）
+        chooser: null,      // AIの選択関数 (kind, options, count, req) => 選んだ番号の配列
         stats: { damageDealt: 0, cardsPlayed: 0, countered: 0, played: {} },
       };
     }
@@ -149,7 +169,7 @@
       if (c.costMod) cost += c.costMod(this, p);
       for (const u of p.field) {
         const d = Cards.get(u.id);
-        if (d.auraCost) cost += d.auraCost(this, p, c);
+        if (d.auraCost && !u.muted) cost += d.auraCost(this, p, c);
       }
       if (isSpell(c) && p.spellDiscount) cost -= p.spellDiscount;
       return Math.max(0, cost);
@@ -162,7 +182,7 @@
       let t = c.cast;
       for (const u of p.field) {
         const d = Cards.get(u.id);
-        if (d.auraCast) t *= d.auraCast(this, p, c);
+        if (d.auraCast && !u.muted) t *= d.auraCast(this, p, c);
       }
       return Math.round(t * 10) / 10;
     }
@@ -173,9 +193,58 @@
       for (const u of p.field) {
         if (u === unit) continue;
         const d = Cards.get(u.id);
-        if (d.auraAtk) a += d.auraAtk;
+        if (d.auraAtk && !u.muted) a += d.auraAtk;
       }
       return Math.max(0, a);
+    }
+
+    /** 吸血を持つか（オーラで付与される場合も含む） */
+    hasLifesteal(p, unit) {
+      return unit.lifesteal || p.field.some((u) => u !== unit && !u.muted && Cards.get(u.id).auraLifesteal);
+    }
+
+    /** uid からクリーチャーと持ち主を探す */
+    findUnit(uid) {
+      for (const q of this.players) { const u = q.field.find((x) => x.uid === uid); if (u) return { unit: u, owner: q }; }
+      return null;
+    }
+
+    /** カード c の対象になれるクリーチャーの一覧 [{unit, owner}] */
+    validTargets(p, c) {
+      const t = c.target;
+      if (!t) return [];
+      const op = this.opp(p);
+      const list = [];
+      if (t.side === 'enemy' || t.side === 'any') op.field.forEach((u) => list.push({ unit: u, owner: op }));
+      if (t.side === 'ally' || t.side === 'any') p.field.forEach((u) => list.push({ unit: u, owner: p }));
+      return list.filter((x) => x.unit.hp > 0 && (!t.filter || t.filter(this, p, x.unit, x.owner)));
+    }
+
+    /**
+     * 能力の誘発。p の場のクリーチャーの hook を順に呼ぶ。
+     * 誘発が誘発を呼ぶ連鎖は maxTriggerDepth で打ち切る（無限ループ防止）。
+     */
+    _fire(p, hook, ...args) {
+      if (this.over || this._depth >= this.cfg.maxTriggerDepth) return;
+      this._depth++;
+      try {
+        for (const u of [...p.field]) {
+          if (u.muted || !p.field.includes(u)) continue;
+          const d = Cards.get(u.id);
+          if (d[hook]) d[hook](this, p, this.opp(p), u, ...args);
+        }
+      } finally {
+        this._depth--;
+      }
+    }
+
+    /** このクリーチャー自身の能力を呼ぶ（能力を消されていれば何もしない） */
+    _self(p, unit, hook, ...args) {
+      if (unit.muted || this.over || this._depth >= this.cfg.maxTriggerDepth) return;
+      const d = Cards.get(unit.id);
+      if (!d[hook]) return;
+      this._depth++;
+      try { d[hook](this, p, this.opp(p), unit, ...args); } finally { this._depth--; }
     }
 
     /** 今すぐ攻撃を受け止められる（このフェーズにまだ受け止めていない）守護 */
@@ -191,6 +260,12 @@
     // ───────────── 時間の進行 ─────────────
     update(dt) {
       if (this.over) return;
+      // 人間の選択待ちの間は時間が止まる。制限時間を過ぎたらランダムに選ぶ
+      if (this.pending) {
+        this.pending.timeLeft -= dt;
+        if (this.pending.timeLeft <= 0) this.resolveChoice(null);
+        return;
+      }
       this.time += dt;
 
       for (const p of this.players) {
@@ -198,14 +273,27 @@
           if (p[k] > 0) { p[k] = Math.max(0, p[k] - dt); if (p[k] === 0) this._bump(); }
         }
       }
+      // 【自律】攻撃（時間停止中は止まる）
+      for (const p of this.players) {
+        if (p.stun > 0) continue;
+        for (const u of [...p.field]) {
+          if (!u.auto || u.muted || !p.field.includes(u)) continue;
+          u.autoT -= dt;
+          if (u.autoT <= 0) {
+            u.autoT += u.auto;
+            this.attack(p, u);
+            if (this.over) return;
+          }
+        }
+      }
       // 詠唱の進行（両者同時。同じ瞬間に完了した場合はプレイヤー番号順）
       for (const p of this.players) {
         if (!p.casting || p.stun > 0) continue;
         p.casting.remain -= dt * (p.haste > 0 ? 2 : 1);
         if (p.casting.remain <= 0) {
-          const card = p.casting.card;
+          const { card, target } = p.casting;
           p.casting = null;
-          this._resolve(p, card);
+          this._resolve(p, card, target);
           if (this.over) return;
         }
       }
@@ -236,12 +324,7 @@
         this.draw(p, n);
       }
       // フェーズ開始時に誘発する能力
-      for (const p of this.players) {
-        for (const u of [...p.field]) {
-          const d = Cards.get(u.id);
-          if (d.onPhase && p.field.includes(u)) d.onPhase(this, p, this.opp(p), u);
-        }
-      }
+      for (const p of this.players) this._fire(p, 'onPhase');
       this._cleanup();
       this._emit({ type: 'phase', phase: this.phase });
       this._bump();
@@ -284,16 +367,29 @@
       if (c.sacCost && p.field.length < c.sacCost) return { ok: false, reason: `生贄が${c.sacCost}体必要` };
       if (this.castOf(p, id) > 0 && p.casting) return { ok: false, reason: '詠唱中' };
       if (c.canUse && !c.canUse(this, p, this.opp(p))) return { ok: false, reason: c.needText || '条件未達' };
+      if (c.target && !c.target.optional && !this.validTargets(p, c).length) return { ok: false, reason: '対象がいない' };
+      if (this.pending) return { ok: false, reason: '選択中' };
       return { ok: true, reason: '' };
     }
 
-    play(pi, idx) {
+    /**
+     * 手札の idx 番目のカードを使う。
+     * opts.target: 対象のクリーチャーの uid（対象を選ぶカードの場合。省略時はランダム）
+     */
+    play(pi, idx, opts = {}) {
       const chk = this.canPlay(pi, idx);
       if (!chk.ok) return chk;
       const p = this.players[pi];
       const op = this.opp(p);
       const id = p.hand[idx];
       const c = Cards.get(id);
+      // 対象を決める（使う時点で確定し、詠唱中は相手にも見える）
+      let target = null;
+      if (c.target) {
+        const valid = this.validTargets(p, c);
+        const pick = valid.find((v) => v.unit.uid === opts.target) || (valid.length ? valid[Math.floor(this.rand() * valid.length)] : null);
+        target = pick ? pick.unit.uid : null;
+      }
       // コストと詠唱時間は手札から取り除く前に確定させる
       const cost = this.costOf(p, id);
       const cast = this.castOf(p, id);
@@ -312,31 +408,40 @@
       p.stats.played[id] = (p.stats.played[id] || 0) + 1;
 
       if (cast > 0) {
-        p.casting = { card: c, total: cast, remain: cast, start: this.time };
-        this.log(`${p.name}：【${c.name}】詠唱開始`, 'cast', p.index);
+        p.casting = { card: c, total: cast, remain: cast, start: this.time, target };
+        const tu = target != null ? this.findUnit(target) : null;
+        this.log(`${p.name}：【${c.name}】詠唱開始${tu ? `（対象：${tu.unit.name}）` : ''}`, 'cast', p.index);
       } else {
         this.log(`${p.name}：【${c.name}】${c.cast > 0 ? '（即時詠唱）' : '（瞬間）'}`, 'play', p.index);
       }
       this._emit({ type: 'play', player: p.index, card: c, instant: cast <= 0 });
 
       // 「カードを使った時」に誘発する能力
-      for (const u of [...p.field]) { const d = Cards.get(u.id); if (d.onAllyPlay) d.onAllyPlay(this, p, op, u, c); }
-      for (const u of [...op.field]) { const d = Cards.get(u.id); if (d.onEnemyPlay) d.onEnemyPlay(this, op, p, u, c); }
+      this._fire(p, 'onAllyPlay', c);
+      this._fire(op, 'onEnemyPlay', c);
       this._cleanup();
       if (p.curse > 0) this.damagePlayer(p, 1, '呪いの刻印');
 
-      if (cast <= 0 && !this.over) this._resolve(p, c);
+      if (cast <= 0 && !this.over) this._resolve(p, c, target);
       this._bump();
       return chk;
     }
 
-    _resolve(p, c) {
+    _resolve(p, c, targetUid) {
       const op = this.opp(p);
+      const ctx = { target: targetUid != null ? this.findUnit(targetUid) : null };
+      // 対象が必要なのに、発動までに対象がいなくなっていたら不発
+      if (c.target && !c.target.optional && !ctx.target) {
+        this.log(`【${c.name}】は対象がいないため不発`, 'info', p.index);
+        p.grave.push(c.id);
+        this._bump();
+        return;
+      }
       if (c.type === 'creature') {
-        this.summon(p, c.id);
+        this.summon(p, c.id, { ctx });
       } else {
         if (c.cast > 0) this.log(`${p.name}：【${c.name}】発動`, 'resolve', p.index);
-        c.effect(this, p, op);
+        c.effect(this, p, op, ctx);
         p.grave.push(c.id);
       }
       this._emit({ type: 'resolve', player: p.index, card: c });
@@ -371,16 +476,20 @@
         guard: !!c.guard, stealth: !!c.stealth, lifesteal: !!c.lifesteal,
         double: !!c.double, undying: !!c.undying, armor: c.armor || 0, pierce: !!c.pierce, token: !!c.token,
         spent: false, // 守護がこのフェーズに既に攻撃を受け止めたか
+        auto: c.autoAttack || 0, autoT: c.autoAttack || 0, // 【自律】の間隔と、次の攻撃までの残り秒数
+        muted: false, // 能力を消されたか
+        ctx: opts.ctx || null, // 召喚時の対象（反響の竪琴が召喚時効果を再現するのに使う）
       };
       p.field.push(unit);
       this.log(`${p.name}：【${c.name}】${c.token ? '生成' : '召喚'}`, 'resolve', p.index);
       this._emit({ type: 'summon', player: p.index, unit });
-      if (c.onSummon) c.onSummon(this, p, op, unit);
+      if (c.onSummon) c.onSummon(this, p, op, unit, unit.ctx);
       if (opts.attack !== false && !c.noAttack) {
         this.attack(p, unit);
         if (unit.double) this.attack(p, unit);
       }
       if (c.afterSummon && p.field.includes(unit)) c.afterSummon(this, p, op, unit);
+      if (p.field.includes(unit)) this._fire(p, 'onAllySummon', unit);
       this._cleanup();
       this._bump();
       return unit;
@@ -404,17 +513,16 @@
         this._hitUnit(target, atk);
         if (this.cfg.guardRetaliate) this._hitUnit(unit, this.atkOf(op, target));
         this.log(`${unit.name}(${atk}) → 守護 ${target.name}`, 'attack', p.index);
-        if (unit.lifesteal) this.heal(p, atk);
+        if (this.hasLifesteal(p, unit)) this.heal(p, atk);
         this._emit({ type: 'attack', player: p.index, unit, target });
-        const td = Cards.get(target.id);
-        if (td.onBlock) td.onBlock(this, op, p, target, unit);
+        this._self(op, target, 'onBlock', unit);
         // 貫通：守護を倒してなお余ったダメージは本体へ
         if (unit.pierce && overflow > 0) this.damagePlayer(op, overflow, unit.name + '（貫通）');
         this._cleanup();
       } else {
         this._emit({ type: 'attack', player: p.index, unit, target: null });
         const dealt = this.damagePlayer(op, atk, unit.name);
-        if (unit.lifesteal && dealt > 0) this.heal(p, dealt);
+        if (this.hasLifesteal(p, unit) && dealt > 0) this.heal(p, dealt);
       }
       this._bump();
     }
@@ -430,6 +538,7 @@
       this.log(`${src} → ${target.name}に${dealt}ダメージ${absorbed ? `（防壁で${absorbed}軽減）` : ''}`, 'damage', 1 - target.index);
       this._emit({ type: 'damage', player: target.index, amount: dealt, absorbed });
       this._checkDeath();
+      if (dealt > 0) this._fire(target, 'onLifeLoss', dealt, 'damage');
       this._bump();
       return dealt;
     }
@@ -441,6 +550,7 @@
       this.log(`${src}：${p.name}は体力を${amount}失った`, 'damage', p.index);
       this._emit({ type: 'damage', player: p.index, amount, absorbed: 0 });
       this._checkDeath();
+      this._fire(p, 'onLifeLoss', amount, 'self');
       this._bump();
     }
 
@@ -466,7 +576,108 @@
       unit.atk += atk;
       unit.hp += hp;
       unit.maxHp += hp;
+      if (atk > 0 || hp > 0) {
+        const f = this.findUnit(unit.uid);
+        if (f) this._self(f.owner, unit, 'onGrow');
+      }
       this._bump();
+    }
+
+    /** 能力を消す（キーワードも誘発もオーラも失う） */
+    muteUnit(owner, unit) {
+      Object.assign(unit, { muted: true, guard: false, stealth: false, lifesteal: false, double: false, undying: false, armor: 0, pierce: false, auto: 0 });
+      this.log(`${unit.name}は能力を失った`, 'info', owner.index);
+      this._bump();
+    }
+
+    /** 持ち主の手札に戻す（トークンは消える）。倒れたことにはならない */
+    bounceUnit(owner, unit) {
+      if (!owner.field.includes(unit)) return;
+      owner.field = owner.field.filter((u) => u !== unit);
+      if (!unit.token) {
+        if (owner.hand.length < this.cfg.handLimit) owner.hand.push(unit.id);
+        else owner.grave.push(unit.id);
+      }
+      this.log(`${unit.name}は${owner.name}の手札に戻された`, 'info', owner.index);
+      this._bump();
+    }
+
+    /** 相手のクリーチャーを奪う */
+    stealUnit(from, to, unit) {
+      if (!from.field.includes(unit) || to.field.length >= this.cfg.fieldLimit) {
+        this.log('奪取は失敗した', 'info', to.index);
+        return false;
+      }
+      from.field = from.field.filter((u) => u !== unit);
+      unit.spent = false;
+      to.field.push(unit);
+      this.log(`${to.name}は${unit.name}を奪った！`, 'counter', to.index);
+      this._bump();
+      return true;
+    }
+
+    /** 別のクリーチャー（トークン）に変身させる */
+    transformUnit(owner, unit, tokenId) {
+      const t = Cards.get(tokenId);
+      const before = unit.name;
+      Object.assign(unit, {
+        id: t.id, name: t.name, icon: t.icon, atk: t.atk, hp: t.hp, maxHp: t.hp, token: true,
+        guard: false, stealth: false, lifesteal: false, double: false, undying: false, armor: 0, pierce: false, auto: 0, muted: false,
+      });
+      this.log(`${before}は${t.name}に変えられた`, 'info', owner.index);
+      this._bump();
+    }
+
+    /**
+     * 効果の途中での選択。
+     *   req: { kind: 'discard'|'pick'|'oppDiscard', options: [カードID], count, prompt }
+     *   cb(indices): 選ばれた options の番号の配列を受け取る
+     * 選択肢が count 以下なら全部、AI なら即座に、人間なら画面で選ぶ（その間は時間が止まる）。
+     */
+    choose(p, req, cb) {
+      const count = Math.min(req.count, req.options.length);
+      if (count <= 0) { cb([]); return; }
+      if (req.options.length <= count) { cb(req.options.map((_, i) => i)); return; }
+      if (p.chooser) { cb(p.chooser(req.kind, req.options, count, req).slice(0, count)); return; }
+      if (p.human) {
+        this.pending = { player: p.index, ...req, count, cb, timeLeft: this.cfg.choiceTime };
+        this._emit({ type: 'choice', player: p.index });
+        this._bump();
+        return;
+      }
+      cb(this._randomPick(req.options.length, count));
+    }
+
+    _randomPick(n, count) {
+      const idx = [...Array(n).keys()];
+      this._shuffle(idx);
+      return idx.slice(0, count);
+    }
+
+    /** 画面から選択結果を受け取る。indices が null（時間切れ）ならランダム */
+    resolveChoice(indices) {
+      const pd = this.pending;
+      if (!pd) return;
+      this.pending = null;
+      let pick = (indices || []).filter((i, k, a) => i >= 0 && i < pd.options.length && a.indexOf(i) === k).slice(0, pd.count);
+      if (pick.length < pd.count) {
+        const rest = this._randomPick(pd.options.length, pd.options.length).filter((i) => !pick.includes(i));
+        pick = pick.concat(rest.slice(0, pd.count - pick.length));
+      }
+      pd.cb(pick);
+      this._cleanup();
+      this._checkDeath();
+      this._bump();
+    }
+
+    /** 手札から n 枚を選んで捨てる。cb(捨てたカードの配列) */
+    chooseDiscard(p, n, prompt, cb) {
+      const options = p.hand.slice();
+      this.choose(p, { kind: 'discard', options, count: n, prompt: prompt || `捨てるカードを${n}枚選んでください` }, (idxs) => {
+        // 手札の位置がずれないよう、後ろから捨てる
+        const cards = idxs.sort((a, b) => b - a).map((i) => this.discard(p, i)).filter(Boolean);
+        if (cb) cb(cards);
+      });
     }
 
     heal(p, amount) {
@@ -475,6 +686,7 @@
       if (p.hp > before) {
         this.log(`${p.name}の体力が${p.hp - before}回復`, 'heal', p.index);
         this._emit({ type: 'heal', player: p.index, amount: p.hp - before });
+        this._fire(p, 'onHeal', p.hp - before);
       }
       this._bump();
     }
@@ -597,7 +809,7 @@
       this.log(`${p.name}は【${c.name}】を捨てた`, 'info', p.index);
       this._emit({ type: 'discard', player: p.index, card: c });
       const op = this.opp(p);
-      for (const u of [...p.field]) { const d = Cards.get(u.id); if (d.onAllyDiscard) d.onAllyDiscard(this, p, op, u, c); }
+      this._fire(p, 'onAllyDiscard', c);
       if (c.onDiscard) c.onDiscard(this, p, op);
       this._cleanup();
       this._bump();
@@ -620,7 +832,8 @@
       if (i < 0) return null;
       p.grave.splice(i, 1);
       this.log(`${p.name}：【${Cards.get(id).name}】が狂気に駆られて現れた！`, 'resolve', p.index);
-      return this.summon(p, id);
+      // コストなしで出る分、召喚時の攻撃はしない
+      return this.summon(p, id, { attack: false });
     }
 
     /** 生贄に選ばれるクリーチャー（弱い順。トークンを優先） */
@@ -669,14 +882,8 @@
             this.log(`${u.name}は倒れた`, 'info', p.index);
           }
           for (const { p, u } of deaths) {
-            const d = Cards.get(u.id);
-            if (d.onDeath) d.onDeath(this, p, this.opp(p), u);
-            for (const q of this.players) {
-              for (const w of [...q.field]) {
-                const wd = Cards.get(w.id);
-                if (wd.onAnyDeath) wd.onAnyDeath(this, q, this.opp(q), w, u, p);
-              }
-            }
+            this._self(p, u, 'onDeath');
+            for (const q of this.players) this._fire(q, 'onAnyDeath', u, p);
           }
         }
       } finally {

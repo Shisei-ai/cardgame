@@ -30,6 +30,37 @@
       this.L = LEVELS[level] || LEVELS.normal;
       this.timer = game.rand() * this.L.think;
       this.handledCast = null; // 同じ詠唱に何度も反応しないための記録
+      // 効果の途中での選択（捨てるカードなど）をAIが行う
+      game.players[playerIndex].chooser = (kind, options, count) => this.choose(kind, options, count);
+    }
+
+    /** 対象を選ぶカードの対象を決める。候補がなければ null */
+    pickTarget(card, me, op) {
+      const g = this.g;
+      const cands = g.validTargets(me, card);
+      if (!cands.length) return null;
+      if (card.aiTarget) return card.aiTarget(g, me, op, cands) || null;
+      const value = (x) => g.atkOf(x.owner, x.unit) + x.unit.hp * 0.5 + (x.unit.auto ? 3 : 0) + (x.unit.token ? -1 : 0);
+      // 敵を狙うなら価値の高い敵、味方を選ぶなら攻撃力の高い味方
+      const pool = card.target.side === 'ally' ? cands : cands.filter((x) => x.owner === op);
+      const list = pool.length ? pool : cands;
+      return list.reduce((b, x) => (value(x) > value(b) ? x : b));
+    }
+
+    /** 効果の途中での選択。kind: discard（自分の手札を捨てる）/ pick（手札に加える）/ oppDiscard（相手に捨てさせる） */
+    choose(kind, options, count) {
+      const g = this.g;
+      const me = g.players[this.pi];
+      const op = g.opp(me);
+      const keep = (id) => {
+        const c = Cards.get(id);
+        if (kind === 'discard' && c.onDiscard) return -100; // 【狂気】は捨てると得
+        const s = Math.max(-2, Math.min(10, this.score(c, me, op) || 0));
+        return s + c.cost * 0.4 + (kind === 'pick' && g.costOf(me, id) <= me.mana + 2 ? 1.5 : 0);
+      };
+      const order = options.map((id, i) => ({ i, v: kind === 'oppDiscard' ? this.threat(Cards.get(id)) + Cards.get(id).cost : keep(id) }));
+      order.sort((a, b) => (kind === 'discard' ? a.v - b.v : b.v - a.v));
+      return order.slice(0, count).map((o) => o.i);
     }
 
     update(dt) {
@@ -63,7 +94,8 @@
         }
         if (best) {
           this.handledCast = op.casting;
-          g.play(this.pi, best.h.i);
+          const t = best.h.card.target ? this.pickTarget(best.h.card, me, op) : null;
+          g.play(this.pi, best.h.i, { target: t && t.unit.uid });
           return;
         }
       }
@@ -73,7 +105,9 @@
       let best = null;
       for (const h of playable) {
         if (h.card.reactive) continue;
-        let score = this.score(h.card, me, op);
+        const t = h.card.target ? this.pickTarget(h.card, me, op) : null;
+        if (h.card.target && !t && !h.card.target.optional) continue;
+        let score = this.score(h.card, me, op, t);
         // 生贄にする味方の価値を差し引く（遺言持ちやトークンは安い）
         if (h.card.sacCost) {
           for (const u of g.sacrificeTargets(me, h.card.sacCost)) {
@@ -88,9 +122,9 @@
         if (h.card.hpCost) score -= h.card.hpCost * (me.hp <= 10 ? 1.2 : 0.25);
         // 少しだけ揺らぎを入れて単調さを防ぐ
         score += g.rand() * 0.5;
-        if (!best || score > best.score) best = { h, score };
+        if (!best || score > best.score) best = { h, score, t };
       }
-      if (best && best.score > 1) g.play(this.pi, best.h.i);
+      if (best && best.score > 1) g.play(this.pi, best.h.i, { target: best.t && best.t.unit.uid });
     }
 
     /** 手札にある一番安い「打ち消し系」カードのコスト（温存用） */
@@ -100,7 +134,7 @@
       return costs.length ? Math.min(...costs) : 0;
     }
 
-    score(card, me, op) {
+    score(card, me, op, t) {
       const g = this.g;
       if (card.type === 'creature') {
         // 鈍重（召喚時に攻撃しない）は、場に残る価値だけで評価する
@@ -126,6 +160,7 @@
         }
         if (card.guard) v += 1.5 + op.field.length * 0.5;
         if (card.lifesteal) v += card.atk * 0.5;
+        if (card.autoAttack) v += card.atk * (12 / card.autoAttack) * 0.6; // 残り時間で何回攻撃できるかの目安
         if (card.aiBonus) v += card.aiBonus(g, me, op);
         // 場が満杯なら一番古い味方を失う（遺言持ちならむしろ得）
         if (me.field.length >= g.cfg.fieldLimit) {
@@ -134,7 +169,7 @@
         }
         return v;
       }
-      if (card.ai) return card.ai(g, me, op);
+      if (card.ai) return card.ai(g, me, op, t);
       return card.cost;
     }
 

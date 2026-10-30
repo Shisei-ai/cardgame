@@ -5,6 +5,11 @@
  *   ・requestAnimationFrame で毎フレーム game.update(経過秒) を呼ぶ
  *   ・手札や体力など「構造」の描画は、状態が変わったとき（signature が変化したとき）だけ作り直す
  *   ・詠唱ゲージや時計など「連続的に変わるもの」は毎フレーム幅や文字だけ更新する
+ *
+ * 選択の操作（どちらも選んでいる間は時間が止まる）:
+ *   ・対象選択モード：対象を選ぶカードを使おうとすると入る。光っているクリーチャーをクリック
+ *     （または数字キー）で決定、右クリック・Esc でキャンセル。TARGET_TIME 秒で自動キャンセル
+ *   ・効果の途中での選択（捨てるカードなど）：エンジンの pending を画面に表示して選ばせる
  */
 (function (root) {
   'use strict';
@@ -13,10 +18,14 @@
 
   const ME = 0, OP = 1;
   const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+  const TARGET_TIME = 5; // 対象選択の制限時間（秒）
 
   const B = {
     game: null, ai: null, raf: 0, last: 0, paused: false,
     sig: '', logShown: 0, setup: null, unitEls: [new Map(), new Map()],
+    targeting: null, // { idx, card, uids, timeLeft } 対象選択モード中
+    choiceKey: null, // 表示中の選択画面（同じ選択を作り直さないため）
+    picked: [],      // 選択画面で選んだ番号
   };
 
   function start(setup) {
@@ -25,7 +34,11 @@
     B.setup = setup;
     B.game = new Engine.Game({ decks: [setup.myDeck, setup.cpuDeck], names: ['あなた', setup.cpuName || 'CPU'] });
     B.ai = new AI.AI(B.game, OP, setup.level);
+    B.game.players[ME].human = true; // 効果の途中での選択を画面で行う
     B.game.onEvent = onEvent;
+    B.targeting = null;
+    B.choiceKey = null;
+    closeChoice();
     B.paused = false;
     B.sig = '';
     B.logShown = 0;
@@ -51,8 +64,14 @@
     B.last = now;
     const g = B.game;
     if (!B.paused && !g.over) {
-      g.update(dt);
-      B.ai.update(dt);
+      if (B.targeting) {
+        // 対象選択中は時間が止まる（制限時間だけ進む）
+        B.targeting.timeLeft -= dt;
+        if (B.targeting.timeLeft <= 0) cancelTargeting('時間切れ');
+      } else {
+        g.update(dt); // 選択待ち（g.pending）の間はエンジン側で時間が止まる
+        if (!g.pending) B.ai.update(dt);
+      }
     }
     render();
     if (g.over) { showResult(); return; }
@@ -62,16 +81,92 @@
   // ───────────── 入力 ─────────────
   function tryPlay(idx) {
     const g = B.game;
-    if (!g || g.over || B.paused) return;
-    const r = g.play(ME, idx);
+    if (!g || g.over || B.paused || g.pending) return;
+    // 対象選択中に同じカードをもう一度押したらキャンセル
+    if (B.targeting) { const same = B.targeting.idx === idx; cancelTargeting(); if (same) return; }
+    const c = Cards.get(g.players[ME].hand[idx]);
+    const chk = g.canPlay(ME, idx);
+    if (!chk.ok) { if (chk.reason) UI.toast(chk.reason, 700); return; }
+    if (c.target) {
+      const valid = g.validTargets(g.players[ME], c);
+      if (valid.length) {
+        B.targeting = { idx, card: c, uids: valid.map((v) => v.unit.uid), timeLeft: TARGET_TIME };
+        B.sig = ''; // 描画を更新して対象を光らせる
+        return;
+      }
+    }
+    g.play(ME, idx);
+  }
+
+  function chooseTarget(uid) {
+    const t = B.targeting;
+    if (!t || !t.uids.includes(uid)) return;
+    B.targeting = null;
+    B.sig = '';
+    const r = B.game.play(ME, t.idx, { target: uid });
     if (!r.ok && r.reason) UI.toast(r.reason, 700);
+  }
+
+  function cancelTargeting(msg) {
+    if (!B.targeting) return;
+    B.targeting = null;
+    B.sig = '';
+    if (msg) UI.toast(msg, 600);
   }
 
   function onKey(e) {
     if (!$('#screen-battle').classList.contains('active') || !B.game || B.game.over) return;
-    if (e.key === 'Escape') { togglePause(); return; }
+    const g = B.game;
     const i = KEYS.indexOf(e.key);
+    // 効果の途中での選択中は、数字キーで候補を選ぶ
+    if (g.pending && g.pending.player === ME && !B.paused) { if (i >= 0) toggleChoice(i); return; }
+    if (B.targeting) {
+      if (e.key === 'Escape') { cancelTargeting(); return; }
+      if (i >= 0 && i < B.targeting.uids.length) chooseTarget(B.targeting.uids[i]);
+      return;
+    }
+    if (e.key === 'Escape') { togglePause(); return; }
     if (i >= 0) tryPlay(i);
+  }
+
+  // ───────────── 効果の途中での選択画面 ─────────────
+  function renderChoice() {
+    const g = B.game;
+    const pd = g.pending && g.pending.player === ME ? g.pending : null;
+    if (!pd) { if (B.choiceKey) closeChoice(); return; }
+    if (B.choiceKey !== pd) {
+      B.choiceKey = pd;
+      B.picked = [];
+      $('#choice-prompt').textContent = pd.prompt || '選んでください';
+      const box = $('#choice-cards');
+      box.innerHTML = '';
+      pd.options.forEach((id, i) => {
+        const el = UI.cardEl(Cards.get(id), { key: KEYS[i] });
+        el.onclick = () => toggleChoice(i);
+        box.appendChild(el);
+      });
+      $('#choice').classList.remove('hidden');
+    }
+    $('#choice-timer').textContent = `残り ${Math.max(0, pd.timeLeft).toFixed(1)} 秒（時間切れならランダム）　${B.picked.length} / ${pd.count}`;
+  }
+
+  function toggleChoice(i) {
+    const pd = B.game.pending;
+    if (!pd || i >= pd.options.length) return;
+    const k = B.picked.indexOf(i);
+    if (k >= 0) B.picked.splice(k, 1); else B.picked.push(i);
+    document.querySelectorAll('#choice-cards .card').forEach((el, j) => el.classList.toggle('picked', B.picked.includes(j)));
+    if (B.picked.length >= pd.count) {
+      const pick = B.picked.slice();
+      closeChoice();
+      B.game.resolveChoice(pick);
+    }
+  }
+
+  function closeChoice() {
+    B.choiceKey = null;
+    B.picked = [];
+    $('#choice').classList.add('hidden');
   }
 
   function togglePause() {
@@ -151,6 +246,22 @@
       renderHand();
       renderLog();
     }
+    renderChoice();
+    // 対象選択モードの案内
+    const tb = $('#target-banner');
+    if (B.targeting) {
+      tb.classList.remove('hidden');
+      tb.textContent = `【${B.targeting.card.name}】の対象（${B.targeting.card.target.label || 'クリーチャー'}）を選んでください … 残り ${Math.max(0, B.targeting.timeLeft).toFixed(1)} 秒　／　右クリック・Esc でキャンセル`;
+    } else {
+      tb.classList.add('hidden');
+    }
+    // 【自律】の次の攻撃までのゲージ
+    g.players.forEach((p) => p.field.forEach((u) => {
+      if (!u.auto) return;
+      const bar = B.unitEls[p.index].get(u.uid);
+      const f = bar && bar.querySelector('.u-auto i');
+      if (f) f.style.width = (100 * (1 - u.autoT / u.auto)).toFixed(0) + '%';
+    }));
     // 毎フレーム更新するもの
     g.players.forEach((p) => {
       const fill = $('#cast-' + p.index + ' .cb-fill');
@@ -190,6 +301,8 @@
       ${st.join('')}`;
   }
 
+  const g2 = () => B.game;
+
   function graveTip(p) {
     if (!p.grave.length) return '墓地は空';
     const counts = {};
@@ -207,8 +320,10 @@
       el.innerHTML = `<span class="cb-empty">${p.index === ME ? '（詠唱なし）' : '（相手は詠唱していない）'}</span>`;
       return;
     }
+    const tu = p.casting.target != null ? B.game.findUnit(p.casting.target) : null;
     el.innerHTML = `
       <span class="cb-name">${c.icon} ${esc(c.name)}</span>
+      ${tu ? `<span class="cb-target">→ 対象：${esc(tu.unit.name)}</span>` : ''}
       <span class="cb-text">${c.type === 'creature' ? `⚔${c.atk} ♥${c.hp} ` : ''}${esc(Cards.fullText(c))}</span>
       <div class="cb-gauge"><div class="cb-fill"></div></div>
       <span class="cb-left"></span>`;
@@ -224,7 +339,9 @@
       let el = map.get(u.uid);
       if (!el) {
         el = document.createElement('div');
-        el.className = 'unit' + (u.guard ? ' guard' : '');
+        el.className = 'unit';
+        const uid = u.uid;
+        el.onclick = () => chooseTarget(uid);
         map.set(u.uid, el);
         box.appendChild(el);
       }
@@ -232,12 +349,23 @@
       const kw = [
         u.guard && (u.spent ? '守護(済)' : '守護'), u.stealth && '潜伏', u.lifesteal && '吸血',
         u.pierce && '貫通', u.undying && !u.usedUndying && '不屈', u.armor && '堅牢',
+        u.auto && `自律${u.auto}s`, u.muted && '沈黙',
       ].filter(Boolean).join('・');
+      const tIdx = B.targeting ? B.targeting.uids.indexOf(u.uid) : -1;
+      el.classList.toggle('guard', !!u.guard);
+      el.classList.toggle('muted', !!u.muted);
+      el.classList.toggle('targetable', tIdx >= 0);
+      // 相手が詠唱中のカードの対象になっていたら印を付ける
+      const aimed = g2().players.some((q) => q.casting && q.casting.target === u.uid);
+      el.classList.toggle('aimed', aimed);
       const atk = B.game.atkOf(p, u);
       el.classList.toggle('spent', !!(u.guard && u.spent));
       el.classList.toggle('token', !!u.token);
-      el.innerHTML = `<div class="u-name">${esc(u.name)}${d.text ? ' ✦' : ''}</div><div class="u-icon">${u.icon}</div>
-        <div class="u-kw">${kw}</div><div class="u-stats"><span class="atk${atk > u.atk ? ' boosted' : ''}">⚔${atk}</span><span class="hp">♥${u.hp}</span></div>`;
+      el.innerHTML = `<div class="u-name">${esc(u.name)}${d.text && !u.muted ? ' ✦' : ''}</div><div class="u-icon">${u.icon}</div>
+        <div class="u-kw">${kw}</div><div class="u-stats"><span class="atk${atk > u.atk ? ' boosted' : ''}">⚔${atk}</span><span class="hp">♥${u.hp}</span></div>
+        ${u.auto ? '<div class="u-auto"><i></i></div>' : ''}
+        ${tIdx >= 0 ? `<div class="u-tnum">${KEYS[tIdx]}</div>` : ''}
+        ${aimed ? '<div class="u-aim">🎯</div>' : ''}`;
       el.title = UI.cardTip(d) + (u.guard && u.spent ? '\n（このフェーズは既に攻撃を受け止めた）' : '');
     });
   }
@@ -259,6 +387,7 @@
         badge: chk.ok ? (sac || (full ? `⚠${p.field[0].name}と入替` : '')) : chk.reason,
       });
       el.classList.add(chk.ok ? 'playable' : 'disabled');
+      if (B.targeting && B.targeting.idx === i) el.classList.add('selecting');
       el.onclick = () => tryPlay(i);
       box.appendChild(el);
     });
@@ -305,6 +434,8 @@
 
   function init() {
     document.addEventListener('keydown', onKey);
+    // 右クリックで対象選択をキャンセル
+    $('#screen-battle').addEventListener('contextmenu', (e) => { if (B.targeting) { e.preventDefault(); cancelTargeting(); } });
     $('#btn-pause').onclick = togglePause;
   }
 

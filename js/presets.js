@@ -29,7 +29,7 @@
       key: 'control', name: '沈黙の檻（妨害）',
       desc: '打ち消し・封印・手札破壊で相手に何もさせず、棘と吸血でじわじわ削る。',
       cards: {
-        counter: 4, finalhour: 2, reflect: 2, chains: 2, mindbreak: 2, curse: 3, execute: 3, storm: 2, timestop: 2,
+        counter: 4, finalhour: 2, reflect: 2, chains: 2, mindthief: 2, curse: 3, execute: 3, banish: 2, timestop: 2,
         manathorn: 3, silencer: 2, shieldman: 3, golem: 3, bat: 3, heal: 2, insight: 2,
       },
     },
@@ -37,7 +37,7 @@
       key: 'grave', name: '死者の行軍（墓地）',
       desc: '墓地を肥やして屍の巨人を安く呼び、倒れても倒れても蘇る。',
       cards: {
-        gravekid: 4, whisper: 4, bonesoldier: 4, ghoul: 4, wraith: 3, gravelord: 2, necromancer: 4,
+        gravekid: 4, whisper: 2, foresee: 2, bonesoldier: 4, ghoul: 4, wraith: 3, gravelord: 2, necromancer: 4,
         corpsegiant: 3, underworld: 3, archlich: 2, altar: 3, charge: 2, reaper: 2,
       },
     },
@@ -85,8 +85,8 @@
       key: 'discard', name: '狂気の宴（捨て札）',
       desc: '手札を捨てては引き直し、捨てられて目覚める魔神と霊で押し寄せる。墓地が溜まれば終末の詠唱。',
       cards: {
-        ashbook: 4, impulse: 4, frenzy: 2, possessed: 4, cremate: 3, madprophet: 3, fetish: 2,
-        ragespirit: 4, flamedemon: 3, lifeprice: 2, apocalypse: 2, greedy: 3, bolt: 2, whisper: 2,
+        ashbook: 2, sift: 2, impulse: 4, frenzy: 2, possessed: 4, pyre: 2, cremate: 1, madprophet: 3, fetish: 2,
+        ragespirit: 4, flamedemon: 3, lifeprice: 2, apocalypse: 2, greedy: 1, madhound: 2, bolt: 2, whisper: 2,
       },
     },
     {
@@ -95,6 +95,31 @@
       cards: {
         lamb: 4, soulvessel: 3, bloodpriest: 4, feast: 3, deathcaller: 3, bonecolossus: 3, abysslord: 3,
         bonesoldier: 4, wolfmother: 3, reinforce: 3, colossusseal: 2, charge: 3, duel: 2,
+      },
+    },
+    // ── テーマをまたぐ混成デッキ（シナジーの見本） ──
+    {
+      key: 'machine', name: '鋼の歯車（自律×成長）',
+      desc: '自力で攻撃する番犬や戦獣を力の付与で強化。強化されるたびに攻撃する育つ獣で連鎖させる。',
+      cards: {
+        watchdog: 4, rustgolem: 2, warbeast: 3, skyknight: 3, growbeast: 3, empower: 4, tamer: 3,
+        growthsong: 3, seedling: 3, nightpact: 2, shieldman: 3, insight: 3, sift: 2, heroic: 2,
+      },
+    },
+    {
+      key: 'cycle', name: '血と癒しの円環（代償×回復）',
+      desc: '体力を払うたびに血の猟犬が噛みつき、回復するたびに祝福の巫女が敵を焼く。失って、取り戻して、殴る。',
+      cards: {
+        bloodhound: 4, priestess: 4, nightpact: 3, bat: 3, bloodpact: 4, painpact: 3, cursedblade: 3,
+        laststand: 2, heal: 3, lifedrain: 3, vampirelord: 2, bloodblade: 3, desperate: 3,
+      },
+    },
+    {
+      key: 'echo', name: '反響する英雄譚（召喚時効果）',
+      desc: '反響の竪琴弾きで召喚時効果を2回発動。送還で手札に戻して、もう一度使い回す。',
+      cards: {
+        echoer: 4, firerat: 4, sharpshooter: 4, wolfmother: 3, librarian: 2, imp: 3, tamer: 2, archon: 2,
+        bounce: 3, charge: 3, snipe: 2, insight: 2, packhunter: 3, drop: 3,
       },
     },
   ];
