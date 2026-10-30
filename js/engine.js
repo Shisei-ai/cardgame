@@ -17,6 +17,12 @@
  *   onPhase      フェーズ開始時
  *   onAllyPlay   自分がカードを使った時       onEnemyPlay  相手がカードを使った時
  *   onBlock      守護としてクリーチャーの攻撃を受け止めた時
+ *   onAllyDiscard 自分がカードを捨てた時
+ *
+ * ■ カード自体の能力
+ *   onDiscard    このカードが手札から捨てられた時（狂気）
+ *   sacCost      使うときに味方クリーチャーをこの数だけ破壊する（生贄）。弱い順（トークン優先）に自動で選ぶ
+ *   noAttack     召喚時に攻撃しない（鈍重）
  *
  * ■ 守護は1フェーズに1回
  *   守護が攻撃を受け止められるのは、1フェーズにつき1回まで（フェーズ開始時に回復）。
@@ -126,6 +132,9 @@
         spellDiscount: 0,   // 次に使う呪文のコスト軽減量
         spellsThisPhase: 0, // このフェーズに使った呪文の数
         lastSpell: null,    // 最後に使った呪文のID（秘術の模倣用）
+        skipDraw: 0,        // 次のフェーズ開始時に引く枚数を減らす（禁断の知識など）
+        manaDebt: 0,        // 次のフェーズ開始時に失うマナ（魔力の前借り）
+        lastSacrificed: [], // 直前に生贄にしたクリーチャー（死の呼び手などが参照）
         stats: { damageDealt: 0, cardsPlayed: 0, countered: 0, played: {} },
       };
     }
@@ -214,9 +223,17 @@
       for (const p of this.players) {
         p.maxMana = Math.min(this.cfg.maxManaCap, p.maxMana + 1);
         p.mana = Math.max(p.mana, p.maxMana); // 余ったマナは持ち越さず最大値まで回復（雫などで超過している分は残す）
+        if (p.manaDebt) {
+          this.log(`${p.name}は前借りしたマナを${p.manaDebt}返済`, 'info', p.index);
+          p.mana = Math.max(0, p.mana - p.manaDebt);
+          p.manaDebt = 0;
+        }
         p.spellsThisPhase = 0;
         p.field.forEach((u) => { u.spent = false; });
-        this.draw(p, this.cfg.phaseDraw);
+        const n = Math.max(0, this.cfg.phaseDraw - p.skipDraw);
+        if (p.skipDraw) this.log(`${p.name}のドローが${this.cfg.phaseDraw - n}枚減った`, 'info', p.index);
+        p.skipDraw = 0;
+        this.draw(p, n);
       }
       // フェーズ開始時に誘発する能力
       for (const p of this.players) {
@@ -264,6 +281,7 @@
       if (p.silence > 0) return { ok: false, reason: '封印中' };
       if (p.mana < this.costOf(p, id)) return { ok: false, reason: 'マナ不足' };
       if (c.hpCost && p.hp <= c.hpCost) return { ok: false, reason: '体力不足' };
+      if (c.sacCost && p.field.length < c.sacCost) return { ok: false, reason: `生贄が${c.sacCost}体必要` };
       if (this.castOf(p, id) > 0 && p.casting) return { ok: false, reason: '詠唱中' };
       if (c.canUse && !c.canUse(this, p, this.opp(p))) return { ok: false, reason: c.needText || '条件未達' };
       return { ok: true, reason: '' };
@@ -282,6 +300,7 @@
       p.hand.splice(idx, 1);
       p.mana -= cost;
       if (c.hpCost) this.loseLife(p, c.hpCost, `【${c.name}】の代償`);
+      if (c.sacCost) this._paySacrifice(p, c);
       // 「次に使う〜」系の効果を消費
       p.instantNext = false;
       if (isSpell(c)) {
@@ -357,7 +376,7 @@
       this.log(`${p.name}：【${c.name}】${c.token ? '生成' : '召喚'}`, 'resolve', p.index);
       this._emit({ type: 'summon', player: p.index, unit });
       if (c.onSummon) c.onSummon(this, p, op, unit);
-      if (opts.attack !== false) {
+      if (opts.attack !== false && !c.noAttack) {
         this.attack(p, unit);
         if (unit.double) this.attack(p, unit);
       }
@@ -566,14 +585,57 @@
       this._bump();
     }
 
-    discardRandom(p, n) {
-      for (let i = 0; i < n && p.hand.length; i++) {
-        const idx = Math.floor(this.rand() * p.hand.length);
-        const id = p.hand.splice(idx, 1)[0];
-        p.grave.push(id);
-        this.log(`${p.name}は【${Cards.get(id).name}】を捨てた`, 'info', p.index);
-      }
+    /**
+     * 手札の idx 番目を捨てる。全ての「捨てる」効果はここを通る。
+     * 捨てたカードの【狂気】（onDiscard）や、場の「捨てた時」の能力を誘発する。
+     */
+    discard(p, idx) {
+      const id = p.hand.splice(idx, 1)[0];
+      if (id == null) return null;
+      const c = Cards.get(id);
+      p.grave.push(id);
+      this.log(`${p.name}は【${c.name}】を捨てた`, 'info', p.index);
+      this._emit({ type: 'discard', player: p.index, card: c });
+      const op = this.opp(p);
+      for (const u of [...p.field]) { const d = Cards.get(u.id); if (d.onAllyDiscard) d.onAllyDiscard(this, p, op, u, c); }
+      if (c.onDiscard) c.onDiscard(this, p, op);
+      this._cleanup();
       this._bump();
+      return c;
+    }
+
+    /** 手札からランダムに n 枚捨てる。捨てたカードの配列を返す */
+    discardRandom(p, n) {
+      const out = [];
+      for (let i = 0; i < n && p.hand.length; i++) {
+        const c = this.discard(p, Math.floor(this.rand() * p.hand.length));
+        if (c) out.push(c);
+      }
+      return out;
+    }
+
+    /** 【狂気】用：捨てられたカードを墓地から取り出して、コストなしで召喚する */
+    summonFromGrave(p, id) {
+      const i = p.grave.lastIndexOf(id);
+      if (i < 0) return null;
+      p.grave.splice(i, 1);
+      this.log(`${p.name}：【${Cards.get(id).name}】が狂気に駆られて現れた！`, 'resolve', p.index);
+      return this.summon(p, id);
+    }
+
+    /** 生贄に選ばれるクリーチャー（弱い順。トークンを優先） */
+    sacrificeTargets(p, n) {
+      return [...p.field]
+        .sort((a, b) => (b.token ? 1 : 0) - (a.token ? 1 : 0) || (a.atk + a.hp) - (b.atk + b.hp))
+        .slice(0, n);
+    }
+
+    _paySacrifice(p, c) {
+      const victims = this.sacrificeTargets(p, c.sacCost);
+      p.lastSacrificed = victims.map((u) => ({ name: u.name, atk: this.atkOf(p, u), hp: u.hp, id: u.id }));
+      this.log(`${p.name}：【${c.name}】の生贄に ${victims.map((u) => u.name).join('、')}`, 'info', p.index);
+      victims.forEach((u) => { u.hp = 0; u.undying = false; });
+      this._cleanup();
     }
 
     // ───────────── 内部処理 ─────────────

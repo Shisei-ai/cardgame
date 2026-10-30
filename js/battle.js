@@ -180,6 +180,8 @@
     if (p.shield > 0) st.push(`<span class="status shield">🔰防壁 ${p.shield}</span>`);
     if (p.instantNext) st.push('<span class="status haste">💫次は即時詠唱</span>');
     if (p.spellDiscount) st.push(`<span class="status haste">📚次の呪文-${p.spellDiscount}</span>`);
+    if (p.manaDebt) st.push(`<span class="status curse">💸次フェーズ マナ-${p.manaDebt}</span>`);
+    if (p.skipDraw) st.push(`<span class="status curse">📓次フェーズ ドロー-${p.skipDraw}</span>`);
     $('#pbar-' + p.index).innerHTML = `
       <span class="pname">${esc(p.name)}</span>
       <div class="hpbox"><div class="hpfill" style="width:${hpPct}%"></div><div class="hptext">♥ ${Math.max(0, p.hp)} / ${g.cfg.startHP}</div></div>
@@ -249,10 +251,12 @@
       const c = Cards.get(id);
       const chk = g.canPlay(ME, i);
       // 場が満杯の時にクリーチャーを出すと、一番古い味方が倒れることを警告
-      const full = chk.ok && c.type === 'creature' && p.field.length >= g.cfg.fieldLimit;
+      const full = chk.ok && c.type === 'creature' && !c.sacCost && p.field.length >= g.cfg.fieldLimit;
+      // 生贄になる味方を事前に知らせる
+      const sac = chk.ok && c.sacCost ? '🔪' + g.sacrificeTargets(p, c.sacCost).map((u) => u.name).join('・') : '';
       const el = UI.cardEl(c, {
         key: KEYS[i], cost: g.costOf(p, id), cast: g.castOf(p, id),
-        badge: chk.ok ? (full ? `⚠${p.field[0].name}と入替` : '') : chk.reason,
+        badge: chk.ok ? (sac || (full ? `⚠${p.field[0].name}と入替` : '')) : chk.reason,
       });
       el.classList.add(chk.ok ? 'playable' : 'disabled');
       el.onclick = () => tryPlay(i);

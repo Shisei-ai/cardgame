@@ -74,6 +74,12 @@
       for (const h of playable) {
         if (h.card.reactive) continue;
         let score = this.score(h.card, me, op);
+        // 生贄にする味方の価値を差し引く（遺言持ちやトークンは安い）
+        if (h.card.sacCost) {
+          for (const u of g.sacrificeTargets(me, h.card.sacCost)) {
+            score -= u.token ? 0.3 : (g.atkOf(me, u) + u.hp) * 0.45 - (Cards.get(u.id).onDeath ? 2 : 0);
+          }
+        }
         if (score <= 0) continue;
         const cost = g.costOf(me, h.card.id);
         // 打ち消し用マナを残せなくなる場合は、よほど価値が高くない限り見送る
@@ -97,9 +103,10 @@
     score(card, me, op) {
       const g = this.g;
       if (card.type === 'creature') {
-        let v = card.atk * (card.double ? 2 : 1) + card.hp * 0.5;
+        // 鈍重（召喚時に攻撃しない）は、場に残る価値だけで評価する
+        let v = card.noAttack ? card.atk * 0.5 + card.hp * 0.5 : card.atk * (card.double ? 2 : 1) + card.hp * 0.5;
         // 敵に守護がいる場合、召喚時の攻撃は守護に受け止められる（潜伏は除く）
-        const guards = card.stealth ? [] : g.readyGuards(op);
+        const guards = card.stealth || card.noAttack ? [] : g.readyGuards(op);
         if (guards.length) {
           const t = guards.reduce((a, b) => (b.hp > a.hp ? b : a));
           const kills = card.atk - (t.armor || 0) >= t.hp;
