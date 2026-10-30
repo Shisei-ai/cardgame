@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CHRONO DUEL</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== タイトル ===== -->
+  <section id="screen-title" class="screen active">
+    <div class="title-box">
+      <h1>CHRONO DUEL</h1>
+      <p class="subtitle">同時詠唱デッキ構築カードバトル</p>
+      <div class="menu">
+        <button class="btn primary" data-go="setup">対戦する</button>
+        <button class="btn" data-go="builder">デッキ構築</button>
+        <button class="btn" data-go="rules">遊び方</button>
+      </div>
+      <p class="version">prototype v0.1</p>
+    </div>
+  </section>
+
+  <!-- ===== 対戦準備 ===== -->
+  <section id="screen-setup" class="screen">
+    <div class="panel narrow">
+      <h2>対戦準備</h2>
+      <label>あなたのデッキ <select id="setup-my-deck"></select></label>
+      <label>CPUのデッキ <select id="setup-cpu-deck"></select></label>
+      <label>CPUの強さ <select id="setup-level"></select></label>
+      <p id="setup-error" class="error"></p>
+      <div class="row">
+        <button class="btn" data-go="title">戻る</button>
+        <button class="btn primary" id="btn-start">対戦開始</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== デッキ構築 ===== -->
+  <section id="screen-builder" class="screen">
+    <div class="builder">
+      <div class="builder-pool">
+        <div class="builder-head">
+          <h2>カード一覧</h2>
+          <div id="pool-filter" class="tabs"></div>
+        </div>
+        <p class="hint">クリックで追加 ／ 右クリックで削除</p>
+        <div id="pool" class="card-grid"></div>
+      </div>
+      <div class="builder-deck">
+        <div class="row">
+          <select id="deck-select"></select>
+          <button class="btn small" id="deck-new">新規</button>
+        </div>
+        <input id="deck-name" type="text" maxlength="24" placeholder="デッキ名">
+        <div id="deck-count" class="deck-count"></div>
+        <div id="deck-curve" class="curve"></div>
+        <ul id="deck-list" class="deck-list"></ul>
+        <p id="deck-error" class="error"></p>
+        <div class="row">
+          <button class="btn small" id="deck-clear">全て外す</button>
+          <button class="btn small danger" id="deck-delete">削除</button>
+          <button class="btn small primary" id="deck-save">保存</button>
+        </div>
+        <button class="btn" data-go="title">タイトルへ</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 遊び方 ===== -->
+  <section id="screen-rules" class="screen">
+    <div class="panel rules">
+      <h2>遊び方</h2>
+      <h3>勝利条件</h3>
+      <p>相手の体力（30）を0にすれば勝ち。制限時間<b>3分</b>が過ぎたら、体力が多い方の勝ちです。</p>
+      <h3>フェーズとマナ</h3>
+      <p>ターンはありません。あなたとCPUは<b>同時に</b>カードを使います。10秒ごとに新しいフェーズが始まり、</p>
+      <ul>
+        <li>最大マナが1増え（上限10）、マナが最大値まで回復</li>
+        <li>カードを2枚引く</li>
+      </ul>
+      <p>余ったマナは次のフェーズに持ち越せません。出し惜しみせず使いましょう。</p>
+      <h3>詠唱 ― このゲームの核心</h3>
+      <p>カードには<b>詠唱時間</b>（⏱）があり、使ってから発動まで数秒かかります。詠唱中のカードは相手から丸見えで、<b>一度に詠唱できるのは1枚だけ</b>です。</p>
+      <p>相手の詠唱を見て【打ち消しの印】で無効化する、【詠唱妨害】で遅らせる、【防壁】で受け止める……。<b>【瞬間】</b>のカードは詠唱なしで即発動し、他の詠唱中でも使えます。</p>
+      <h3>クリーチャーと攻撃</h3>
+      <ul>
+        <li>クリーチャーは<b>召喚した瞬間に1回</b>相手本体を攻撃します。</li>
+        <li>その後は場に残り、【突撃命令】などのカード効果でまた攻撃できます。</li>
+        <li><b>守護</b>を持つ敵がいると、攻撃はそちらに吸われ、互いに攻撃力分のダメージを与え合います。</li>
+        <li><b>潜伏</b>は守護を無視、<b>吸血</b>は与えたダメージ分回復します。</li>
+      </ul>
+      <h3>操作</h3>
+      <ul>
+        <li>手札をクリック、または数字キー <kbd>1</kbd>〜<kbd>9</kbd>, <kbd>0</kbd> で使用</li>
+        <li><kbd>Esc</kbd> で一時停止</li>
+      </ul>
+      <h3>デッキ構築</h3>
+      <p>デッキはちょうど<b>40枚</b>。同じカードは<b>4枚まで</b>。速攻で押し切るも、コンボで圧倒するも、妨害で何もさせないのも自由です。</p>
+      <button class="btn" data-go="title">戻る</button>
+    </div>
+  </section>
+
+  <!-- ===== 対戦 ===== -->
+  <section id="screen-battle" class="screen">
+    <div class="battle">
+      <div class="board">
+        <div class="side side-op" id="side-1">
+          <div class="pbar" id="pbar-1"></div>
+          <div class="castbar" id="cast-1"></div>
+          <div class="field" id="field-1"></div>
+        </div>
+        <div class="midline">
+          <div id="phase-label"></div>
+          <div class="phase-gauge"><div id="phase-fill"></div></div>
+        </div>
+        <div class="side side-me" id="side-0">
+          <div class="field" id="field-0"></div>
+          <div class="castbar" id="cast-0"></div>
+          <div class="pbar" id="pbar-0"></div>
+        </div>
+        <div class="hand" id="hand"></div>
+      </div>
+      <aside class="sidebar">
+        <div class="clock" id="clock">3:00</div>
+        <div class="log" id="log"></div>
+        <button class="btn small" id="btn-pause">一時停止 (Esc)</button>
+      </aside>
+    </div>
+    <div class="toast" id="toast"></div>
+  </section>
+
+  <!-- ===== オーバーレイ（一時停止・結果） ===== -->
+  <div id="overlay" class="overlay hidden">
+    <div class="panel narrow">
+      <h2 id="overlay-title"></h2>
+      <div id="overlay-body"></div>
+      <div class="row" id="overlay-buttons"></div>
+    </div>
+  </div>
+</div>
+
+<script src="js/cards.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/presets.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/ui-common.js"></script>
+<script src="js/builder.js"></script>
+<script src="js/battle.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
