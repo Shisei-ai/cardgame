@@ -152,6 +152,11 @@
         lastSpell: null,    // 最後に使った呪文のID（秘術の模倣用）
         skipDraw: 0,        // 次のフェーズ開始時に引く枚数を減らす（禁断の知識など）
         manaDebt: 0,        // 次のフェーズ開始時に失うマナ（魔力の前借り）
+        bonusDraw: 0,       // 次のフェーズ開始時に追加で引く枚数（投資）
+        bonusMana: 0,       // 次のフェーズ開始時に追加で得るマナ（貯蓄）
+        regen: 0,           // 残り何フェーズ、フェーズ開始時に回復するか（再生の祈り）
+        regenAmount: 0,     // その回復量
+        phaseDiscount: 0,   // このフェーズ中、コスト1以上のカードのコストを減らす量（最低1）（効率化）
         lastSacrificed: [], // 直前に生贄にしたクリーチャー（死の呼び手などが参照）
         human: false,       // 人間が操作するか（効果の途中での選択を画面に任せる）
         chooser: null,      // AIの選択関数 (kind, options, count, req) => 選んだ番号の配列
@@ -172,6 +177,7 @@
         if (d.auraCost && !u.muted) cost += d.auraCost(this, p, c);
       }
       if (isSpell(c) && p.spellDiscount) cost -= p.spellDiscount;
+      if (p.phaseDiscount && c.cost >= 1) cost = Math.max(1, cost - p.phaseDiscount);
       return Math.max(0, cost);
     }
 
@@ -316,12 +322,21 @@
           p.mana = Math.max(0, p.mana - p.manaDebt);
           p.manaDebt = 0;
         }
+        if (p.bonusMana) {
+          this.log(`${p.name}は蓄えたマナを${p.bonusMana}得た`, 'info', p.index);
+          p.mana += p.bonusMana;
+          p.bonusMana = 0;
+        }
         p.spellsThisPhase = 0;
+        p.phaseDiscount = 0;
         p.field.forEach((u) => { u.spent = false; });
-        const n = Math.max(0, this.cfg.phaseDraw - p.skipDraw);
-        if (p.skipDraw) this.log(`${p.name}のドローが${this.cfg.phaseDraw - n}枚減った`, 'info', p.index);
+        const n = Math.max(0, this.cfg.phaseDraw - p.skipDraw + p.bonusDraw);
+        if (p.skipDraw) this.log(`${p.name}のドローが${p.skipDraw}枚減った`, 'info', p.index);
+        if (p.bonusDraw) this.log(`${p.name}のドローが${p.bonusDraw}枚増えた`, 'info', p.index);
         p.skipDraw = 0;
+        p.bonusDraw = 0;
         this.draw(p, n);
+        if (p.regen > 0) { p.regen--; this.heal(p, p.regenAmount); }
       }
       // フェーズ開始時に誘発する能力
       for (const p of this.players) this._fire(p, 'onPhase');

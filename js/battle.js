@@ -293,6 +293,10 @@
     if (p.spellDiscount) st.push(`<span class="status haste">📚次の呪文-${p.spellDiscount}</span>`);
     if (p.manaDebt) st.push(`<span class="status curse">💸次フェーズ マナ-${p.manaDebt}</span>`);
     if (p.skipDraw) st.push(`<span class="status curse">📓次フェーズ ドロー-${p.skipDraw}</span>`);
+    if (p.bonusDraw) st.push(`<span class="status haste">📈次フェーズ ドロー+${p.bonusDraw}</span>`);
+    if (p.bonusMana) st.push(`<span class="status haste">🐷次フェーズ マナ+${p.bonusMana}</span>`);
+    if (p.regen) st.push(`<span class="status haste">🌿再生 あと${p.regen}回</span>`);
+    if (p.phaseDiscount) st.push(`<span class="status haste">⚙️このフェーズ コスト-${p.phaseDiscount}</span>`);
     $('#pbar-' + p.index).innerHTML = `
       <span class="pname">${esc(p.name)}</span>
       <div class="hpbox"><div class="hpfill" style="width:${hpPct}%"></div><div class="hptext">♥ ${Math.max(0, p.hp)} / ${g.cfg.startHP}</div></div>

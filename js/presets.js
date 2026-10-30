@@ -14,7 +14,7 @@
       desc: '軽いクリーチャーと火力で一気に押し切る。詠唱が短く、妨害されにくい。',
       cards: {
         squire: 4, firerat: 4, wolf: 4, raider: 4, imp: 4, assassin: 3, bannerman: 3,
-        bolt: 4, charge: 3, duel: 2, drop: 2, quietblade: 3,
+        bolt: 4, charge: 3, duel: 2, manacrystal: 2, quietblade: 3,
       },
     },
     {
@@ -22,7 +22,7 @@
       desc: 'トークンで場を埋め、旗手や群れの長でまとめて殴る。',
       cards: {
         squire: 4, bannerman: 4, wolfmother: 4, herald: 3, packleader: 4, librarian: 3,
-        reinforce: 4, charge: 4, warcry: 2, insight: 3, drop: 3, moonwolf: 2,
+        reinforce: 4, charge: 4, warcry: 2, refill: 2, manacrystal: 1, drop: 3, moonwolf: 2,
       },
     },
     {
@@ -30,7 +30,7 @@
       desc: '打ち消し・封印・手札破壊で相手に何もさせず、棘と吸血でじわじわ削る。',
       cards: {
         counter: 4, finalhour: 2, reflect: 2, chains: 2, mindthief: 2, curse: 3, execute: 3, banish: 2, timestop: 2,
-        manathorn: 3, silencer: 2, shieldman: 3, golem: 3, bat: 3, heal: 2, insight: 2,
+        manathorn: 3, silencer: 2, shieldman: 3, golem: 3, bat: 3, heal: 2, blessing: 2,
       },
     },
     {
@@ -46,7 +46,7 @@
       desc: '見習い魔導士を置いて呪文を連打。瞬唱と模倣で詠唱を踏み倒す。',
       cards: {
         apprentice: 4, chantmaster: 3, arcane: 3, quickcast: 3, mimic: 3, torrent: 3, spark: 4,
-        bolt: 4, grimoire: 3, insight: 3, counter: 3, archmage: 2, spellmastery: 2,
+        bolt: 4, grimoire: 3, insightful: 3, counter: 3, archmage: 2, spellmastery: 2,
       },
     },
     {
@@ -62,7 +62,7 @@
       desc: '守護を並べて耐え、茨の盾兵と城壁砲で守りを攻撃に変える。',
       cards: {
         stonewall: 4, shieldman: 4, ironwarden: 4, thornguard: 4, golem: 3, castellan: 3,
-        rampartcannon: 4, siege: 3, barrier: 3, heal: 3, insight: 3, counter: 2,
+        rampartcannon: 4, siege: 3, barrier: 3, heal: 3, healer: 2, greatheal: 1, counter: 2,
       },
     },
     {
@@ -70,14 +70,14 @@
       desc: '序盤に種をまき、時間とともに育った軍勢で押し潰す。',
       cards: {
         seedling: 4, spirittree: 3, proudgiant: 2, forestking: 3, shieldman: 3, librarian: 3,
-        growthsong: 3, gigantify: 4, duel: 3, charge: 3, resonance: 3, insight: 3, heal: 3,
+        growthsong: 3, gigantify: 4, duel: 3, charge: 3, resonance: 3, manaspring: 2, regenprayer: 1, heal: 3,
       },
     },
     {
       key: 'ramp', name: '巨獣の目覚め（巨獣）',
       desc: 'マナを伸ばし、古代の呼び声や卵で巨獣のコストを踏み倒す。一騎討ちで巨獣に何度も殴らせる。',
       cards: {
-        resonance: 3, earthpulse: 4, drop: 3, beastmaster: 3, egg: 3, ancientcall: 3,
+        resonance: 3, earthpulse: 2, leyline: 2, savings: 2, drop: 1, beastmaster: 3, egg: 3, ancientcall: 3,
         quaker: 2, titan: 2, dragon: 3, knight: 3, shieldman: 4, manadebt: 2, duel: 3, charge: 2,
       },
     },
@@ -103,7 +103,7 @@
       desc: '自力で攻撃する番犬や戦獣を力の付与で強化。強化されるたびに攻撃する育つ獣で連鎖させる。',
       cards: {
         watchdog: 4, rustgolem: 2, warbeast: 3, skyknight: 3, growbeast: 3, empower: 4, tamer: 3,
-        growthsong: 3, seedling: 3, nightpact: 2, shieldman: 3, insight: 3, sift: 2, heroic: 2,
+        growthsong: 3, seedling: 3, nightpact: 2, shieldman: 3, investment: 3, sift: 2, heroic: 2,
       },
     },
     {
@@ -119,7 +119,7 @@
       desc: '反響の竪琴弾きで召喚時効果を2回発動。送還で手札に戻して、もう一度使い回す。',
       cards: {
         echoer: 4, firerat: 4, sharpshooter: 4, wolfmother: 3, librarian: 2, imp: 3, tamer: 2, archon: 2,
-        bounce: 3, charge: 3, snipe: 2, insight: 2, packhunter: 3, drop: 3,
+        bounce: 3, charge: 3, snipe: 2, refill: 2, packhunter: 3, drop: 3,
       },
     },
   ];

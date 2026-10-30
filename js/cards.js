@@ -1003,6 +1003,100 @@
       ai: (g, me) => (me.deck.length <= 4 ? 4 : 0.5) },
     { id: 'recruitguard', name: '見習い衛兵', type: 'creature', cost: 1, cast: 0.8, atk: 1, hp: 2, icon: '🪖',
       guard: true, noAttack: true, tier: 'weak', arch: ['fortress'], text: '' },
+
+    // ╔══════════════════ v0.5 追加分：汎用カード ══════════════════╗
+    // どのデッキにも入るドロー・回復・マナ。「すぐ効く／後から効く／状況で効く／体に付く／まとめて効く」で作り分けている
+
+    // ═════ ドロー ═════
+    { id: 'cycle', name: '入れ替え', type: 'draw', cost: 0, cast: 0.3, icon: '🔄',
+      tier: 'weak', arch: ['generic'], text: '手札から1枚を選んで山札の一番下に戻し、カードを1枚引く。',
+      canUse: (g, me) => me.hand.length >= 2, needText: '戻す手札がない',
+      effect(g, me) {
+        g.choose(me, { kind: 'discard', options: me.hand.slice(), count: 1, prompt: '山札の下に戻すカードを選んでください' }, ([i]) => {
+          if (i != null) { const id = me.hand.splice(i, 1)[0]; me.deck.unshift(id); g.log(`${me.name}は1枚を山札の下に戻した`, 'info', me.index); }
+          g.draw(me, 1);
+        });
+      },
+      ai: (g, me) => (me.hand.some((id) => g.costOf(me, id) > me.maxMana) ? 1.5 : 0) },
+    { id: 'oldmap', name: '古地図', type: 'draw', cost: 2, cast: 1.5, icon: '🗺️',
+      tier: 'weak', arch: ['generic'], text: 'カードを1枚引く。手札が2枚以下なら、さらに1枚引く。',
+      effect(g, me) { g.draw(me, me.hand.length <= 2 ? 2 : 1); }, ai: (g, me) => (me.hand.length <= 3 ? 2 : 0.5) },
+    { id: 'insightful', name: '閃き', type: 'draw', cost: 1, cast: 0, icon: '💡',
+      tier: 'niche', arch: ['generic'], text: '【瞬間】カードを1枚引く。',
+      effect(g, me) { g.draw(me, 1); },
+      ai: (g, me) => (me.hand.length <= 4 ? 2.2 : 0.6) },
+    { id: 'investment', name: '投資', type: 'draw', cost: 1, cast: 1.0, icon: '📈',
+      tier: 'niche', arch: ['generic'], text: '次のフェーズ開始時、追加でカードを3枚引く。',
+      canUse: (g, me) => me.bonusDraw === 0, needText: '効果が残っている',
+      effect(g, me) { me.bonusDraw = 3; },
+      ai: (g, me) => (g.cfg.matchTime - g.time > g.cfg.phaseTime && me.hand.length <= 6 ? 3 : 0) },
+    { id: 'refill', name: '補充', type: 'draw', cost: 1, cast: 1.0, icon: '📥',
+      tier: 'strong', arch: ['generic'], text: '手札が5枚になるまでカードを引く（最大4枚）。',
+      canUse: (g, me) => me.hand.length <= 4, needText: '手札が5枚以上',
+      effect(g, me) { g.draw(me, Math.min(4, Math.max(0, 5 - me.hand.length))); },
+      ai: (g, me) => Math.min(4, 4 - me.hand.length) * 1.4 },
+    { id: 'archive', name: '大図書館', type: 'draw', cost: 5, cast: 2.5, icon: '🏛️',
+      tier: 'niche', arch: ['generic', 'ramp'], text: 'カードを5枚引く。',
+      effect(g, me) { g.draw(me, 5); }, ai: (g, me) => (me.hand.length <= 4 ? 5 : 0), threat: 5 },
+
+    // ═════ 回復 ═════
+    { id: 'bandage', name: '包帯', type: 'heal', cost: 0, cast: 1.5, icon: '🩹',
+      tier: 'weak', arch: ['generic'], text: '体力を2回復する。',
+      effect(g, me) { g.heal(me, 2); }, ai: (g, me) => (missingHp(g, me) >= 2 ? 1.5 : 0) },
+    { id: 'potion', name: '回復薬', type: 'heal', cost: 1, cast: 0, icon: '🧪',
+      tier: 'niche', arch: ['generic'], text: '【瞬間】体力を3回復する。',
+      effect(g, me) { g.heal(me, 3); }, ai: (g, me) => Math.min(missingHp(g, me), 3) - 1.2 },
+    { id: 'regenprayer', name: '再生の祈り', type: 'heal', cost: 2, cast: 1.0, icon: '🌿',
+      tier: 'niche', arch: ['generic', 'growth'], text: '次の3フェーズの間、フェーズ開始時に体力を3回復する。',
+      canUse: (g, me) => me.regen === 0, needText: '効果が残っている',
+      effect(g, me) { me.regen = 3; me.regenAmount = 3; },
+      ai: (g, me) => (missingHp(g, me) >= 6 && g.cfg.matchTime - g.time > 20 ? 4 : 0) },
+    { id: 'lifewell', name: '命の泉', type: 'heal', cost: 3, cast: 1.5, icon: '⛲',
+      tier: 'niche', arch: ['generic'], text: '相手との体力の差の半分だけ、体力を回復する（最低3）。',
+      effect(g, me, op) { g.heal(me, Math.max(3, Math.floor((op.hp - me.hp) / 2))); },
+      ai: (g, me, op) => Math.min(missingHp(g, me), Math.max(3, Math.floor((op.hp - me.hp) / 2))) - 1 },
+    { id: 'greatheal', name: '大いなる癒し', type: 'heal', cost: 5, cast: 2.5, icon: '💖',
+      tier: 'niche', arch: ['generic', 'fortress'], text: '体力を12回復する。',
+      effect(g, me) { g.heal(me, 12); }, ai: (g, me) => Math.min(missingHp(g, me), 12) * 0.7 - 2 },
+    { id: 'healer', name: '癒し手', type: 'creature', cost: 3, cast: 1.5, atk: 2, hp: 3, icon: '🧑‍⚕️',
+      tier: 'niche', arch: ['generic', 'fortress'], text: '召喚時、自分の体力を4回復する。',
+      onSummon(g, me) { g.heal(me, 4); }, aiBonus: (g, me) => Math.min(missingHp(g, me), 4) * 0.7 },
+
+    // ═════ マナ ═════
+    { id: 'channel', name: '魔力の集中', type: 'resource', cost: 0, cast: 0, icon: '🔹',
+      tier: 'weak', arch: ['generic'], text: '【瞬間】マナを1得る。',
+      effect(g, me) { g.addMana(me, 1); },
+      ai: (g, me) => (me.hand.some((id) => g.costOf(me, id) === me.mana + 1) ? 2 : 0) },
+    { id: 'manacrystal', name: 'マナ結晶', type: 'resource', cost: 0, cast: 0.5, icon: '💎',
+      tier: 'strong', arch: ['generic'], text: 'マナを1得て、カードを1枚引く。',
+      effect(g, me) { g.addMana(me, 1); g.draw(me, 1); }, ai: () => 2.5 },
+    { id: 'savings', name: '貯蓄', type: 'resource', cost: 1, cast: 1.0, icon: '🐷',
+      tier: 'niche', arch: ['generic', 'ramp'], text: '次のフェーズ開始時、マナを3得る。',
+      canUse: (g, me) => me.bonusMana === 0, needText: '効果が残っている',
+      effect(g, me) { me.bonusMana = 3; },
+      ai: (g, me) => (g.cfg.matchTime - g.time > g.cfg.phaseTime && me.hand.some((id) => g.costOf(me, id) > me.maxMana) ? 3.5 : 1) },
+    { id: 'efficiency', name: '効率化', type: 'resource', cost: 1, cast: 0.8, icon: '⚙️',
+      tier: 'niche', arch: ['generic', 'spell'], text: 'このフェーズ中、自分のコスト1以上のカードのコスト-1（最低1）。',
+      canUse: (g, me) => me.phaseDiscount === 0, needText: '効果が残っている',
+      effect(g, me) { me.phaseDiscount = 1; },
+      ai: (g, me) => (g.phaseTimer > 5 ? me.hand.filter((id) => get(id).cost >= 2).length * 0.8 - 0.5 : 0) },
+    { id: 'manaspring', name: '魔力の泉', type: 'creature', cost: 2, cast: 1.0, atk: 0, hp: 3, icon: '⛲',
+      noAttack: true, tier: 'niche', arch: ['generic', 'ramp'], text: 'フェーズ開始時、マナを1得る。',
+      onPhase(g, me) { g.addMana(me, 1); },
+      aiBonus: (g) => Math.max(0, (g.cfg.matchTime - g.time) / g.cfg.phaseTime) * 0.35 },
+    { id: 'merchant', name: '行商人', type: 'creature', cost: 2, cast: 1.0, atk: 1, hp: 2, icon: '🧳',
+      tier: 'niche', arch: ['generic', 'sacrifice'], text: '倒れた時、カードを1枚引き、マナを1得る。',
+      onDeath(g, me) { g.draw(me, 1); g.addMana(me, 1); }, aiBonus: () => 1.5 },
+    { id: 'leyline', name: '地脈の掌握', type: 'resource', cost: 3, cast: 2.0, icon: '🌋',
+      tier: 'strong', arch: ['generic', 'ramp'], text: '最大マナを1増やし、マナを最大値まで回復する。',
+      effect(g, me) { me.maxMana = Math.min(g.cfg.maxManaCap, me.maxMana + 1); me.mana = Math.max(me.mana, me.maxMana); g._bump(); },
+      ai: (g, me) => (me.hand.length >= 3 && g.phaseTimer > 4 ? Math.min(me.maxMana, 8) * 0.6 : 0) },
+
+    // ═════ まとめて効く ═════
+    { id: 'blessing', name: '天の恵み', type: 'heal', cost: 3, cast: 1.5, icon: '🌈',
+      tier: 'strong', arch: ['generic'], text: 'カードを2枚引き、体力を4回復し、マナを1得る。',
+      effect(g, me) { g.draw(me, 2); g.heal(me, 4); g.addMana(me, 1); },
+      ai: (g, me) => 3 + Math.min(missingHp(g, me), 4) * 0.4 + (me.hand.length <= 5 ? 1 : 0) },
   ];
 
   // ── トークン（カード効果で生成されるクリーチャー。デッキには入れられない） ──
