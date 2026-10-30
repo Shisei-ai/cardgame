@@ -7,6 +7,9 @@
  *   counterAt : この脅威度以上のカードなら打ち消しを使う
  *   reserve : 打ち消し用のマナを温存するか
  *   blunder : 判断をサボる確率（弱いAIほど大きい）
+ *
+ * カードごとの判断は cards.js の ai / aiBonus / react に書かれており、
+ * このファイルはそれらを比べて一番良い手を選ぶだけです。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./cards.js'));
@@ -41,7 +44,7 @@
       const g = this.g;
       const me = g.players[this.pi];
       const op = g.opp(me);
-      if (me.silence > 0) return;
+      if (me.silence > 0 || me.stun > 0) return;
 
       const playable = me.hand
         .map((id, i) => ({ i, card: Cards.get(id) }))
@@ -49,38 +52,34 @@
       if (!playable.length) return;
       if (this.L.blunder && g.rand() < this.L.blunder) return;
 
-      // ① 相手の詠唱への反応
+      // ① 相手の詠唱への反応（打ち消し・遅延・防壁など）
       if (op.casting && op.casting !== this.handledCast && g.time - op.casting.start >= this.L.react) {
         const threat = this.threat(op.casting.card);
-        const counter = playable.find((h) => h.card.id === 'counter');
-        if (counter && threat >= this.L.counterAt) {
-          this.handledCast = op.casting;
-          g.play(this.pi, counter.i);
-          return;
+        let best = null;
+        for (const h of playable) {
+          if (!h.card.react) continue;
+          const s = h.card.react(g, me, op, threat, this.L);
+          if (s > 0 && (!best || s > best.s)) best = { h, s };
         }
-        const jam = playable.find((h) => h.card.id === 'jam');
-        if (jam && threat >= this.L.counterAt - 1 && op.casting.remain < 1.2) {
+        if (best) {
           this.handledCast = op.casting;
-          g.play(this.pi, jam.i);
-          return;
-        }
-        const barrier = playable.find((h) => h.card.id === 'barrier');
-        if (barrier && threat >= 3 && (op.casting.card.type === 'attack' || op.casting.card.type === 'creature')) {
-          this.handledCast = op.casting;
-          g.play(this.pi, barrier.i);
+          g.play(this.pi, best.h.i);
           return;
         }
       }
 
       // ② 自分から仕掛ける
-      const reserveCost = this.L.reserve && me.hand.includes('counter') ? Cards.get('counter').cost : 0;
+      const reserveCost = this.reserveCost(me);
       let best = null;
       for (const h of playable) {
         if (h.card.reactive) continue;
         let score = this.score(h.card, me, op);
         if (score <= 0) continue;
+        const cost = g.costOf(me, h.card.id);
         // 打ち消し用マナを残せなくなる場合は、よほど価値が高くない限り見送る
-        if (reserveCost && me.mana - h.card.cost < reserveCost && score < 6) score *= 0.4;
+        if (reserveCost && me.mana - cost < reserveCost && score < 6) score *= 0.4;
+        // 体力を払うカードは、体力が少ないほど慎重に
+        if (h.card.hpCost) score -= h.card.hpCost * (me.hp <= 10 ? 1.2 : 0.25);
         // 少しだけ揺らぎを入れて単調さを防ぐ
         score += g.rand() * 0.5;
         if (!best || score > best.score) best = { h, score };
@@ -88,21 +87,53 @@
       if (best && best.score > 1) g.play(this.pi, best.h.i);
     }
 
+    /** 手札にある一番安い「打ち消し系」カードのコスト（温存用） */
+    reserveCost(me) {
+      if (!this.L.reserve) return 0;
+      const costs = me.hand.map(Cards.get).filter((c) => c.react && c.id !== 'barrier').map((c) => this.g.costOf(me, c.id));
+      return costs.length ? Math.min(...costs) : 0;
+    }
+
     score(card, me, op) {
-      if (card.ai) return card.ai(this.g, me, op);
+      const g = this.g;
       if (card.type === 'creature') {
-        // 敵に守護がいる場合、潜伏持ち以外は本体に届きにくい
-        const guarded = op.field.some((u) => u.guard) && !card.stealth;
-        let v = card.atk * (guarded ? 0.6 : 1) + card.hp * 0.5 + (card.guard ? 1.5 : 0);
-        if (card.onSummon) v += 1.5;
+        let v = card.atk * (card.double ? 2 : 1) + card.hp * 0.5;
+        // 敵に守護がいる場合、召喚時の攻撃は守護に受け止められる（潜伏は除く）
+        const guards = card.stealth ? [] : g.readyGuards(op);
+        if (guards.length) {
+          const t = guards.reduce((a, b) => (b.hp > a.hp ? b : a));
+          const kills = card.atk - (t.armor || 0) >= t.hp;
+          const dies = g.cfg.guardRetaliate && g.atkOf(op, t) - (card.armor || 0) >= card.hp;
+          if (dies && !kills) {
+            // 一方的に倒されるだけ…だが、守護を疲労させる「おとり」にはなる。
+            // 後続（他のクリーチャーや全体攻撃）が手札にあり、安いカードならおとりとして出す
+            const followers = me.hand.filter((id) => id !== card.id && (Cards.get(id).type === 'creature' || id === 'charge' || id === 'allout')).length;
+            v = followers && g.costOf(me, card.id) <= 2 ? 1.6 + Math.min(followers, 3) * 0.3 : 0.3;
+          }
+          else if (dies) v = (t.atk + t.hp) * 0.5;                  // 相討ち
+          else {
+            // 生き残る：場に残って後で攻撃でき、守護の「1フェーズ1回」も使わせられる
+            v = card.atk * 0.7 + card.hp * 0.4 + 0.8 + (kills ? (t.atk + t.hp) * 0.5 : 0);
+          }
+          if (card.pierce) v += Math.max(0, card.atk - t.hp);
+        }
+        if (card.guard) v += 1.5 + op.field.length * 0.5;
+        if (card.lifesteal) v += card.atk * 0.5;
+        if (card.aiBonus) v += card.aiBonus(g, me, op);
+        // 場が満杯なら一番古い味方を失う（遺言持ちならむしろ得）
+        if (me.field.length >= g.cfg.fieldLimit) {
+          const old = me.field[0];
+          v -= (g.atkOf(me, old) + old.hp) * 0.5 - (Cards.get(old.id).onDeath ? 2.5 : 0);
+        }
         return v;
       }
+      if (card.ai) return card.ai(g, me, op);
       return card.cost;
     }
 
     threat(card) {
       if (card.threat != null) return card.threat;
-      if (card.type === 'creature') return card.atk * 0.7 + card.hp * 0.3 + (card.onSummon ? 1 : 0);
+      if (card.type === 'creature') return card.atk * 0.7 * (card.double ? 2 : 1) + card.hp * 0.3 + (card.onSummon ? 1 : 0);
       return card.cost;
     }
   }

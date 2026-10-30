@@ -3,12 +3,27 @@
  *
  * ゲームは「時間」で進みます。update(dt) を呼ぶたびに dt 秒だけ時間が進み、
  *   ・詠唱中のカードの残り時間が減り、0になったら発動
- *   ・フェーズタイマーが0になったら次のフェーズ（マナ回復＋2枚ドロー）
+ *   ・フェーズタイマーが0になったら次のフェーズ（マナ回復＋2枚ドロー＋フェーズ開始時の効果）
  *   ・試合時間が尽きたら体力の多い方が勝ち
  * という処理が行われます。
  *
  * ブラウザでは毎フレーム実時間で update を呼び、
  * バランス検証用シミュレーター（tools/simulate.js）では 0.1 秒刻みで高速に回します。
+ *
+ * ■ クリーチャーの能力（cards.js に書く「フック」）
+ *   onSummon     召喚時（攻撃の前）          afterSummon  召喚時の攻撃の後
+ *   onDeath      このクリーチャーが倒れた時（遺言）
+ *   onAnyDeath   いずれかのクリーチャーが倒れた時
+ *   onPhase      フェーズ開始時
+ *   onAllyPlay   自分がカードを使った時       onEnemyPlay  相手がカードを使った時
+ *   onBlock      守護としてクリーチャーの攻撃を受け止めた時
+ *
+ * ■ 守護は1フェーズに1回
+ *   守護が攻撃を受け止められるのは、1フェーズにつき1回まで（フェーズ開始時に回復）。
+ *   安いクリーチャーで守護を使わせ、その隙に本命を通す…という駆け引きのためのルール。
+ *   auraAtk      場にいる間、他の味方の攻撃力を増やす数値
+ *   auraCost     場にいる間、自分のカードのコストを補正する関数
+ *   auraCast     場にいる間、自分のカードの詠唱時間に掛ける倍率を返す関数
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./cards.js'));
@@ -26,8 +41,10 @@
     startHand: 5,       // 初期手札
     phaseDraw: 2,       // フェーズ開始時に引く枚数
     handLimit: 10,      // 手札上限（超えて引いたカードは墓地へ）
-    fieldLimit: 5,      // 場に出せるクリーチャーの上限
+    fieldLimit: 5,      // 場に出せるクリーチャーの上限（満杯で召喚すると一番古い味方が倒れる）
     fatigue: 2,         // 山札切れで引こうとしたときのダメージ
+    shieldCap: 10,      // 防壁の上限
+    guardRetaliate: false, // 守護が攻撃を受け止めた時、攻撃してきたクリーチャーに反撃するか（反撃すると守護が強すぎた）
     deckSize: 40,       // デッキ枚数
     maxCopies: 4,       // 同名カードの上限枚数
   };
@@ -49,10 +66,14 @@
     const counts = {};
     list.forEach((id) => { counts[id] = (counts[id] || 0) + 1; });
     for (const id in counts) {
-      if (counts[id] > cfg.maxCopies) errors.push(`「${Cards.get(id).name}」が${cfg.maxCopies}枚を超えています`);
+      const c = Cards.find(id);
+      if (!c || c.token) { errors.push(`デッキに入れられないカードがあります（${id}）`); continue; }
+      if (counts[id] > cfg.maxCopies) errors.push(`「${c.name}」が${cfg.maxCopies}枚を超えています`);
     }
     return errors;
   }
+
+  const isSpell = (c) => c.type !== 'creature';
 
   class Game {
     /**
@@ -75,6 +96,7 @@
       this.logs = [];
       this.onEvent = null;    // 画面側が演出用に購読するコールバック
       this.uidSeq = 1;
+      this._cleaning = false;
       this.players = [0, 1].map((i) => this._makePlayer(i, opts.decks[i], (opts.names || [])[i]));
       this.players.forEach((p) => {
         this._shuffle(p.deck);
@@ -94,16 +116,68 @@
         hand: [],
         field: [],
         grave: [],
-        casting: null,  // { card, total, remain, start }
-        silence: 0,     // 残り封印時間（秒）
-        haste: 0,       // 残り加速時間（秒）
-        curse: 0,       // 残り呪い時間（秒）。この間カードを使うと1ダメージ
-        shield: 0,      // 防壁の残量
+        casting: null,      // { card, total, remain, start }
+        silence: 0,         // 残り封印時間（秒）。カードを使えない
+        stun: 0,            // 残り時間停止（秒）。カードを使えず、詠唱も止まる
+        haste: 0,           // 残り加速時間（秒）。詠唱が2倍速
+        curse: 0,           // 残り呪い時間（秒）。カードを使うと1ダメージ
+        shield: 0,          // 防壁の残量
+        instantNext: false, // 次に使うカードの詠唱時間が0
+        spellDiscount: 0,   // 次に使う呪文のコスト軽減量
+        spellsThisPhase: 0, // このフェーズに使った呪文の数
+        lastSpell: null,    // 最後に使った呪文のID（秘術の模倣用）
         stats: { damageDealt: 0, cardsPlayed: 0, countered: 0, played: {} },
       };
     }
 
     opp(p) { return this.players[1 - p.index]; }
+
+    // ───────────── コスト・詠唱時間・攻撃力の計算 ─────────────
+    /** 補正込みの実際のコスト */
+    costOf(p, id) {
+      const c = Cards.get(id);
+      let cost = c.cost;
+      if (c.costMod) cost += c.costMod(this, p);
+      for (const u of p.field) {
+        const d = Cards.get(u.id);
+        if (d.auraCost) cost += d.auraCost(this, p, c);
+      }
+      if (isSpell(c) && p.spellDiscount) cost -= p.spellDiscount;
+      return Math.max(0, cost);
+    }
+
+    /** 補正込みの実際の詠唱時間（秒） */
+    castOf(p, id) {
+      const c = Cards.get(id);
+      if (c.cast <= 0 || p.instantNext) return 0;
+      let t = c.cast;
+      for (const u of p.field) {
+        const d = Cards.get(u.id);
+        if (d.auraCast) t *= d.auraCast(this, p, c);
+      }
+      return Math.round(t * 10) / 10;
+    }
+
+    /** オーラ込みの攻撃力 */
+    atkOf(p, unit) {
+      let a = unit.atk;
+      for (const u of p.field) {
+        if (u === unit) continue;
+        const d = Cards.get(u.id);
+        if (d.auraAtk) a += d.auraAtk;
+      }
+      return Math.max(0, a);
+    }
+
+    /** 今すぐ攻撃を受け止められる（このフェーズにまだ受け止めていない）守護 */
+    readyGuards(p) { return p.field.filter((u) => u.guard && u.hp > 0 && !u.spent); }
+
+    addShield(p, n) {
+      p.shield = Math.min(this.cfg.shieldCap, p.shield + n);
+      this._bump();
+    }
+
+    graveCreatures(p) { return p.grave.filter((id) => Cards.get(id).type === 'creature').length; }
 
     // ───────────── 時間の進行 ─────────────
     update(dt) {
@@ -111,13 +185,13 @@
       this.time += dt;
 
       for (const p of this.players) {
-        if (p.silence > 0) { p.silence = Math.max(0, p.silence - dt); if (p.silence === 0) this._bump(); }
-        if (p.haste > 0) { p.haste = Math.max(0, p.haste - dt); if (p.haste === 0) this._bump(); }
-        if (p.curse > 0) { p.curse = Math.max(0, p.curse - dt); if (p.curse === 0) this._bump(); }
+        for (const k of ['silence', 'stun', 'haste', 'curse']) {
+          if (p[k] > 0) { p[k] = Math.max(0, p[k] - dt); if (p[k] === 0) this._bump(); }
+        }
       }
       // 詠唱の進行（両者同時。同じ瞬間に完了した場合はプレイヤー番号順）
       for (const p of this.players) {
-        if (!p.casting) continue;
+        if (!p.casting || p.stun > 0) continue;
         p.casting.remain -= dt * (p.haste > 0 ? 2 : 1);
         if (p.casting.remain <= 0) {
           const card = p.casting.card;
@@ -130,7 +204,7 @@
       this.phaseTimer -= dt;
       if (this.phaseTimer <= 0) this._newPhase();
 
-      if (this.time >= this.cfg.matchTime) this._timeUp();
+      if (!this.over && this.time >= this.cfg.matchTime) this._timeUp();
     }
 
     _newPhase() {
@@ -140,8 +214,18 @@
       for (const p of this.players) {
         p.maxMana = Math.min(this.cfg.maxManaCap, p.maxMana + 1);
         p.mana = Math.max(p.mana, p.maxMana); // 余ったマナは持ち越さず最大値まで回復（雫などで超過している分は残す）
+        p.spellsThisPhase = 0;
+        p.field.forEach((u) => { u.spent = false; });
         this.draw(p, this.cfg.phaseDraw);
       }
+      // フェーズ開始時に誘発する能力
+      for (const p of this.players) {
+        for (const u of [...p.field]) {
+          const d = Cards.get(u.id);
+          if (d.onPhase && p.field.includes(u)) d.onPhase(this, p, this.opp(p), u);
+        }
+      }
+      this._cleanup();
       this._emit({ type: 'phase', phase: this.phase });
       this._bump();
     }
@@ -176,10 +260,11 @@
       const id = p.hand[idx];
       if (this.over || id == null) return { ok: false, reason: '' };
       const c = Cards.get(id);
+      if (p.stun > 0) return { ok: false, reason: '時間停止中' };
       if (p.silence > 0) return { ok: false, reason: '封印中' };
-      if (p.mana < c.cost) return { ok: false, reason: 'マナ不足' };
-      if (c.cast > 0 && p.casting) return { ok: false, reason: '詠唱中' };
-      if (c.type === 'creature' && p.field.length >= this.cfg.fieldLimit) return { ok: false, reason: '場が満杯' };
+      if (p.mana < this.costOf(p, id)) return { ok: false, reason: 'マナ不足' };
+      if (c.hpCost && p.hp <= c.hpCost) return { ok: false, reason: '体力不足' };
+      if (this.castOf(p, id) > 0 && p.casting) return { ok: false, reason: '詠唱中' };
       if (c.canUse && !c.canUse(this, p, this.opp(p))) return { ok: false, reason: c.needText || '条件未達' };
       return { ok: true, reason: '' };
     }
@@ -188,22 +273,40 @@
       const chk = this.canPlay(pi, idx);
       if (!chk.ok) return chk;
       const p = this.players[pi];
-      const id = p.hand.splice(idx, 1)[0];
+      const op = this.opp(p);
+      const id = p.hand[idx];
       const c = Cards.get(id);
-      p.mana -= c.cost;
+      // コストと詠唱時間は手札から取り除く前に確定させる
+      const cost = this.costOf(p, id);
+      const cast = this.castOf(p, id);
+      p.hand.splice(idx, 1);
+      p.mana -= cost;
+      if (c.hpCost) this.loseLife(p, c.hpCost, `【${c.name}】の代償`);
+      // 「次に使う〜」系の効果を消費
+      p.instantNext = false;
+      if (isSpell(c)) {
+        p.spellDiscount = 0;
+        p.spellsThisPhase++;
+        if (!c.noCopy) p.lastSpell = c.id;
+      }
       p.stats.cardsPlayed++;
       p.stats.played[id] = (p.stats.played[id] || 0) + 1;
 
-      if (c.cast <= 0) {
-        this.log(`${p.name}：【${c.name}】（瞬間）`, 'play', p.index);
-        this._emit({ type: 'play', player: p.index, card: c, instant: true });
-        this._resolve(p, c);
-      } else {
-        p.casting = { card: c, total: c.cast, remain: c.cast, start: this.time };
+      if (cast > 0) {
+        p.casting = { card: c, total: cast, remain: cast, start: this.time };
         this.log(`${p.name}：【${c.name}】詠唱開始`, 'cast', p.index);
-        this._emit({ type: 'play', player: p.index, card: c, instant: false });
+      } else {
+        this.log(`${p.name}：【${c.name}】${c.cast > 0 ? '（即時詠唱）' : '（瞬間）'}`, 'play', p.index);
       }
+      this._emit({ type: 'play', player: p.index, card: c, instant: cast <= 0 });
+
+      // 「カードを使った時」に誘発する能力
+      for (const u of [...p.field]) { const d = Cards.get(u.id); if (d.onAllyPlay) d.onAllyPlay(this, p, op, u, c); }
+      for (const u of [...op.field]) { const d = Cards.get(u.id); if (d.onEnemyPlay) d.onEnemyPlay(this, op, p, u, c); }
+      this._cleanup();
       if (p.curse > 0) this.damagePlayer(p, 1, '呪いの刻印');
+
+      if (cast <= 0 && !this.over) this._resolve(p, c);
       this._bump();
       return chk;
     }
@@ -211,52 +314,87 @@
     _resolve(p, c) {
       const op = this.opp(p);
       if (c.type === 'creature') {
-        if (p.field.length >= this.cfg.fieldLimit) {
-          this.log(`【${c.name}】は場が満杯で不発`, 'info', p.index);
-          p.grave.push(c.id);
-        } else {
-          const unit = {
-            uid: this.uidSeq++, id: c.id, name: c.name, icon: c.icon,
-            atk: c.atk, hp: c.hp, maxHp: c.hp,
-            guard: !!c.guard, stealth: !!c.stealth, lifesteal: !!c.lifesteal,
-          };
-          p.field.push(unit);
-          this.log(`${p.name}：【${c.name}】召喚`, 'resolve', p.index);
-          this._emit({ type: 'summon', player: p.index, unit });
-          if (c.onSummon) c.onSummon(this, p, op, unit);
-          this.attack(p, unit);
-        }
+        this.summon(p, c.id);
       } else {
         if (c.cast > 0) this.log(`${p.name}：【${c.name}】発動`, 'resolve', p.index);
         c.effect(this, p, op);
         p.grave.push(c.id);
       }
       this._emit({ type: 'resolve', player: p.index, card: c });
+      this._cleanup();
       this._checkDeath();
       this._bump();
     }
 
     // ───────────── カード効果から呼ばれる基本操作 ─────────────
+    /**
+     * クリーチャーを場に出す。
+     * opts.attack: false にすると召喚時の攻撃をしない（トークン生成などで使用）
+     */
+    summon(p, id, opts = {}) {
+      if (this.over) return null;
+      const c = Cards.get(id);
+      const op = this.opp(p);
+      if (p.field.length >= this.cfg.fieldLimit) {
+        // トークンは場が満杯なら生成されない
+        if (c.token) return null;
+        // 場が満杯なら、一番古い味方が場を譲って倒れる（遺言も誘発する）
+        const oldest = p.field[0];
+        oldest.hp = 0;
+        oldest.undying = false;
+        this.log(`場が満杯のため、${oldest.name}が場を譲った`, 'info', p.index);
+        this._cleanup();
+        if (p.field.length >= this.cfg.fieldLimit) return null; // 遺言でまた埋まった場合
+      }
+      const unit = {
+        uid: this.uidSeq++, id: c.id, name: c.name, icon: c.icon,
+        atk: c.atk, hp: c.hp, maxHp: c.hp,
+        guard: !!c.guard, stealth: !!c.stealth, lifesteal: !!c.lifesteal,
+        double: !!c.double, undying: !!c.undying, armor: c.armor || 0, pierce: !!c.pierce, token: !!c.token,
+        spent: false, // 守護がこのフェーズに既に攻撃を受け止めたか
+      };
+      p.field.push(unit);
+      this.log(`${p.name}：【${c.name}】${c.token ? '生成' : '召喚'}`, 'resolve', p.index);
+      this._emit({ type: 'summon', player: p.index, unit });
+      if (c.onSummon) c.onSummon(this, p, op, unit);
+      if (opts.attack !== false) {
+        this.attack(p, unit);
+        if (unit.double) this.attack(p, unit);
+      }
+      if (c.afterSummon && p.field.includes(unit)) c.afterSummon(this, p, op, unit);
+      this._cleanup();
+      this._bump();
+      return unit;
+    }
+
     /** クリーチャー unit で攻撃する。敵に守護がいればそちらが受け止める */
     attack(p, unit) {
       if (this.over || !p.field.includes(unit) || unit.hp <= 0) return;
       const op = this.opp(p);
+      const atk = this.atkOf(p, unit);
       let target = null;
       if (!unit.stealth) {
-        const guards = op.field.filter((u) => u.guard && u.hp > 0);
+        const guards = this.readyGuards(op);
         if (guards.length) target = guards.reduce((a, b) => (b.hp > a.hp ? b : a));
       }
       if (target) {
+        // 守護が受け止められるのは1フェーズに1回まで
+        target.spent = true;
         // クリーチャー同士は互いに攻撃力分のダメージを与え合う
-        target.hp -= unit.atk;
-        unit.hp -= target.atk;
-        this.log(`${unit.name}(${unit.atk}) → 守護 ${target.name}`, 'attack', p.index);
-        if (unit.lifesteal) this.heal(p, unit.atk);
+        const overflow = atk - (target.armor || 0) - Math.max(0, target.hp);
+        this._hitUnit(target, atk);
+        if (this.cfg.guardRetaliate) this._hitUnit(unit, this.atkOf(op, target));
+        this.log(`${unit.name}(${atk}) → 守護 ${target.name}`, 'attack', p.index);
+        if (unit.lifesteal) this.heal(p, atk);
         this._emit({ type: 'attack', player: p.index, unit, target });
+        const td = Cards.get(target.id);
+        if (td.onBlock) td.onBlock(this, op, p, target, unit);
+        // 貫通：守護を倒してなお余ったダメージは本体へ
+        if (unit.pierce && overflow > 0) this.damagePlayer(op, overflow, unit.name + '（貫通）');
         this._cleanup();
       } else {
         this._emit({ type: 'attack', player: p.index, unit, target: null });
-        const dealt = this.damagePlayer(op, unit.atk, unit.name);
+        const dealt = this.damagePlayer(op, atk, unit.name);
         if (unit.lifesteal && dealt > 0) this.heal(p, dealt);
       }
       this._bump();
@@ -277,8 +415,24 @@
       return dealt;
     }
 
+    /** 体力を失う（防壁で防げない。体力コストや自傷効果） */
+    loseLife(p, amount, src) {
+      if (this.over || amount <= 0) return;
+      p.hp -= amount;
+      this.log(`${src}：${p.name}は体力を${amount}失った`, 'damage', p.index);
+      this._emit({ type: 'damage', player: p.index, amount, absorbed: 0 });
+      this._checkDeath();
+      this._bump();
+    }
+
+    _hitUnit(unit, amount) {
+      const n = Math.max(0, amount - (unit.armor || 0));
+      unit.hp -= n;
+      return n;
+    }
+
     damageUnit(owner, unit, amount) {
-      unit.hp -= amount;
+      this._hitUnit(unit, amount);
       this._emit({ type: 'unitDamage', player: owner.index, unit, amount });
       this._cleanup();
     }
@@ -287,6 +441,13 @@
       unit.hp = 0;
       this.log(`${unit.name}は破壊された`, 'info', owner.index);
       this._cleanup();
+    }
+
+    buff(unit, atk, hp) {
+      unit.atk += atk;
+      unit.hp += hp;
+      unit.maxHp += hp;
+      this._bump();
     }
 
     heal(p, amount) {
@@ -317,6 +478,51 @@
       this._bump();
     }
 
+    /** 山札の上から n 枚を墓地へ */
+    mill(p, n) {
+      const moved = [];
+      for (let i = 0; i < n && p.deck.length; i++) { const id = p.deck.pop(); p.grave.push(id); moved.push(Cards.get(id).name); }
+      if (moved.length) this.log(`${p.name}の山札から墓地へ：${moved.join('、')}`, 'info', p.index);
+      this._bump();
+    }
+
+    /** 墓地のクリーチャーを復活させる。mode: 'random' | 'highest'（最もコストが高いもの） */
+    reviveFromGrave(p, mode = 'random') {
+      const idxs = p.grave.map((id, i) => i).filter((i) => Cards.get(p.grave[i]).type === 'creature');
+      if (!idxs.length) return null;
+      let pick;
+      if (mode === 'highest') pick = idxs.reduce((a, b) => (Cards.get(p.grave[b]).cost > Cards.get(p.grave[a]).cost ? b : a));
+      else pick = idxs[Math.floor(this.rand() * idxs.length)];
+      const id = p.grave.splice(pick, 1)[0];
+      this.log(`${p.name}：墓地から【${Cards.get(id).name}】が蘇る`, 'resolve', p.index);
+      return this.summon(p, id);
+    }
+
+    /** 墓地からランダムなカードを n 枚手札に戻す */
+    returnFromGrave(p, n, filter = () => true) {
+      for (let i = 0; i < n; i++) {
+        const idxs = p.grave.map((id, j) => j).filter((j) => filter(Cards.get(p.grave[j])));
+        if (!idxs.length || p.hand.length >= this.cfg.handLimit) break;
+        const id = p.grave.splice(idxs[Math.floor(this.rand() * idxs.length)], 1)[0];
+        p.hand.push(id);
+        this.log(`${p.name}：墓地から【${Cards.get(id).name}】を手札へ`, 'info', p.index);
+      }
+      this._bump();
+    }
+
+    /** カードをコスト・詠唱なしで直ちに使う（手札からは呼び出し側で取り除くこと） */
+    playFree(p, id) {
+      const c = Cards.get(id);
+      this.log(`${p.name}：【${c.name}】をコストなしで発動`, 'resolve', p.index);
+      if (c.type === 'creature') {
+        this.summon(p, id);
+      } else {
+        c.effect(this, p, this.opp(p));
+        p.grave.push(id);
+      }
+      this._cleanup();
+    }
+
     addMana(p, n) {
       p.mana = Math.max(0, p.mana + n);
       this._bump();
@@ -328,6 +534,12 @@
       this._bump();
     }
 
+    stunPlayer(p, sec) {
+      p.stun = Math.max(p.stun, sec);
+      this.log(`${p.name}の時間が${sec}秒間停止した`, 'info', p.index);
+      this._bump();
+    }
+
     curse(p, sec) {
       p.curse = sec;
       this.log(`${p.name}は${sec}秒間呪われた`, 'info', p.index);
@@ -335,7 +547,7 @@
     }
 
     cancelCasting(target, by) {
-      if (!target.casting) return;
+      if (!target.casting) return null;
       const c = target.casting.card;
       target.casting = null;
       target.grave.push(c.id);
@@ -343,6 +555,7 @@
       this.log(`【${c.name}】は打ち消された！`, 'counter', target.index);
       this._emit({ type: 'counter', player: target.index, card: c });
       this._bump();
+      return c;
     }
 
     delayCasting(target, sec) {
@@ -364,15 +577,48 @@
     }
 
     // ───────────── 内部処理 ─────────────
+    /**
+     * 体力0以下のクリーチャーを片付け、遺言などの能力を処理する。
+     * 遺言の効果でさらに倒れるクリーチャーが出ることがあるので、いなくなるまで繰り返す。
+     * 能力の処理中に再び呼ばれた場合は何もしない（外側のループが拾う）。
+     */
     _cleanup() {
-      for (const p of this.players) {
-        const dead = p.field.filter((u) => u.hp <= 0);
-        if (!dead.length) continue;
-        p.field = p.field.filter((u) => u.hp > 0);
-        dead.forEach((u) => {
-          p.grave.push(u.id);
-          this.log(`${u.name}は倒れた`, 'info', p.index);
-        });
+      if (this._cleaning) return;
+      this._cleaning = true;
+      try {
+        for (let loop = 0; loop < 30; loop++) {
+          const deaths = [];
+          for (const p of this.players) {
+            for (const u of p.field) {
+              if (u.hp > 0) continue;
+              if (u.undying && !u.usedUndying) {
+                u.usedUndying = true;
+                u.hp = 1;
+                this.log(`${u.name}は不屈の力で踏みとどまった`, 'info', p.index);
+              } else {
+                deaths.push({ p, u });
+              }
+            }
+          }
+          if (!deaths.length) break;
+          for (const { p, u } of deaths) {
+            p.field = p.field.filter((x) => x !== u);
+            if (!u.token) p.grave.push(u.id);
+            this.log(`${u.name}は倒れた`, 'info', p.index);
+          }
+          for (const { p, u } of deaths) {
+            const d = Cards.get(u.id);
+            if (d.onDeath) d.onDeath(this, p, this.opp(p), u);
+            for (const q of this.players) {
+              for (const w of [...q.field]) {
+                const wd = Cards.get(w.id);
+                if (wd.onAnyDeath) wd.onAnyDeath(this, q, this.opp(q), w, u, p);
+              }
+            }
+          }
+        }
+      } finally {
+        this._cleaning = false;
       }
       this._bump();
     }
@@ -394,5 +640,5 @@
     _bump() { this.version++; }
   }
 
-  return { Game, CONFIG, validateDeck };
+  return { Game, CONFIG, validateDeck, isSpell };
 });

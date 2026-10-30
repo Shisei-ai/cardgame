@@ -9,6 +9,7 @@
 
   const state = {
     filter: 'all',
+    arch: 'all',
     deckId: null,   // 編集中の自作デッキID（未保存の新規なら null）
     name: '',
     cards: {},      // { カードID: 枚数 }
@@ -23,6 +24,17 @@
       const f = e.target.dataset.f;
       if (!f) return;
       state.filter = f;
+      render();
+    };
+
+    // テーマの絞り込み
+    const archTabs = $('#pool-arch');
+    archTabs.innerHTML = [['all', 'すべて'], ...Object.entries(Cards.ARCHES).map(([k, v]) => [k, v.label])]
+      .map(([k, label]) => `<button data-a="${k}">${label}</button>`).join('');
+    archTabs.onclick = (e) => {
+      const a = e.target.dataset.a;
+      if (!a) return;
+      state.arch = a;
       render();
     };
 
@@ -103,6 +115,10 @@
   function render() {
     // フィルターのボタン状態
     document.querySelectorAll('#pool-filter button').forEach((b) => b.classList.toggle('on', b.dataset.f === state.filter));
+    document.querySelectorAll('#pool-arch button').forEach((b) => b.classList.toggle('on', b.dataset.a === state.arch));
+    $('#arch-desc').textContent = state.arch === 'all'
+      ? 'クリックで追加 ／ 右クリックで削除 ／ マウスを乗せると詳しい説明'
+      : `【${Cards.ARCHES[state.arch].label}】${Cards.ARCHES[state.arch].desc}`;
 
     // カード一覧（種類→コスト順）
     const typeOrder = Object.keys(Cards.TYPES);
@@ -110,6 +126,7 @@
     pool.innerHTML = '';
     Cards.LIST
       .filter((c) => state.filter === 'all' || c.type === state.filter)
+      .filter((c) => state.arch === 'all' || (c.arch || []).includes(state.arch))
       .sort((a, b) => typeOrder.indexOf(a.type) - typeOrder.indexOf(b.type) || a.cost - b.cost)
       .forEach((c) => {
         const el = UI.cardEl(c, { owned: state.cards[c.id] });
@@ -153,7 +170,7 @@
         li.style.setProperty('--tc', Cards.TYPES[c.type].color);
         li.innerHTML = `<span class="dl-cost">${c.cost}</span><span class="dl-name">${c.icon} ${esc(c.name)}</span>
           <button data-d="-1">−</button><b>${state.cards[c.id]}</b><button data-d="1">＋</button>`;
-        li.title = Cards.fullText(c);
+        li.title = UI.cardTip(c);
         li.onclick = (e) => { const d = e.target.dataset.d; if (d) add(c.id, Number(d)); };
         list.appendChild(li);
       });

@@ -173,16 +173,28 @@
     const n = Math.max(p.maxMana, p.mana);
     for (let i = 0; i < n; i++) pips += `<span class="pip ${i < p.mana ? (i >= p.maxMana ? 'extra' : 'on') : ''}"></span>`;
     const st = [];
+    if (p.stun > 0) st.push(`<span class="status silence">⌛停止 ${Math.ceil(p.stun)}s</span>`);
     if (p.silence > 0) st.push(`<span class="status silence">⛓封印 ${Math.ceil(p.silence)}s</span>`);
     if (p.haste > 0) st.push(`<span class="status haste">⏩加速 ${Math.ceil(p.haste)}s</span>`);
     if (p.curse > 0) st.push(`<span class="status curse">💀呪い ${Math.ceil(p.curse)}s</span>`);
     if (p.shield > 0) st.push(`<span class="status shield">🔰防壁 ${p.shield}</span>`);
+    if (p.instantNext) st.push('<span class="status haste">💫次は即時詠唱</span>');
+    if (p.spellDiscount) st.push(`<span class="status haste">📚次の呪文-${p.spellDiscount}</span>`);
     $('#pbar-' + p.index).innerHTML = `
       <span class="pname">${esc(p.name)}</span>
       <div class="hpbox"><div class="hpfill" style="width:${hpPct}%"></div><div class="hptext">♥ ${Math.max(0, p.hp)} / ${g.cfg.startHP}</div></div>
       <div class="mana">${pips}<span class="mtext">${p.mana}/${p.maxMana}</span></div>
-      <span class="pinfo">手札 ${p.hand.length}　山札 ${p.deck.length}</span>
+      <span class="pinfo">手札 ${p.hand.length}　山札 ${p.deck.length}　<span class="grave" title="${esc(graveTip(p))}">墓地 ${p.grave.length}</span></span>
       ${st.join('')}`;
+  }
+
+  function graveTip(p) {
+    if (!p.grave.length) return '墓地は空';
+    const counts = {};
+    p.grave.forEach((id) => { counts[id] = (counts[id] || 0) + 1; });
+    const creatures = B.game.graveCreatures(p);
+    return `墓地 ${p.grave.length}枚（うちクリーチャー${creatures}体）\n` +
+      Object.entries(counts).map(([id, n]) => `${Cards.get(id).name}${n > 1 ? ' ×' + n : ''}`).join('\n');
   }
 
   function renderCastHead(p) {
@@ -214,10 +226,17 @@
         map.set(u.uid, el);
         box.appendChild(el);
       }
-      const kw = [u.guard && '守護', u.stealth && '潜伏', u.lifesteal && '吸血'].filter(Boolean).join('・');
-      el.innerHTML = `<div class="u-name">${esc(u.name)}</div><div class="u-icon">${u.icon}</div>
-        <div class="u-kw">${kw}</div><div class="u-stats"><span class="atk">⚔${u.atk}</span><span class="hp">♥${u.hp}</span></div>`;
-      el.title = Cards.fullText(Cards.get(u.id));
+      const d = Cards.get(u.id);
+      const kw = [
+        u.guard && (u.spent ? '守護(済)' : '守護'), u.stealth && '潜伏', u.lifesteal && '吸血',
+        u.pierce && '貫通', u.undying && !u.usedUndying && '不屈', u.armor && '堅牢',
+      ].filter(Boolean).join('・');
+      const atk = B.game.atkOf(p, u);
+      el.classList.toggle('spent', !!(u.guard && u.spent));
+      el.classList.toggle('token', !!u.token);
+      el.innerHTML = `<div class="u-name">${esc(u.name)}${d.text ? ' ✦' : ''}</div><div class="u-icon">${u.icon}</div>
+        <div class="u-kw">${kw}</div><div class="u-stats"><span class="atk${atk > u.atk ? ' boosted' : ''}">⚔${atk}</span><span class="hp">♥${u.hp}</span></div>`;
+      el.title = UI.cardTip(d) + (u.guard && u.spent ? '\n（このフェーズは既に攻撃を受け止めた）' : '');
     });
   }
 
@@ -229,7 +248,12 @@
     p.hand.forEach((id, i) => {
       const c = Cards.get(id);
       const chk = g.canPlay(ME, i);
-      const el = UI.cardEl(c, { key: KEYS[i], badge: chk.ok ? '' : chk.reason });
+      // 場が満杯の時にクリーチャーを出すと、一番古い味方が倒れることを警告
+      const full = chk.ok && c.type === 'creature' && p.field.length >= g.cfg.fieldLimit;
+      const el = UI.cardEl(c, {
+        key: KEYS[i], cost: g.costOf(p, id), cast: g.castOf(p, id),
+        badge: chk.ok ? (full ? `⚠${p.field[0].name}と入替` : '') : chk.reason,
+      });
       el.classList.add(chk.ok ? 'playable' : 'disabled');
       el.onclick = () => tryPlay(i);
       box.appendChild(el);
