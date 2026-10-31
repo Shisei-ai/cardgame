@@ -316,7 +316,7 @@
       this.log(`第${this.phase}フェーズ開始`, 'phase');
       for (const p of this.players) {
         p.maxMana = Math.min(this.cfg.maxManaCap, p.maxMana + 1);
-        p.mana = Math.max(p.mana, p.maxMana); // 余ったマナは持ち越さず最大値まで回復（雫などで超過している分は残す）
+        p.mana = p.maxMana; // 余ったマナは持ち越さない（最大値を超えている分も消える）。最大値まで回復
         if (p.manaDebt) {
           this.log(`${p.name}は前借りしたマナを${p.manaDebt}返済`, 'info', p.index);
           p.mana = Math.max(0, p.mana - p.manaDebt);
