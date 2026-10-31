@@ -42,7 +42,17 @@
 
   // ───────────── カードの描画 ─────────────
   // 種類の帯に付ける記号
-  const TYPE_GLYPH = { creature: '⚔', relic: '◈', summon: '✧', attack: '✹', draw: '❖', resource: '◆', disrupt: '✖', heal: '✚' };
+  /** カードの枠の色。呪文は主なタグ（先頭のタグ）の色、それ以外は種類の色 */
+  function cardColor(card) {
+    const t = card.type === 'spell' && card.tags && card.tags[0] && Cards.TAGS[card.tags[0]];
+    return t ? t.color : Cards.TYPES[card.type].color;
+  }
+  /** 種類の帯の左に付ける記号。呪文は主なタグの記号 */
+  function cardGlyph(card) {
+    const t = card.type === 'spell' && card.tags && card.tags[0] && Cards.TAGS[card.tags[0]];
+    return t ? t.glyph : Cards.TYPES[card.type].glyph;
+  }
+  const tagLabels = (card) => (card.tags || []).map((k) => Cards.TAGS[k].label);
   /**
    * カード1枚分のDOM要素を作る
    *   opts.cost / opts.cast : 補正後の実際のコスト・詠唱時間（手札表示用）。元の値と違えば色を変える
@@ -54,13 +64,15 @@
     const el = document.createElement('div');
     el.className = 'card';
     el.dataset.cid = card.id;
-    el.style.setProperty('--tc', Cards.TYPES[card.type].color);
+    el.style.setProperty('--tc', cardColor(card));
     const cost = opts.cost != null ? opts.cost : card.cost;
     const cast = opts.cast != null ? opts.cast : card.cast;
     const castLabel = cast > 0 ? `⏱${cast}` : card.cast > 0 ? '⚡即時' : '⚡瞬間';
     const castCls = cast <= 0 ? ' instant' : cast < card.cast ? ' down' : '';
     const costCls = cost < card.cost ? ' down' : cost > card.cost ? ' up' : '';
     const kw = Cards.keywords(card);
+    // 種類の帯の右側：クリーチャーとレリックはキーワード、呪文はタグ
+    const right = card.type === 'spell' ? tagLabels(card).join('・') : kw.join('・');
     const nameLen = [...card.name].length;
     const nameCls = nameLen >= 8 ? ' xxlong' : nameLen >= 7 ? ' xlong' : nameLen >= 6 ? ' long' : '';
     const stats = card.type === 'creature'
@@ -74,7 +86,7 @@
       <div class="c-frame">
         <div class="c-head"><span class="c-name${nameCls}">${esc(card.name)}</span></div>
         <div class="c-art"><span class="c-icon">${card.icon}</span></div>
-        <div class="c-typeline"><span><i class="c-glyph">${TYPE_GLYPH[card.type] || ''}</i>${Cards.TYPES[card.type].label}</span>${kw.length ? `<span class="c-kw">${kw.join('・')}</span>` : ''}</div>
+        <div class="c-typeline"><span><i class="c-glyph">${cardGlyph(card)}</i>${Cards.TYPES[card.type].label}</span>${right ? `<span class="c-kw">${esc(right)}</span>` : ''}</div>
         <div class="c-text">${esc(card.text || '')}</div>
       </div>
       <div class="c-cost${costCls}">${cost}</div>
@@ -95,6 +107,7 @@
     const castLabel = card.cast > 0 ? `詠唱 ${card.cast}秒` : '瞬間（詠唱なし）';
     const extra = (card.hpCost ? ` ＋ 体力${card.hpCost}` : '') + (card.sacCost ? ` ＋ 生贄${card.sacCost}体` : '');
     const lines = [`<b>${esc(card.name)}</b>（${Cards.TYPES[card.type].label}）`, `コスト ${card.cost}${extra}　/　${castLabel}`];
+    if (card.tags && card.tags.length) lines.push(`タグ：${tagLabels(card).join('・')}`);
     if (card.counter) lines.push(`<b>カウンター</b>：${Cards.KEYWORD_HELP['カウンター']}`);
     if (card.type === 'creature') lines.push(card.noAttack ? '召喚時に攻撃しない' : card.double ? '召喚時に2回攻撃を予約する' : '召喚時に1回攻撃を予約する（クロノホールで攻撃）');
     if (card.type === 'relic') lines.push(`耐久 ${card.hp}`, `<b>レリック</b>：${Cards.KEYWORD_HELP['レリック']}`);
@@ -284,6 +297,6 @@
   fitStage();
   root.UI = {
     $, esc, showScreen, onScreen, cardEl, cardTip, cardHelp, allDecks, countOf, toast, overlay, closeOverlay,
-    stagePoint, fx, pulseClass, hidePreview, getScale: () => scale, runeCircle,
+    stagePoint, fx, pulseClass, hidePreview, getScale: () => scale, runeCircle, cardColor,
   };
 })(this);

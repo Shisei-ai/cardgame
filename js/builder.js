@@ -8,7 +8,8 @@
   const CFG = Engine.CONFIG;
 
   const state = {
-    filter: 'all',
+    filter: 'all',  // 種類（クリーチャー／呪文／レリック）
+    tag: 'all',     // 検索タグ（'counter' はカウンターのカード）
     arch: 'all',
     deckId: null,   // 編集中の自作デッキID（未保存の新規なら null）
     name: '',
@@ -24,6 +25,17 @@
       const f = e.target.dataset.f;
       if (!f) return;
       state.filter = f;
+      render();
+    };
+
+    // 検索タグの絞り込み（〔カウンター〕もここで探せる）
+    const tagTabs = $('#pool-tag');
+    tagTabs.innerHTML = [['all', 'すべて'], ...Object.entries(Cards.TAGS).map(([k, v]) => [k, v.glyph + v.label, v.desc]), ['counter', '⟲カウンター', 'カウンターステップでも使えるカード']]
+      .map(([k, label, desc]) => `<button data-t="${k}"${desc ? ` title="${esc(desc)}"` : ''}>${label}</button>`).join('');
+    tagTabs.onclick = (e) => {
+      const t = e.target.closest('button');
+      if (!t) return;
+      state.tag = t.dataset.t;
       render();
     };
 
@@ -116,6 +128,7 @@
     // フィルターのボタン状態
     document.querySelectorAll('#pool-filter button').forEach((b) => b.classList.toggle('on', b.dataset.f === state.filter));
     document.querySelectorAll('#pool-arch button').forEach((b) => b.classList.toggle('on', b.dataset.a === state.arch));
+    document.querySelectorAll('#pool-tag button').forEach((b) => b.classList.toggle('on', b.dataset.t === state.tag));
     $('#arch-desc').textContent = state.arch === 'all'
       ? 'クリックで追加 ／ 右クリックで削除 ／ マウスを乗せると詳しい説明'
       : `【${Cards.ARCHES[state.arch].label}】${Cards.ARCHES[state.arch].desc}`;
@@ -126,6 +139,7 @@
     pool.innerHTML = '';
     Cards.LIST
       .filter((c) => state.filter === 'all' || c.type === state.filter)
+      .filter((c) => state.tag === 'all' || (state.tag === 'counter' ? c.counter : c.tags.includes(state.tag)))
       .filter((c) => state.arch === 'all' || (c.arch || []).includes(state.arch))
       .sort((a, b) => typeOrder.indexOf(a.type) - typeOrder.indexOf(b.type) || a.cost - b.cost)
       .forEach((c) => {
@@ -167,7 +181,7 @@
       .sort((a, b) => a.cost - b.cost || a.name.localeCompare(b.name, 'ja'))
       .forEach((c) => {
         const li = document.createElement('li');
-        li.style.setProperty('--tc', Cards.TYPES[c.type].color);
+        li.style.setProperty('--tc', UI.cardColor(c));
         li.innerHTML = `<span class="dl-cost">${c.cost}</span><span class="dl-name">${c.icon} ${esc(c.name)}</span>
           <button data-d="-1">−</button><b>${state.cards[c.id]}</b><button data-d="1">＋</button>`;
         li.dataset.cid = c.id; // マウスを乗せると拡大表示

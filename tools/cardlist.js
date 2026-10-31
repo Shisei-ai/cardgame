@@ -22,6 +22,11 @@ out.push(`全${Cards.LIST.length}種（強 ${tierCount.strong} / 局所 ${tierCo
 out.push('');
 out.push('格付けは設計上の狙いで、ゲーム内には表示されません。「局所」は特定のテーマや状況で光るカードです。');
 out.push('');
+const typeCount = Object.keys(Cards.TYPES).map((k) => `${Cards.TYPES[k].label} ${Cards.LIST.filter((c) => c.type === k).length}`).join(' / ');
+out.push(`種類：${typeCount}`);
+out.push('');
+out.push('タグ（デッキ構築での検索用。1枚に複数付くことがある）：' + Object.values(Cards.TAGS).map((t) => `**${t.label}**＝${t.desc}`).join('、'));
+out.push('');
 
 for (const [key, arch] of Object.entries(Cards.ARCHES)) {
   // そのテーマを最初に挙げているカードを、そのテーマの節に載せる
@@ -33,14 +38,14 @@ for (const [key, arch] of Object.entries(Cards.ARCHES)) {
   out.push('');
   out.push(arch.desc + (preset ? `（プリセット：${preset.name}）` : ''));
   out.push('');
-  out.push('| 格付 | コスト | 詠唱 | 名前 | 種類 | 能力値 | 効果 |');
-  out.push('|---|---|---|---|---|---|---|');
+  out.push('| 格付 | コスト | 詠唱 | 名前 | 種類 | タグ | 能力値 | 効果 |');
+  out.push('|---|---|---|---|---|---|---|---|');
   for (const c of cards) {
     const cost = c.cost + (c.hpCost ? `+♥${c.hpCost}` : '');
     const cast = c.cast > 0 ? `${c.cast}s` : '瞬間';
     const stats = c.type === 'creature' ? `${c.atk}/${c.hp}` : c.type === 'relic' ? `耐久${c.hp}` : '';
     const text = (c.target ? `🎯${c.target.label}を選ぶ。 ` : '') + Cards.fullText(c, true).replace(/\|/g, '｜');
-    out.push(`| ${Cards.TIERS[c.tier]} | ${cost} | ${cast} | ${c.icon} ${c.name} | ${Cards.TYPES[c.type].label} | ${stats} | ${text} |`);
+    out.push(`| ${Cards.TIERS[c.tier]} | ${cost} | ${cast} | ${c.icon} ${c.name} | ${Cards.TYPES[c.type].label} | ${c.tags.map((k) => Cards.TAGS[k].label).join('・')} | ${stats} | ${text} |`);
   }
   if (others.length) {
     out.push('');
