@@ -6,7 +6,8 @@
 - カードには**詠唱時間**があり、発動までの数秒間は相手から丸見え。打ち消し・遅延・防壁で**後出しの対応**ができる
 - 全220種のカード、11のテーマ（速攻・群れ・妨害・墓地・呪文連鎖・血の契約・城塞・成長・巨獣・捨て札・生贄）。テーマをまたぐシナジーも多数。40枚・同名4枚までで自由に組める
 - 対象を選ぶカード（選んでいる間は時間が止まる）、自分の力で攻撃するクリーチャー
-- 制限時間3分。相手の体力（30）を0にするか、時間切れ時に体力が多い方が勝ち
+- 制限時間3分。相手の体力（50）を0にするか、時間切れ時に体力が多い方が勝ち
+- マナは毎秒1回復（最大10）、カードは3秒ごとに1枚ドロー。今あるマナで使い切るか、少し待って大技を出すか
 
 ルールの詳細はゲーム内の「遊び方」、設計の考え方とバランス調整の記録は [docs/DESIGN.md](docs/DESIGN.md)、カードの一覧は [docs/CARDS.md](docs/CARDS.md) を参照してください。
 
@@ -59,10 +60,12 @@ js/main.js          起動処理・対戦準備画面
 tools/simulate.js   バランス検証：プリセット同士の対戦表を作る
 tools/cardpower.js  バランス検証：カード1枚ごとの強さを測る
 tools/cardlist.js   カード一覧（docs/CARDS.md）の自動生成
+tools/review.js     カードの見直し表（docs/CARD_REVIEW.md）の自動生成（変更メモは review-notes.js）
 tools/lib.js        検証ツールの共通部品
 tools/package.sh    itch.io用ZIPの作成
 docs/DESIGN.md      ゲームデザインとバランス調整の記録
 docs/CARDS.md       カード一覧（自動生成）
+docs/CARD_REVIEW.md 全カードの見直し表（測定値・判定・変更内容。自動生成）
 ```
 
 `cards.js`・`engine.js`・`ai.js`・`presets.js` は画面（DOM）に一切依存していないため、ブラウザでも Node.js でも動きます。これがバランス検証ツールを可能にしている仕組みです。
@@ -100,6 +103,18 @@ node tools/cardpower.js
 ```bash
 CFG='{"phaseTime":8,"startHP":25}' node tools/simulate.js
 ```
+
+### 全カードの見直し表
+
+```bash
+node tools/cardpower.js --json power.json
+```
+
+```bash
+node tools/review.js power.json > docs/CARD_REVIEW.md
+```
+
+測定結果と変更メモ（`tools/review-notes.js`）から、全カードを「格付け・測定値・判定・変更内容」で一覧にした表を作ります。
 
 ### カード一覧の更新
 

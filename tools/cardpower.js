@@ -21,6 +21,7 @@
  *   node tools/cardpower.js              # 全カード（1カードにつき 9デッキ×16戦×2指標）
  *   node tools/cardpower.js --games 40   # 精度を上げる（時間がかかる）
  *   node tools/cardpower.js --only bolt,raider   # 一部のカードだけ
+ *   node tools/cardpower.js --json out.json      # 結果をJSONでも保存（見直し表の作成用）
  */
 'use strict';
 const { Cards, Presets, runGame, opt, pad } = require('./lib.js');
@@ -82,6 +83,14 @@ for (const c of targets) {
   process.stderr.write('.');
 }
 process.stderr.write('\n');
+
+const JSON_OUT = opt('json', '');
+if (JSON_OUT) {
+  require('fs').writeFileSync(JSON_OUT, JSON.stringify({
+    baseWR, games: GAMES, presetWR,
+    cards: rows.map((r) => ({ id: r.c.id, tier: r.c.tier, generic: r.generic, theme: r.theme, home: r.home ? r.home.key : null })),
+  }, null, 1));
+}
 
 const fmt = (x) => (x == null ? '   ―  ' : ((x >= 0 ? '+' : '') + (x * 100).toFixed(1)).padStart(6) + '%');
 console.log(`\n基準デッキ勝率 ${(baseWR * 100).toFixed(1)}% / 1指標あたり ${gauntlet.length * GAMES}戦\n`);

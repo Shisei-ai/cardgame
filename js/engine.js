@@ -3,6 +3,7 @@
  *
  * ゲームは「時間」で進みます。update(dt) を呼ぶたびに dt 秒だけ時間が進み、
  *   ・マナが少しずつ回復（毎秒 manaRate。最大マナまで）
+ *   ・drawInterval 秒ごとにカードを1枚引く
  *   ・詠唱中のカードの残り時間が減り、0になったら発動
  *   ・フェーズタイマーが0になったら次のフェーズ（2枚ドロー＋フェーズ開始時の効果）
  *   ・試合時間が尽きたら体力の多い方が勝ち
@@ -45,6 +46,7 @@
  *   auraAtk      場にいる間、他の味方の攻撃力を増やす数値
  *   auraCost     場にいる間、自分のカードのコストを補正する関数
  *   auraCast     場にいる間、自分のカードの詠唱時間に掛ける倍率を返す関数
+ *   auraRegen    場にいる間、自分のマナ回復速度に足す値（毎秒）
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./cards.js'));
@@ -54,7 +56,7 @@
 
   // ── バランス調整の要となる数値はすべてここに集約 ──
   const CONFIG = {
-    startHP: 30,        // 初期体力（＝最大体力）
+    startHP: 50,        // 初期体力（＝最大体力）
     matchTime: 180,     // 試合の制限時間（秒）
     phaseTime: 10,      // 1フェーズの長さ（秒）
     startMana: 5,       // 試合開始時のマナ
@@ -63,7 +65,8 @@
     manaRegen: 1,       // マナの回復速度（毎秒）。カード効果で速くできる
     manaRegenCap: 3,    // 回復速度の上限（毎秒）
     startHand: 5,       // 初期手札
-    phaseDraw: 2,       // フェーズ開始時に引く枚数
+    phaseDraw: 0,       // フェーズ開始時に引く枚数（v0.8から時間によるドローに置き換え）
+    drawInterval: 3,    // この秒数ごとにカードを1枚引く（0なら時間によるドローなし）
     handLimit: 10,      // 手札上限（超えて引いたカードは墓地へ）
     fieldLimit: 5,      // 場に出せるクリーチャーの上限（満杯で召喚すると一番古い味方が倒れる）
     fatigue: 2,         // 山札切れで引こうとしたときのダメージ
@@ -155,7 +158,8 @@
         spellDiscount: 0,   // 次に使う呪文のコスト軽減量
         spellsThisPhase: 0, // このフェーズに使った呪文の数
         lastSpell: null,    // 最後に使った呪文のID（秘術の模倣用）
-        skipDraw: 0,        // 次のフェーズ開始時に引く枚数を減らす（禁断の知識など）
+        drawT: this.cfg.drawInterval, // 時間によるドローの、次の1枚までの残り秒数
+        drawPause: 0,       // 時間によるドローが止まっている残り秒数（禁断の知識など）
         manaDebt: 0,        // 次のフェーズ開始時に失うマナ（魔力の前借り）
         bonusDraw: 0,       // 次のフェーズ開始時に追加で引く枚数（投資）
         bonusMana: 0,       // 次のフェーズ開始時に追加で得るマナ（貯蓄）
@@ -279,11 +283,20 @@
       }
       this.time += dt;
 
+      // 時間によるドロー（drawPause の間は止まる）
+      if (this.cfg.drawInterval > 0) {
+        for (const p of this.players) {
+          if (p.drawPause > 0) { p.drawPause = Math.max(0, p.drawPause - dt); continue; }
+          p.drawT -= dt;
+          if (p.drawT <= 0) { p.drawT += this.cfg.drawInterval; this.draw(p, 1); }
+        }
+        if (this.over) return;
+      }
       // マナの回復（最大マナまで。時間停止や封印の間も回復は続く）
       for (const p of this.players) {
         if (p.mana < p.maxMana) {
           const before = Math.floor(p.mana);
-          p.mana = Math.min(p.maxMana, p.mana + p.manaRate * dt);
+          p.mana = Math.min(p.maxMana, p.mana + this.regenOf(p) * dt);
           if (Math.floor(p.mana) !== before) this._bump(); // 使えるマナが1増えたら画面を更新
         }
       }
@@ -343,12 +356,10 @@
         p.spellsThisPhase = 0;
         p.phaseDiscount = 0;
         p.field.forEach((u) => { u.spent = false; });
-        const n = Math.max(0, this.cfg.phaseDraw - p.skipDraw + p.bonusDraw);
-        if (p.skipDraw) this.log(`${p.name}のドローが${p.skipDraw}枚減った`, 'info', p.index);
-        if (p.bonusDraw) this.log(`${p.name}のドローが${p.bonusDraw}枚増えた`, 'info', p.index);
-        p.skipDraw = 0;
+        const n = this.cfg.phaseDraw + p.bonusDraw;
+        if (p.bonusDraw) this.log(`${p.name}は追加でカードを${p.bonusDraw}枚引く`, 'info', p.index);
         p.bonusDraw = 0;
-        this.draw(p, n);
+        if (n > 0) this.draw(p, n);
         if (p.regen > 0) { p.regen--; this.heal(p, p.regenAmount); }
       }
       // フェーズ開始時に誘発する能力
@@ -786,6 +797,13 @@
     addMana(p, n) {
       p.mana = Math.max(0, Math.min(p.maxMana, p.mana + n));
       this._bump();
+    }
+
+    /** 実際のマナ回復速度（場のクリーチャーのオーラ auraRegen を含む。上限 manaRegenCap） */
+    regenOf(p) {
+      let r = p.manaRate;
+      for (const u of p.field) { const d = Cards.get(u.id); if (d.auraRegen && !u.muted) r += d.auraRegen; }
+      return Math.min(this.cfg.manaRegenCap, r);
     }
 
     /** マナの回復速度を変える（上限 manaRegenCap） */

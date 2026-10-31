@@ -121,7 +121,7 @@
         // 打ち消し用マナを残せなくなる場合は、よほど価値が高くない限り見送る
         if (reserveCost && me.mana - cost < reserveCost && score < 6) score *= 0.4;
         // 体力を払うカードは、体力が少ないほど慎重に
-        if (h.card.hpCost) score -= h.card.hpCost * (me.hp <= 10 ? 1.2 : 0.25);
+        if (h.card.hpCost) score -= h.card.hpCost * (me.hp <= g.cfg.startHP / 3 ? 1.2 : 0.25);
         // 少しだけ揺らぎを入れて単調さを防ぐ
         score += g.rand() * 0.5;
         if (!best || score > best.score) best = { h, score, t };

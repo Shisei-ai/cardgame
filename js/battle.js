@@ -254,7 +254,7 @@
         break;
       }
       case 'phase':
-        showBanner(`PHASE ${ev.phase}`, `カードを${B.game.cfg.phaseDraw}枚ドロー`);
+        showBanner(`PHASE ${ev.phase}`, B.game.cfg.phaseDraw ? `カードを${B.game.cfg.phaseDraw}枚ドロー` : '守護が回復・フェーズ開始時の効果');
         break;
     }
   }
@@ -275,7 +275,7 @@
       g.players.forEach((p) => { renderPbar(p); renderField(p); renderCast(p); });
       renderHand();
       renderLog();
-      $('#vignette').classList.toggle('on', g.players[ME].hp <= 10 && !g.over);
+      $('#vignette').classList.toggle('on', g.players[ME].hp <= g.cfg.startHP * 0.3 && !g.over);
     }
     renderChoice();
     // 対象選択モードの案内
@@ -301,10 +301,12 @@
       const left = $(`#cast-${p.index} .pd-left`);
       if (left) left.innerHTML = `${(p.casting.remain / (p.haste > 0 ? 2 : 1)).toFixed(1)}<small>秒</small>`;
     });
-    // 次に溜まるマナの満ち具合
+    // 次に溜まるマナの満ち具合と、次のドローまでのゲージ
     g.players.forEach((p) => {
       const pip = $(`#pbar-${p.index} .pip.next`);
       if (pip) pip.style.setProperty('--f', (p.mana % 1).toFixed(2));
+      const dg = $(`#pbar-${p.index} .drawgauge i`);
+      if (dg && g.cfg.drawInterval > 0) dg.style.width = (p.drawPause > 0 ? 0 : 100 * (1 - p.drawT / g.cfg.drawInterval)).toFixed(0) + '%';
     });
     // フェーズの時計と試合の残り時間
     const pp = 1 - g.phaseTimer / g.cfg.phaseTime;
@@ -329,7 +331,7 @@
     if (p.instantNext) add('haste', '💫次は即時詠唱');
     if (p.spellDiscount) add('haste', `📚次の呪文-${p.spellDiscount}`);
     if (p.manaDebt) add('curse', `💸次 マナ-${p.manaDebt}`);
-    if (p.skipDraw) add('curse', `📓次 ドロー-${p.skipDraw}`);
+    if (p.drawPause > 0) add('curse', `📓ドロー停止 ${Math.ceil(p.drawPause)}s`);
     if (p.bonusDraw) add('haste', `📈次 ドロー+${p.bonusDraw}`);
     if (p.bonusMana) add('haste', `🐷次 マナ+${p.bonusMana}`);
     if (p.regen) add('haste', `🌿再生 あと${p.regen}回`);
@@ -353,14 +355,14 @@
     }
     el.querySelector('.hpfill').style.width = hpPct + '%';
     el.querySelector('.hptrail').style.width = hpPct + '%';
-    el.querySelector('.hpbox').classList.toggle('low', p.hp <= 10);
+    el.querySelector('.hpbox').classList.toggle('low', p.hp <= g.cfg.startHP * 0.3);
     el.querySelector('.hptext').textContent = `♥ ${Math.max(0, p.hp)} / ${g.cfg.startHP}`;
     // マナの宝石：使える分は光り、次に溜まる1つは下から満ちていく（満ち具合は毎フレーム更新）
     let pips = '';
     const whole = Math.floor(p.mana);
     for (let i = 0; i < p.maxMana; i++) pips += `<span class="pip ${i < whole ? 'on' : i === whole ? 'next' : ''}"></span>`;
-    el.querySelector('.mana').innerHTML = `${pips}<span class="mtext">${whole}<small>/${p.maxMana}</small></span><span class="mrate" title="マナの回復速度">+${p.manaRate.toFixed(p.manaRate % 1 ? 2 : 1)}/秒</span>`;
-    el.querySelector('.pinfo').innerHTML = `<span>🂠 手札 ${p.hand.length}</span><span>📚 山札 ${p.deck.length}</span><span class="grave" title="${esc(graveTip(p))}">⚰ 墓地 ${p.grave.length}</span>`;
+    el.querySelector('.mana').innerHTML = `${pips}<span class="mtext">${whole}<small>/${p.maxMana}</small></span><span class="mrate" title="マナの回復速度">+${(() => { const r = g.regenOf(p); return r.toFixed(r % 1 ? 2 : 1); })()}/秒</span>`;
+    el.querySelector('.pinfo').innerHTML = `<span class="handinfo" title="次のドローまで">🂠 手札 ${p.hand.length}<b class="drawgauge"><i></i></b></span><span>📚 山札 ${p.deck.length}</span><span class="grave" title="${esc(graveTip(p))}">⚰ 墓地 ${p.grave.length}</span>`;
     el.querySelector('.statuses').innerHTML = statusChips(p);
   }
 
