@@ -10,6 +10,7 @@
  *   cost     : 必要マナ
  *   hpCost   : 追加で支払う体力（血の契約）。体力がこの値以下だと使えない
  *   cast     : 詠唱時間（秒）。0 なら「瞬間」= 即座に発動し、打ち消されない
+ *   counter  : 【カウンター】カウンターステップでも使える（その時は詠唱なしで発動）
  *   text     : カードの説明文
  *   icon     : 仮アート（絵文字）
  *   tier     : 設計上の強さ（内部用・プレイヤーには非表示）
@@ -44,6 +45,7 @@
  *   reactive            : 相手の詠唱に反応して使うカード（通常時は使わない）
  *   react(g, me, op, threat, L) : 相手の詠唱に反応する価値
  *   threat              : 相手から見て「打ち消すべきか」の脅威度
+ *   counterAi(g, me, op, t) : カウンターステップで使う価値（t は対象）。0以下なら使わない
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -85,9 +87,10 @@
   const crs = (p) => p.field.filter((u) => !u.relic);               // 場のクリーチャーだけ（レリックを除く）
   const fieldPower = (g, p) => crs(p).reduce((s, u) => s + g.atkOf(p, u), 0);
   const missingHp = (g, p) => g.cfg.startHP - p.hp;
-  const restTime = (g) => Math.max(0, g.cfg.matchTime - g.time); // 試合の残り秒数
+  const restPhases = (g) => g.phasesLeft(); // 試合の残りフェーズ数（今のフェーズの残りを小数で含む）
   const strongest = (g, p) => crs(p).reduce((b, u) => (!b || g.atkOf(p, u) > g.atkOf(p, b) ? u : b), null);
-  const weakest = (g, p) => p.field.reduce((b, u) => (!b || u.atk + u.hp < b.atk + b.hp ? u : b), null);
+  // 最も弱い味方（攻撃予約を持つものは、予約が無駄になるので後回し）
+  const weakest = (g, p) => { const w = (u) => u.atk + u.hp + g.reservedOf(u.uid) * (u.atk + 2); return p.field.reduce((b, u) => (!b || w(u) < w(b) ? u : b), null); };
   const guardsOf = (p) => p.field.filter((u) => u.guard);
   // 味方全員で times 回ずつ攻撃したとき、本体に届く見込みのダメージ。
   // 場の順に攻撃し、潜伏以外の攻撃は、使える守護が残っている限りそちらに受け止められる
@@ -104,6 +107,30 @@
     return face;
   };
   const room = (g, p) => g.cfg.fieldLimit - p.field.length;
+  // ── カウンターステップ用（AIの判断） ──
+  // owner の予約（攻撃と本体へのダメージ）が、クロノホールで相手本体に与える見込みのダメージ。
+  // opts.extraGuard: 相手に守護（その体力）が1体増えたら / opts.noGuard: 相手の守護 unit が守護を失ったら / opts.without: 予約から除く uid
+  const pendingFace = (g, owner, opts = {}) => {
+    const op = g.opp(owner);
+    const guards = g.readyGuards(op).filter((u) => u !== opts.noGuard).map((u) => u.hp + (u.armor || 0));
+    if (opts.extraGuard) guards.push(opts.extraGuard);
+    guards.sort((a, b) => b - a);
+    let face = 0;
+    for (const r of g.queue) {
+      if (r.kind === 'damage') { if (r.target === op.index) face += r.amount; continue; }
+      if (r.pi !== owner.index || r.uid === opts.without) continue;
+      const u = owner.field.find((x) => x.uid === r.uid);
+      if (!u) continue;
+      const atk = g.atkOf(owner, u);
+      if (u.stealth || !guards.length) face += atk;
+      else { const gh = guards.shift(); if (u.pierce) face += Math.max(0, atk - gh); }
+    }
+    return face;
+  };
+  // 相手の予約を1体分なくしたら、自分が受けるダメージがどれだけ減るか
+  const threatOf = (g, t) => pendingFace(g, t.owner) - pendingFace(g, t.owner, { without: t.unit.uid });
+  // 受けるダメージが致命的なら大きく評価する（体力を守る系のカウンター用）
+  const savedValue = (g, me, saved) => { const inc = pendingFace(g, g.opp(me)); return saved + (inc >= me.hp && inc - saved < me.hp ? 20 : 0); };
   const spellIdsInHand = (p) => p.hand.filter((id) => isSpell(get(id)));
   const opCastingIs = (op, ...types) => op.casting && types.includes(op.casting.card.type);
   // 手札にある【狂気】カードの数（捨てる効果の価値が上がる）
@@ -138,8 +165,8 @@
       tier: 'niche', arch: ['aggro'], text: '召喚時、敵本体に2ダメージ。',
       onSummon(g, me, op) { g.damagePlayer(op, 2, '炎の小鬼'); } },
     { id: 'kamikaze', name: '決死隊', type: 'creature', cost: 3, cast: 1.0, atk: 4, hp: 1, icon: '🎌',
-      pierce: true, tier: 'weak', arch: ['aggro', 'grave'], text: '召喚時の攻撃の後、自壊する。',
-      afterSummon(g, me, op, unit) { g.destroyUnit(me, unit); } },
+      pierce: true, tier: 'weak', arch: ['aggro', 'grave'], text: '攻撃した後、自壊する。',
+      afterAttack(g, me, op, unit) { g.destroyUnit(me, unit); } },
     { id: 'assassin', name: '影の暗殺者', type: 'creature', cost: 4, cast: 1.5, atk: 4, hp: 2, icon: '🥷',
       stealth: true, tier: 'niche', arch: ['aggro'], text: '' },
 
@@ -173,18 +200,18 @@
     { id: 'bonesoldier', name: '骨の兵隊', type: 'creature', cost: 2, cast: 1.0, atk: 3, hp: 2, icon: '🦴',
       tier: 'niche', arch: ['grave', 'swarm'], text: '倒れた時、骸骨兵(1/1)を2体生成。',
       onDeath(g, me) { g.summon(me, 't_skeleton', { attack: false }); g.summon(me, 't_skeleton', { attack: false }); }, aiBonus: () => 1.5 },
-    { id: 'ghoul', name: '腐肉喰らい', type: 'creature', cost: 2, cast: 1.0, atk: 2, hp: 2, icon: '🧟',
+    { id: 'ghoul', name: '腐肉喰らい', type: 'creature', cost: 2, cast: 1.0, atk: 2, hp: 3, icon: '🧟',
       tier: 'niche', arch: ['grave'], text: 'いずれかのクリーチャーが倒れるたび、+1/+1。',
       onAnyDeath(g, me, op, unit) { g.buff(unit, 1, 1); }, aiBonus: (g, me, op) => (crs(me).length + crs(op).length) * 0.4 },
     { id: 'wraith', name: '怨霊', type: 'creature', cost: 2, cast: 1.2, atk: 2, hp: 1, icon: '🫥',
       undying: true, stealth: true, tier: 'niche', arch: ['grave', 'aggro'], text: '' },
     { id: 'necromancer', name: '死霊術師', type: 'creature', cost: 3, cast: 2.0, atk: 3, hp: 3, icon: '🧙',
-      tier: 'strong', arch: ['grave'], text: '召喚時、自分の墓地のクリーチャー1体をランダムに復活させる。',
-      onSummon(g, me) { g.reviveFromGrave(me, 'random'); },
+      tier: 'strong', arch: ['grave'], text: '召喚時、自分の墓地で最もコストの高いクリーチャー1体を復活させる。',
+      onSummon(g, me) { g.reviveFromGrave(me, 'highest'); },
       aiBonus: (g, me) => (g.graveCreatures(me) ? 3 : -1), threat: 5 },
     { id: 'corpsegiant', name: '屍の巨人', type: 'creature', cost: 8, cast: 3.0, atk: 8, hp: 8, icon: '🧌',
-      tier: 'strong', arch: ['grave'], text: '自分の墓地のカード2枚につき、コスト-1。',
-      costMod: (g, me) => -Math.floor(me.grave.length / 2), threat: 7 },
+      tier: 'strong', arch: ['grave'], text: '自分の墓地のカード3枚につき、コスト-2。',
+      costMod: (g, me) => -Math.floor(me.grave.length / 3) * 2, threat: 7 },
 
     // ── 呪文連鎖 ──
     { id: 'apprentice', name: '見習い魔導士', type: 'creature', cost: 2, cast: 1.0, atk: 1, hp: 3, icon: '🧑‍🎓',
@@ -211,28 +238,28 @@
       aiBonus: (g, me) => (spellIdsInHand(me).length ? 3 : 0), threat: 6 },
 
     // ── 血の契約 ──
-    { id: 'bloodpact', name: '血の盟約者', type: 'creature', cost: 0, hpCost: 3, cast: 1.0, atk: 3, hp: 3, icon: '🩸',
+    { id: 'bloodpact', name: '血の盟約者', type: 'creature', cost: 0, hpCost: 3, cast: 1.0, atk: 4, hp: 3, icon: '🩸',
       tier: 'niche', arch: ['blood'], text: '' },
     { id: 'berserker', name: '狂戦士', type: 'creature', cost: 3, cast: 1.0, atk: 2, hp: 3, icon: '😡',
-      pierce: true, tier: 'niche', arch: ['blood', 'aggro'], text: '召喚時、自分の体力が25以下なら攻撃力+3。',
-      onSummon(g, me, op, unit) { if (me.hp <= 25) g.buff(unit, 3, 0); },
-      aiBonus: (g, me) => (me.hp <= 25 ? 3 : 0) },
+      pierce: true, tier: 'niche', arch: ['blood', 'aggro'], text: '召喚時、自分の体力が30以下なら攻撃力+3。',
+      onSummon(g, me, op, unit) { if (me.hp <= 30) g.buff(unit, 3, 0); },
+      aiBonus: (g, me) => (me.hp <= 30 ? 3 : 0) },
     { id: 'bat', name: '吸血蝙蝠', type: 'creature', cost: 3, cast: 1.2, atk: 2, hp: 4, icon: '🦇',
       lifesteal: true, tier: 'niche', arch: ['blood', 'control'], text: '' },
-    { id: 'vampirelord', name: '吸血鬼の君主', type: 'creature', cost: 6, cast: 3.5, atk: 3, hp: 6, icon: '🧛',
+    { id: 'vampirelord', name: '吸血鬼の君主', type: 'creature', cost: 5, cast: 3.5, atk: 3, hp: 6, icon: '🧛',
       lifesteal: true, double: true, tier: 'strong', arch: ['blood'], text: '', threat: 8 },
 
     // ── 城塞 ──
-    { id: 'stonewall', name: '石壁', type: 'relic', cost: 1, cast: 0.8, atk: 0, hp: 3, icon: '🧱',
+    { id: 'stonewall', name: '石壁', type: 'relic', cost: 2, cast: 0.8, atk: 0, hp: 3, icon: '🧱',
       guard: true, tier: 'weak', arch: ['fortress'], text: '' },
-    { id: 'shieldman', name: '盾持ちの兵', type: 'creature', cost: 2, cast: 1.0, atk: 1, hp: 4, icon: '🛡️',
+    { id: 'shieldman', counter: true, counterAi: (g, me, op) => savedValue(g, me, pendingFace(g, op) - pendingFace(g, op, { extraGuard: 4 })) - 0.5, name: '盾持ちの兵', type: 'creature', cost: 2, cast: 1.0, atk: 1, hp: 4, icon: '🛡️',
       guard: true, tier: 'niche', arch: ['fortress', 'control'], text: '' },
     { id: 'ironwarden', name: '鉄の番兵', type: 'creature', cost: 3, cast: 1.5, atk: 2, hp: 4, icon: '🏯',
       guard: true, armor: 1, tier: 'niche', arch: ['fortress'], text: '' },
     { id: 'thornguard', name: '茨の盾兵', type: 'creature', cost: 3, cast: 1.5, atk: 1, hp: 4, icon: '🌵',
       guard: true, tier: 'niche', arch: ['fortress'], text: '攻撃を受け止めるたび、敵本体に1ダメージ。',
       onBlock(g, me, op) { g.damagePlayer(op, 1, '茨の盾兵'); } },
-    { id: 'golem', name: '鉄壁ゴーレム', type: 'creature', cost: 4, cast: 2.5, atk: 2, hp: 7, icon: '🗿',
+    { id: 'golem', name: '鉄壁ゴーレム', type: 'creature', cost: 4, cast: 2.5, atk: 2, hp: 6, icon: '🗿',
       guard: true, tier: 'niche', arch: ['fortress', 'control'], text: '' },
     { id: 'castellan', name: '城塞の主', type: 'creature', cost: 6, cast: 2.5, atk: 3, hp: 6, icon: '🏰',
       guard: true, tier: 'strong', arch: ['fortress'], text: 'フェーズ開始時、自分の防壁+1。',
@@ -244,7 +271,7 @@
     { id: 'seedling', name: '芽吹く種', type: 'creature', cost: 1, cast: 0.8, atk: 1, hp: 2, icon: '🌱',
       tier: 'niche', arch: ['growth'], text: 'フェーズ開始時、+1/+1。',
       onPhase(g, me, op, unit) { g.buff(unit, 1, 1); },
-      aiBonus: (g) => Math.max(0, (g.cfg.matchTime - g.time) / g.cfg.phaseTime) * 0.4 },
+      aiBonus: (g) => restPhases(g) * 1.2 },
     { id: 'mossrock', name: '苔むした岩', type: 'relic', cost: 3, cast: 1.5, atk: 0, hp: 4, icon: '🪨',
       guard: true, tier: 'weak', arch: ['growth', 'fortress'], text: 'フェーズ開始時、耐久+1。',
       onPhase(g, me, op, unit) { g.buff(unit, 0, 1); } },
@@ -283,7 +310,7 @@
         g._cleanup();
       },
       aiBonus: (g, me, op) => crs(op).length * 1.5 - crs(me).length, threat: 7 },
-    { id: 'dragon', name: '古竜', type: 'creature', cost: 7, cast: 4.0, atk: 8, hp: 8, icon: '🐉',
+    { id: 'dragon', name: '古竜', type: 'creature', cost: 7, cast: 4.0, atk: 7, hp: 7, icon: '🐉',
       tier: 'strong', arch: ['ramp'], text: '召喚時、敵クリーチャー全てに2ダメージ。',
       onSummon(g, me, op) { [...crs(op)].forEach((u) => g._hitUnit(u, 2)); g._cleanup(); },
       threat: 10 },
@@ -338,9 +365,9 @@
       effect(g, me) { [...crs(me)].forEach((u) => g.attack(me, u)); },
       ai: (g, me, op) => expectedFace(g, me, op) * 0.9 - 1, threat: 4 },
     { id: 'desperate', name: '捨て身の一撃', type: 'attack', cost: 3, cast: 1.0, icon: '💢',
-      tier: 'niche', arch: ['blood'], text: '自分が失っている体力の1/4（切り捨て、最大8）のダメージを敵本体に。',
-      effect(g, me, op) { g.damagePlayer(op, Math.min(8, Math.floor(missingHp(g, me) / 4)), '捨て身の一撃'); },
-      ai: (g, me) => Math.min(8, Math.floor(missingHp(g, me) / 4)) - 1 },
+      tier: 'niche', arch: ['blood'], text: '自分が失っている体力の1/3（切り捨て、最大10）のダメージを敵本体に。',
+      effect(g, me, op) { g.damagePlayer(op, Math.min(10, Math.floor(missingHp(g, me) / 3)), '捨て身の一撃'); },
+      ai: (g, me) => Math.min(10, Math.floor(missingHp(g, me) / 3)) - 1 },
     { id: 'gigantify', name: '巨大化', type: 'attack', cost: 3, cast: 1.0, icon: '🍄',
       tier: 'niche', arch: ['growth'], text: '味方で最も攻撃力の高いクリーチャーを+2/+2し、攻撃させる。',
       canUse: (g, me) => crs(me).length > 0, needText: '味方がいない',
@@ -375,9 +402,9 @@
       effect(g, me, op) { [...crs(op)].forEach((u) => g._hitUnit(u, 3)); g._cleanup(); g.damagePlayer(op, 2, '火炎嵐'); },
       ai: (g, me, op) => crs(op).reduce((s, u) => s + Math.min(u.hp, 3) + (u.hp <= 3 ? u.atk : 0), 0) - 1, threat: 5 },
     { id: 'underworld', name: '冥府の門', type: 'attack', cost: 3, cast: 2.0, icon: '🌑',
-      tier: 'niche', arch: ['grave'], text: '自分の墓地のクリーチャー1体につき、敵本体に2ダメージ（最大10）。',
-      effect(g, me, op) { g.damagePlayer(op, Math.min(10, g.graveCreatures(me) * 2), '冥府の門'); },
-      ai: (g, me) => Math.min(10, g.graveCreatures(me) * 2) - 3, threat: 6 },
+      tier: 'niche', arch: ['grave'], text: '自分の墓地のクリーチャー1体につき、敵本体に3ダメージ（最大12）。',
+      effect(g, me, op) { g.damagePlayer(op, Math.min(12, g.graveCreatures(me) * 3), '冥府の門'); },
+      ai: (g, me) => Math.min(12, g.graveCreatures(me) * 3) - 3, threat: 6 },
     { id: 'allout', name: '総攻撃', type: 'attack', cost: 7, cast: 3.0, icon: '🎺',
       tier: 'strong', arch: ['swarm'], text: '味方クリーチャー全員が2回ずつ攻撃する。',
       canUse: (g, me) => crs(me).length > 0, needText: '味方がいない',
@@ -425,9 +452,9 @@
       effect(g, me) { g.addMana(me, me.maxMana); },
       ai: (g, me) => (me.hp > g.cfg.startHP * 0.33 && me.hand.some((id) => { const c = g.costOf(me, id); return c > me.mana && c <= me.maxMana; }) && me.maxMana - me.mana >= 4 ? 4 : 0) },
     { id: 'resonance', name: '魔力共鳴', type: 'resource', cost: 1, cast: 1.0, icon: '🌀',
-      tier: 'niche', arch: ['ramp'], text: 'マナの回復速度を永続的に毎秒+0.15する。',
+      tier: 'niche', arch: ['ramp'], text: 'マナの回復速度を永続的に+15%する。',
       effect(g, me) { g.addManaRate(me, 0.15); },
-      ai: (g) => restTime(g) / 30 },
+      ai: (g) => restPhases(g) * 1.0 },
     { id: 'quickcast', name: '瞬唱', type: 'resource', cost: 1, cast: 0, icon: '💫',
       tier: 'strong', arch: ['spell', 'ramp'], text: '【瞬間】次に使うカードの詠唱時間が0になる。カードを1枚引く。',
       canUse: (g, me) => !me.instantNext, needText: '既に効果中',
@@ -443,9 +470,9 @@
       effect(g, me) { const u = weakest(g, me); if (u) { g.destroyUnit(me, u); g.addMana(me, 2); g.draw(me, 1); } },
       ai: (g, me) => { const u = weakest(g, me); if (!u) return 0; const full = room(g, me) === 0 && me.hand.some((id) => isUnit(get(id))) ? 2 : 0; return full + (get(u.id).onDeath ? 5 : u.token ? 3 : u.atk + u.hp <= 3 ? 2 : 0); } },
     { id: 'earthpulse', name: '大地の脈動', type: 'resource', cost: 3, cast: 1.5, icon: '🌍',
-      tier: 'niche', arch: ['ramp'], text: 'マナの回復速度を永続的に毎秒+0.4する。',
+      tier: 'niche', arch: ['ramp'], text: 'マナの回復速度を永続的に+40%する。',
       effect(g, me) { g.addManaRate(me, 0.4); },
-      ai: (g) => restTime(g) / 22 },
+      ai: (g) => restPhases(g) * 1.4 },
     { id: 'mimic', name: '秘術の模倣', type: 'resource', cost: 2, cast: 1.0, icon: '🪞',
       tier: 'niche', arch: ['spell'], noCopy: true, text: '直前に自分が使ったコスト2以下の呪文（対象を選ばないもの）の効果を、もう一度発動する。',
       canUse: (g, me) => !!me.lastSpell && get(me.lastSpell).cost <= 2 && !get(me.lastSpell).target, needText: '直前の呪文がコスト3以上か対象を選ぶもの',
@@ -515,7 +542,7 @@
       react: (g, me, op, threat, L) => (threat >= L.counterAt + 1 ? threat + 1 : 0) },
 
     // ═══════════════════ 回復・防御 ═══════════════════
-    { id: 'barrier', name: '防壁', type: 'heal', cost: 2, cast: 0, icon: '🔰',
+    { id: 'barrier', counter: true, counterAi: (g, me) => savedValue(g, me, Math.min(6, pendingFace(g, g.opp(me))) - me.shield * 0.5) - 1, name: '防壁', type: 'heal', cost: 2, cast: 0, icon: '🔰',
       tier: 'niche', arch: ['fortress', 'control'], reactive: true, text: '【瞬間】防壁+6（本体へのダメージを先に吸収する。上限10）。',
       effect(g, me) { g.addShield(me, 6); },
       react: (g, me, op, threat) => (threat >= 3 && opCastingIs(op, 'attack', 'creature') ? 3.5 : 0) },
@@ -606,24 +633,24 @@
       tier: 'niche', arch: ['sacrifice'], text: '召喚時、生贄にしたクリーチャーの攻撃力の2倍のダメージを敵本体に。',
       onSummon(g, me, op) { const dmg = me.lastSacrificed.reduce((s, u) => s + u.atk * 2, 0); if (dmg) g.damagePlayer(op, dmg, '死の呼び手'); },
       aiBonus: (g, me) => { const v = g.sacrificeTargets(me, 1)[0]; return v ? g.atkOf(me, v) * 2 : 0; } },
-    { id: 'bonecolossus', name: '骸の巨兵', type: 'creature', cost: 3, sacCost: 2, cast: 1.5, atk: 6, hp: 6, icon: '💀',
+    { id: 'bonecolossus', name: '骸の巨兵', type: 'creature', cost: 3, sacCost: 2, cast: 1.5, atk: 7, hp: 7, icon: '💀',
       tier: 'niche', arch: ['sacrifice', 'grave'], text: '' },
     { id: 'abysslord', name: '奈落の王', type: 'creature', cost: 4, sacCost: 3, cast: 2.0, atk: 9, hp: 9, icon: '👿',
-      tier: 'strong', arch: ['sacrifice'], text: '', threat: 10 },
+      pierce: true, tier: 'strong', arch: ['sacrifice'], text: '', threat: 10 },
 
     // ═════ 条件付き ═════
     { id: 'quietblade', name: '静寂の刃', type: 'attack', cost: 1, cast: 0.8, icon: '🗡️',
       tier: 'niche', arch: ['aggro', 'control'], text: '相手が詠唱していない時のみ使える。敵本体に4ダメージ。',
       canUse: (g, me, op) => !op.casting, needText: '相手が詠唱中',
       effect(g, me, op) { g.damagePlayer(op, 4, '静寂の刃'); }, ai: () => 4.2 },
-    { id: 'laststand', name: '背水の陣', type: 'heal', cost: 2, cast: 0, icon: '🏳️',
-      tier: 'niche', arch: ['blood', 'generic'], text: '【瞬間】自分の体力が16以下の時のみ使える。体力を7回復する。',
-      canUse: (g, me) => me.hp <= 16, needText: '体力が16より多い',
-      effect(g, me) { g.heal(me, 7); }, ai: () => 5 },
+    { id: 'laststand', counter: true, counterAi: (g, me) => savedValue(g, me, 8) * 0.7, name: '背水の陣', type: 'heal', cost: 2, cast: 0, icon: '🏳️',
+      tier: 'niche', arch: ['blood', 'generic'], text: '【瞬間】自分の体力が20以下の時のみ使える。体力を8回復する。',
+      canUse: (g, me) => me.hp <= 20, needText: '体力が20より多い',
+      effect(g, me) { g.heal(me, 8); }, ai: () => 5 },
     { id: 'comeback', name: '逆転の一撃', type: 'attack', cost: 2, cast: 1.0, icon: '🎯',
-      tier: 'niche', arch: ['blood', 'generic'], text: '相手より体力が16以上少ない時のみ使える。敵本体に11ダメージ。',
-      canUse: (g, me, op) => me.hp + 16 <= op.hp, needText: '体力差が16未満',
-      effect(g, me, op) { g.damagePlayer(op, 11, '逆転の一撃'); }, ai: () => 11 },
+      tier: 'niche', arch: ['blood', 'generic'], text: '相手より体力が20以上少ない時のみ使える。敵本体に13ダメージ。',
+      canUse: (g, me, op) => me.hp + 20 <= op.hp, needText: '体力差が20未満',
+      effect(g, me, op) { g.damagePlayer(op, 13, '逆転の一撃'); }, ai: () => 13 },
     { id: 'moonwolf', name: '月夜の狼', type: 'creature', cost: 3, cast: 1.0, atk: 2, hp: 2, icon: '🌕',
       tier: 'niche', arch: ['swarm'], text: '召喚時、他の味方が3体以上いれば+3/+1。',
       onSummon(g, me, op, unit) { if (crs(me).length - 1 >= 3) g.buff(unit, 3, 1); },
@@ -637,15 +664,15 @@
       costMod: (g, me) => (me.spellsThisPhase >= 2 ? -4 : 0),
       effect(g, me, op) { g.damagePlayer(op, 5, '呪文の極意'); }, ai: (g, me) => (me.spellsThisPhase >= 2 ? 6 : 3) },
     { id: 'gravelord', name: '墓所の主', type: 'creature', cost: 3, cast: 1.5, atk: 5, hp: 5, icon: '🏚️',
-      tier: 'niche', arch: ['grave'], text: '自分の墓地が8枚以上の時のみ使える。',
-      canUse: (g, me) => me.grave.length >= 8, needText: '墓地が8枚未満' },
+      tier: 'niche', arch: ['grave'], text: '自分の墓地が6枚以上の時のみ使える。',
+      canUse: (g, me) => me.grave.length >= 6, needText: '墓地が6枚未満' },
     { id: 'apocalypse', name: '終末の詠唱', type: 'attack', cost: 5, cast: 3.0, icon: '🌘',
-      tier: 'niche', arch: ['grave', 'discard'], text: '自分の墓地が15枚以上の時のみ使える。敵本体に12ダメージ。',
-      canUse: (g, me) => me.grave.length >= 15, needText: '墓地が15枚未満',
+      tier: 'niche', arch: ['grave', 'discard'], text: '自分の墓地が11枚以上の時のみ使える。敵本体に12ダメージ。',
+      canUse: (g, me) => me.grave.length >= 11, needText: '墓地が11枚未満',
       effect(g, me, op) { g.damagePlayer(op, 12, '終末の詠唱'); }, ai: () => 12, threat: 12 },
     { id: 'finalhour', name: '最後の審判', type: 'disrupt', cost: 4, cast: 2.0, icon: '⚖️',
-      tier: 'strong', arch: ['control'], text: '残り時間が60秒以下の時のみ使える。敵クリーチャーを全て破壊する。',
-      canUse: (g, me, op) => g.cfg.matchTime - g.time <= 60 && crs(op).length > 0, needText: '残り60秒より前',
+      tier: 'strong', arch: ['control'], text: '最後の2フェーズの間のみ使える。敵クリーチャーを全て破壊する。',
+      canUse: (g, me, op) => g.phase >= g.cfg.maxPhases - 1 && crs(op).length > 0, needText: '最後の2フェーズより前',
       effect(g, me, op) { crs(op).forEach((u) => { u.hp = 0; u.undying = false; }); g.log('最後の審判が下された', 'counter', op.index); g._cleanup(); },
       ai: (g, me, op) => crs(op).reduce((s, u) => s + g.atkOf(op, u) + u.hp * 0.5, 0) - 3, threat: 7 },
 
@@ -654,8 +681,8 @@
       tier: 'weak', arch: ['aggro'], text: '召喚時、自分のマナを全て失う。',
       onSummon(g, me) { me.mana = 0; }, aiBonus: (g, me) => -(me.mana - 1) * 1.2 },
     { id: 'cursedblade', name: '呪われた剣士', type: 'creature', cost: 2, cast: 0.8, atk: 4, hp: 3, icon: '🗡️',
-      tier: 'niche', arch: ['blood', 'aggro'], text: '召喚時、自分の体力を3失う。',
-      onSummon(g, me) { g.loseLife(me, 3, '呪われた剣士'); }, aiBonus: (g, me) => (me.hp <= g.cfg.startHP * 0.33 ? -5 : -1) },
+      tier: 'niche', arch: ['blood', 'aggro'], text: '召喚時、自分の体力を2失う。',
+      onSummon(g, me) { g.loseLife(me, 2, '呪われた剣士'); }, aiBonus: (g, me) => (me.hp <= g.cfg.startHP * 0.33 ? -5 : -1) },
     { id: 'bomber', name: '自爆兵', type: 'creature', cost: 2, cast: 1.0, atk: 2, hp: 2, icon: '💣',
       tier: 'niche', arch: ['sacrifice', 'grave'], text: '倒れた時、全てのクリーチャーに2ダメージ。',
       onDeath(g) { g.players.forEach((q) => q.field.forEach((u) => g._hitUnit(u, 2))); g._cleanup(); },
@@ -663,7 +690,7 @@
     { id: 'colossusseal', name: '封印の巨像', type: 'creature', cost: 2, cast: 1.0, atk: 6, hp: 6, icon: '🗿',
       noAttack: true, tier: 'niche', arch: ['sacrifice', 'fortress'], text: '召喚時、自分は3秒間カードを使えない。',
       onSummon(g, me) { g.silence(me, 3); }, aiBonus: (g, me) => (me.mana >= 3 ? -2 : 0) },
-    { id: 'proudgiant', name: '傲慢な巨人', type: 'creature', cost: 4, cast: 2.0, atk: 7, hp: 7, icon: '🧔',
+    { id: 'proudgiant', name: '傲慢な巨人', type: 'creature', cost: 4, cast: 2.0, atk: 6, hp: 6, icon: '🧔',
       noAttack: true, tier: 'niche', arch: ['ramp', 'growth'], text: '' },
     { id: 'rampage', name: '暴走ゴーレム', type: 'creature', cost: 3, cast: 1.0, atk: 5, hp: 5, icon: '🤖',
       tier: 'niche', arch: ['aggro', 'blood'], text: 'フェーズ開始時、自分の体力を2失う。',
@@ -708,7 +735,7 @@
     { id: 'truce', name: '停戦協定', type: 'disrupt', cost: 2, cast: 1.0, icon: '🕊️',
       tier: 'weak', arch: ['control'], text: '自分と相手は、5秒間カードを使えない。',
       effect(g, me, op) { g.silence(op, 5); g.silence(me, 5); },
-      ai: (g, me, op) => (me.hp > op.hp + 5 && g.cfg.matchTime - g.time < 30 ? 4 : 0) },
+      ai: (g, me, op) => (me.hp > op.hp + 5 && restPhases(g) < 0.5 ? 4 : 0) },
 
     // ═════ 強カード ═════
     { id: 'phoenix', name: '不死鳥', type: 'creature', cost: 4, cast: 2.5, atk: 4, hp: 3, icon: '🐦‍🔥',
@@ -741,17 +768,24 @@
     // ╔══════════════════ v0.4 追加分 ══════════════════╗
 
     // ═════ 対象を選ぶカード ═════
-    { id: 'snipe', name: '狙撃', type: 'attack', cost: 2, cast: 1.0, icon: '🎯',
+    { id: 'snipe', counter: true, counterAi: (g, me, op, t) => (t && t.unit.hp + (t.unit.armor || 0) <= 5 ? savedValue(g, me, threatOf(g, t)) * 1.2 + unitValue(g, t) * 0.4 : 0) - 1.5, name: '狙撃', type: 'attack', cost: 2, cast: 1.0, icon: '🎯',
       target: { side: 'enemy', label: '敵クリーチャー' },
       tier: 'niche', arch: ['generic', 'control'], text: '選んだ敵クリーチャーに5ダメージ。',
       effect(g, me, op, ctx) { const t = alive(ctx); if (t) g.damageUnit(t.owner, t.unit, 5); },
       ai: (g, me, op, t) => (t ? killValue(g, t, 5) : 0) },
+    { id: 'rewind', name: '時の巻き戻し', type: 'disrupt', cost: 2, cast: 1.0, icon: '⏪',
+      target: { side: 'enemy', label: '攻撃予約のある敵クリーチャー', filter: (g, me, u) => g.reservedOf(u.uid) > 0 },
+      counter: true, tier: 'niche', arch: ['control', 'generic'], text: '選んだ敵クリーチャーの攻撃予約を全て取り消す。',
+      effect(g, me, op, ctx) { const t = alive(ctx); if (t) { const n = g.cancelReservations(t.unit.uid); g.log(`${t.unit.name}の攻撃予約${n}回分が巻き戻された`, 'counter', t.owner.index); } },
+      ai: (g, me, op, t) => (t ? threatOf(g, t) - 1.5 : 0),
+      counterAi: (g, me, op, t) => (t ? savedValue(g, me, threatOf(g, t)) * 1.1 - 1.5 : 0),
+      aiTarget: (g, me, op, cands) => cands.sort((a, b) => threatOf(g, b) - threatOf(g, a))[0] },
     { id: 'banish', name: '追放の光', type: 'disrupt', cost: 2, cast: 1.0, icon: '🌟',
       target: { side: 'enemy', label: '敵クリーチャーかレリック', relics: true },
       tier: 'strong', arch: ['control', 'generic'], text: '選んだ敵クリーチャーかレリックを破壊する。',
       effect(g, me, op, ctx) { const t = alive(ctx); if (t) g.destroyUnit(t.owner, t.unit); },
       ai: (g, me, op, t) => (t ? unitValue(g, t) : 0) },
-    { id: 'lure', name: '誘い出し', type: 'disrupt', cost: 1, cast: 0.5, icon: '🪝',
+    { id: 'lure', counter: true, counterAi: (g, me, op, t) => (t ? pendingFace(g, me, { noGuard: t.unit }) - pendingFace(g, me) - 1 : 0), name: '誘い出し', type: 'disrupt', cost: 1, cast: 0.5, icon: '🪝',
       target: { side: 'enemy', label: '敵の守護', relics: true, filter: (g, me, u) => u.guard },
       tier: 'niche', arch: ['aggro', 'swarm'], text: '選んだ敵の守護（クリーチャーかレリック）の守護を失わせる。',
       effect(g, me, op, ctx) { const t = alive(ctx); if (t) { t.unit.guard = false; g.log(`${t.unit.name}は守護を失った`, 'info', t.owner.index); } },
@@ -772,7 +806,7 @@
       tier: 'niche', arch: ['control', 'generic'], text: '選んだ敵クリーチャーかレリックの能力（キーワード・誘発・オーラ）を全て消す。',
       effect(g, me, op, ctx) { const t = alive(ctx); if (t) g.muteUnit(t.owner, t.unit); },
       ai: (g, me, op, t) => (t ? abilityValue(t.unit) : 0) },
-    { id: 'bounce', name: '送還', type: 'disrupt', cost: 1, cast: 0.6, icon: '↩️',
+    { id: 'bounce', counter: true, counterAi: (g, me, op, t) => (t && t.owner === op ? savedValue(g, me, threatOf(g, t)) * 1.1 + (t.unit.token ? 1 : 0) - 1.5 : 0), name: '送還', type: 'disrupt', cost: 1, cast: 0.6, icon: '↩️',
       target: { side: 'any', label: 'クリーチャーかレリック', relics: true },
       tier: 'niche', arch: ['generic', 'control'], text: '選んだクリーチャーかレリックを持ち主の手札に戻す（トークンは消える）。味方を戻せば、召喚時の効果と攻撃をもう一度使える。',
       effect(g, me, op, ctx) { const t = alive(ctx); if (t) g.bounceUnit(t.owner, t.unit); },
@@ -782,7 +816,7 @@
         const theirs = cands.filter((x) => x.owner === op).sort((a, b) => (b.unit.token ? 9 : get(b.unit.id).cost) - (a.unit.token ? 9 : get(a.unit.id).cost));
         return theirs[0] && (theirs[0].unit.token || get(theirs[0].unit.id).cost >= 4) ? theirs[0] : mine[0] || theirs[0];
       } },
-    { id: 'lifedrain', name: '生命吸収', type: 'attack', cost: 3, cast: 1.5, icon: '🩸',
+    { id: 'lifedrain', counter: true, counterAi: (g, me, op, t) => (t && t.unit.hp + (t.unit.armor || 0) <= 3 ? savedValue(g, me, threatOf(g, t)) * 1.2 + unitValue(g, t) * 0.4 : 0) + Math.min(3, missingHp(g, me)) * 0.3 - 1.5, name: '生命吸収', type: 'attack', cost: 3, cast: 1.5, icon: '🩸',
       target: { side: 'enemy', label: '敵クリーチャー' },
       tier: 'niche', arch: ['blood', 'control'], text: '選んだ敵クリーチャーに3ダメージを与え、自分の体力を3回復する。',
       effect(g, me, op, ctx) { const t = alive(ctx); if (t) g.damageUnit(t.owner, t.unit, 3); g.heal(me, 3); },
@@ -793,19 +827,19 @@
       effect(g, me, op, ctx) { const t = alive(ctx); if (t) g.buff(t.unit, 2, 2); },
       ai: (g, me, op, t) => (t ? 2.5 + (get(t.unit.id).onGrow ? 3 : 0) + (t.unit.auto ? 1 : 0) : 0),
       aiTarget: (g, me, op, cands) => cands.sort((a, b) => growPriority(b.unit) - growPriority(a.unit))[0] },
-    { id: 'order', name: '突撃指令', type: 'attack', cost: 2, cast: 0.6, icon: '👉',
+    { id: 'order', counter: true, counterAi: (g, me, op, t) => { if (!t) return 0; const before = pendingFace(g, me); g.queue.push({ pi: me.index, uid: t.unit.uid }); const after = pendingFace(g, me); g.queue.pop(); return after - before - 1.5; }, name: '突撃指令', type: 'attack', cost: 2, cast: 0.6, icon: '👉',
       target: { side: 'ally', label: '味方クリーチャー' },
       tier: 'niche', arch: ['generic', 'aggro'], text: '選んだ味方クリーチャーが攻撃する。',
       effect(g, me, op, ctx) { const t = alive(ctx); if (t) g.attack(me, t.unit); },
       ai: (g, me, op, t) => (t ? g.atkOf(me, t.unit) * (g.readyGuards(op).length && !t.unit.stealth ? 0.4 : 1) - 0.5 : 0),
       aiTarget: (g, me, op, cands) => cands.sort((a, b) => g.atkOf(me, b.unit) - g.atkOf(me, a.unit))[0] },
-    { id: 'sacknife', name: '儀式の短剣', type: 'resource', cost: 0, cast: 0.3, icon: '🔪',
+    { id: 'sacknife', counter: true, counterAi: (g, me, op, t) => (t && t.unit.id === 'bomber' ? 3 : 0), name: '儀式の短剣', type: 'resource', cost: 0, cast: 0.3, icon: '🔪',
       target: { side: 'ally', label: '味方クリーチャー' },
       tier: 'niche', arch: ['sacrifice', 'grave'], text: '選んだ味方クリーチャーを破壊し、その攻撃力分のマナを得る（最大5）。',
       effect(g, me, op, ctx) { const t = alive(ctx); if (t) { const n = Math.min(5, g.atkOf(me, t.unit)); g.destroyUnit(me, t.unit); g.addMana(me, n); } },
       ai: (g, me, op, t) => (t ? (get(t.unit.id).onDeath ? 3 : 0) + (t.unit.token ? 1 : 0) + (me.hand.some((id) => g.costOf(me, id) > me.mana && g.costOf(me, id) <= me.mana + Math.min(5, t.unit.atk)) ? 2 : -2) : 0),
       aiTarget: (g, me, op, cands) => cands.sort((a, b) => sacPriority(b.unit) - sacPriority(a.unit))[0] },
-    { id: 'heroic', name: '英雄の加護', type: 'heal', cost: 1, cast: 0, icon: '🛡️',
+    { id: 'heroic', counter: true, counterAi: (g, me, op, t) => (t && g.reservedOf(t.unit.uid) && t.unit.hp <= 3 && op.mana >= 2 ? 1.5 : 0), name: '英雄の加護', type: 'heal', cost: 1, cast: 0, icon: '🛡️',
       target: { side: 'ally', label: '味方クリーチャー' }, reactive: true,
       tier: 'niche', arch: ['fortress', 'growth'], text: '【瞬間】選んだ味方クリーチャーを+0/+3し、不屈を与える。',
       effect(g, me, op, ctx) { const t = alive(ctx); if (t) { g.buff(t.unit, 0, 3); t.unit.undying = true; t.unit.usedUndying = false; } },
@@ -941,13 +975,13 @@
     { id: 'sentry', name: '哨兵', type: 'creature', cost: 2, cast: 1.5, atk: 1, hp: 2, icon: '💂',
       tier: 'weak', arch: ['fortress', 'generic'], text: 'フェーズ開始時、攻撃する。',
       onPhase(g, me, op, unit) { g.attack(me, unit); } },
-    { id: 'rustgolem', name: '錆びた自動人形', type: 'creature', cost: 4, cast: 2.0, atk: 2, hp: 3, icon: '⚙️',
+    { id: 'rustgolem', name: '錆びた自動人形', type: 'creature', cost: 3, cast: 2.0, atk: 2, hp: 3, icon: '⚙️',
       autoAttack: 10, tier: 'weak', arch: ['generic'], text: '' },
-    { id: 'watchdog', name: '番犬', type: 'creature', cost: 4, cast: 1.5, atk: 2, hp: 3, icon: '🐕‍🦺',
+    { id: 'watchdog', name: '番犬', type: 'creature', cost: 3, cast: 1.5, atk: 3, hp: 4, icon: '🐕‍🦺',
       autoAttack: 8, tier: 'niche', arch: ['generic', 'growth'], text: '' },
-    { id: 'warbeast', name: '戦獣', type: 'creature', cost: 6, cast: 2.5, atk: 5, hp: 5, icon: '🐗',
+    { id: 'warbeast', name: '戦獣', type: 'creature', cost: 5, cast: 2.5, atk: 5, hp: 5, icon: '🐗',
       autoAttack: 7, tier: 'strong', arch: ['ramp', 'aggro'], text: '', threat: 8 },
-    { id: 'skyknight', name: '天空騎士', type: 'creature', cost: 5, cast: 2.5, atk: 3, hp: 4, icon: '🦅',
+    { id: 'skyknight', name: '天空騎士', type: 'creature', cost: 4, cast: 2.5, atk: 3, hp: 4, icon: '🦅',
       autoAttack: 8, stealth: true, tier: 'strong', arch: ['aggro', 'generic'], text: '', threat: 7 },
     { id: 'spellblade', name: '魔法剣士', type: 'creature', cost: 3, cast: 1.5, atk: 2, hp: 3, icon: '🗡️',
       tier: 'niche', arch: ['spell'], text: '自分が呪文を使うたび、このクリーチャーが攻撃する。',
@@ -1013,7 +1047,7 @@
       tier: 'weak', arch: ['grave', 'generic'], text: '自分の墓地のカード4枚をランダムに山札に戻して切り直し、カードを1枚引く。',
       effect(g, me) { for (let k = 0; k < 4 && me.grave.length; k++) me.deck.push(me.grave.splice(Math.floor(g.rand() * me.grave.length), 1)[0]); g._shuffle(me.deck); g.draw(me, 1); },
       ai: (g, me) => (me.deck.length <= 4 ? 4 : 0.5) },
-    { id: 'recruitguard', name: '見習い衛兵', type: 'creature', cost: 1, cast: 0.8, atk: 1, hp: 2, icon: '🪖',
+    { id: 'recruitguard', counter: true, counterAi: (g, me, op) => savedValue(g, me, pendingFace(g, op) - pendingFace(g, op, { extraGuard: 2 })) - 0.5, name: '見習い衛兵', type: 'creature', cost: 1, cast: 0.8, atk: 1, hp: 2, icon: '🪖',
       guard: true, noAttack: true, tier: 'weak', arch: ['fortress'], text: '' },
 
     // ╔══════════════════ v0.5 追加分：汎用カード ══════════════════╗
@@ -1041,7 +1075,7 @@
       tier: 'niche', arch: ['generic'], text: '次のフェーズ開始時、追加でカードを3枚引く。',
       canUse: (g, me) => me.bonusDraw === 0, needText: '効果が残っている',
       effect(g, me) { me.bonusDraw = 3; },
-      ai: (g, me) => (g.cfg.matchTime - g.time > g.cfg.phaseTime && me.hand.length <= 6 ? 3 : 0) },
+      ai: (g, me) => (restPhases(g) > 1 && me.hand.length <= 6 ? 3 : 0) },
     { id: 'refill', name: '補充', type: 'draw', cost: 1, cast: 1.0, icon: '📥',
       tier: 'strong', arch: ['generic'], text: '手札が5枚になるまでカードを引く（最大4枚）。',
       canUse: (g, me) => me.hand.length <= 4, needText: '手札が5枚以上',
@@ -1055,14 +1089,14 @@
     { id: 'bandage', name: '包帯', type: 'heal', cost: 0, cast: 1.5, icon: '🩹',
       tier: 'weak', arch: ['generic'], text: '体力を2回復する。',
       effect(g, me) { g.heal(me, 2); }, ai: (g, me) => (missingHp(g, me) >= 2 ? 1.5 : 0) },
-    { id: 'potion', name: '回復薬', type: 'heal', cost: 1, cast: 0, icon: '🧪',
+    { id: 'potion', counter: true, counterAi: (g, me) => savedValue(g, me, Math.min(3, missingHp(g, me) + pendingFace(g, g.opp(me)))) * 0.6 - 1, name: '回復薬', type: 'heal', cost: 1, cast: 0, icon: '🧪',
       tier: 'niche', arch: ['generic'], text: '【瞬間】体力を3回復する。',
       effect(g, me) { g.heal(me, 3); }, ai: (g, me) => Math.min(missingHp(g, me), 3) - 1.2 },
     { id: 'regenprayer', name: '再生の祈り', type: 'heal', cost: 2, cast: 1.0, icon: '🌿',
       tier: 'niche', arch: ['generic', 'growth'], text: '次の3フェーズの間、フェーズ開始時に体力を3回復する。',
       canUse: (g, me) => me.regen === 0, needText: '効果が残っている',
       effect(g, me) { me.regen = 3; me.regenAmount = 3; },
-      ai: (g, me) => (missingHp(g, me) >= 6 && g.cfg.matchTime - g.time > 20 ? 4 : 0) },
+      ai: (g, me) => (missingHp(g, me) >= 6 && restPhases(g) > 1.5 ? 4 : 0) },
     { id: 'lifewell', name: '命の泉', type: 'heal', cost: 3, cast: 1.5, icon: '⛲',
       tier: 'niche', arch: ['generic'], text: '相手との体力の差の半分だけ、体力を回復する（最低3）。',
       effect(g, me, op) { g.heal(me, Math.max(3, Math.floor((op.hp - me.hp) / 2))); },
@@ -1086,16 +1120,16 @@
       tier: 'niche', arch: ['generic', 'ramp'], text: '次のフェーズ開始時、マナを3得る。',
       canUse: (g, me) => me.bonusMana === 0, needText: '効果が残っている',
       effect(g, me) { me.bonusMana = 3; },
-      ai: (g, me) => (restTime(g) > g.cfg.phaseTime && me.maxMana - me.mana >= 4 ? 2.5 : 0) },
+      ai: (g, me) => (restPhases(g) > 1 && me.maxMana - me.mana >= 4 ? 2.5 : 0) },
     { id: 'efficiency', name: '効率化', type: 'resource', cost: 1, cast: 0.8, icon: '⚙️',
       tier: 'niche', arch: ['generic', 'spell'], text: 'このフェーズ中、自分のコスト1以上のカードのコスト-1（最低1）。',
       canUse: (g, me) => me.phaseDiscount === 0, needText: '効果が残っている',
       effect(g, me) { me.phaseDiscount = 1; },
-      ai: (g, me) => (g.phaseTimer > 5 ? me.hand.filter((id) => get(id).cost >= 2).length * 0.8 - 0.5 : 0) },
+      ai: (g, me) => (g.step === 'play' && g.stepTimer > 20 ? me.hand.filter((id) => get(id).cost >= 2).length * 0.8 - 0.5 : 0) },
     { id: 'manaspring', name: '魔力の泉', type: 'relic', cost: 2, cast: 1.0, atk: 0, hp: 3, icon: '⛲',
-      tier: 'niche', arch: ['generic', 'ramp'], text: '場にいる間、マナの回復速度が毎秒+0.3。',
+      tier: 'niche', arch: ['generic', 'ramp'], text: '場にいる間、マナの回復速度+30%。',
       auraRegen: 0.3,
-      aiBonus: (g) => Math.max(0, (g.cfg.matchTime - g.time) / g.cfg.phaseTime) * 0.35 },
+      aiBonus: (g) => restPhases(g) * 1.0 },
     { id: 'merchant', name: '行商人', type: 'creature', cost: 2, cast: 1.0, atk: 1, hp: 2, icon: '🧳',
       tier: 'niche', arch: ['generic', 'sacrifice'], text: '倒れた時、カードを1枚引き、マナを1得る。',
       onDeath(g, me) { g.draw(me, 1); g.addMana(me, 1); }, aiBonus: () => 1.5 },
@@ -1140,11 +1174,12 @@
     if (c.pierce) kw.push('貫通');
     if (c.noAttack) kw.push('鈍重');
     if (c.onDiscard) kw.push('狂気');
-    if (c.autoAttack) kw.push(`自律${c.autoAttack}秒`);
+    if (c.autoAttack) kw.push('自律');
     return kw;
   }
   function fullText(c, long) {
     const parts = [];
+    if (c.counter) parts.push('〔カウンター〕');
     if (c.hpCost) parts.push(`《代償：体力${c.hpCost}》`);
     if (c.sacCost) parts.push(`《生贄：味方${c.sacCost}体》`);
     if (isUnit(c)) {
@@ -1157,7 +1192,9 @@
   }
 
   const KEYWORD_HELP = {
-    守護: '敵クリーチャーの攻撃を本体の代わりに受け止める（1フェーズに1回まで）',
+    カウンター: 'カウンターステップでも使える（その時は詠唱なしで即座に発動。1回のカウンターステップで2枚まで）',
+    攻撃: 'クリーチャーの攻撃はその場では起きず「攻撃予約」になり、フェーズの終わりのクロノホールで予約順に実行される',
+    守護: '敵クリーチャーの攻撃を本体の代わりに受け止める（1回のクロノホールで1回まで）',
     潜伏: '攻撃時に守護を無視して本体を狙う',
     吸血: '与えたダメージ分、自分の体力を回復',
     連撃: '召喚時に2回攻撃する',
@@ -1169,7 +1206,7 @@
     鈍重: '召喚時に攻撃しない',
     狂気: '手札から捨てられた時に効果が発動する',
     レリック: '場に出て効果を発揮し続ける。攻撃はしない。耐久が0になると壊れる。「クリーチャー」を対象にする効果は効かない',
-    自律: '表示の秒数ごとに、自分の力で攻撃する',
+    自律: '毎フェーズ、プレイステップの終わりに自分の力で攻撃を予約する',
     対象: 'カードを使う時に対象を選ぶ。詠唱中は相手にも対象が見え、発動までに対象がいなくなると不発',
   };
 

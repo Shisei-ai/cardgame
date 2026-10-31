@@ -81,6 +81,7 @@
       <div class="c-cast${castCls}">${castLabel}</div>
       ${side ? `<div class="c-side">${side}</div>` : ''}
       ${card.target ? '<div class="c-target">🎯</div>' : ''}
+      ${card.counter ? '<div class="c-counter" title="カウンターステップでも使える"><span>COUNTER</span></div>' : ''}
       ${stats}
       ${opts.key != null ? `<div class="c-key">${opts.key}</div>` : ''}
       ${opts.badge ? `<div class="c-badge">${esc(opts.badge)}</div>` : ''}
@@ -94,9 +95,10 @@
     const castLabel = card.cast > 0 ? `詠唱 ${card.cast}秒` : '瞬間（詠唱なし）';
     const extra = (card.hpCost ? ` ＋ 体力${card.hpCost}` : '') + (card.sacCost ? ` ＋ 生贄${card.sacCost}体` : '');
     const lines = [`<b>${esc(card.name)}</b>（${Cards.TYPES[card.type].label}）`, `コスト ${card.cost}${extra}　/　${castLabel}`];
-    if (card.type === 'creature') lines.push(card.noAttack ? '召喚時に攻撃しない' : card.double ? '召喚時に2回攻撃する' : '召喚時に1回攻撃する');
+    if (card.counter) lines.push(`<b>カウンター</b>：${Cards.KEYWORD_HELP['カウンター']}`);
+    if (card.type === 'creature') lines.push(card.noAttack ? '召喚時に攻撃しない' : card.double ? '召喚時に2回攻撃を予約する' : '召喚時に1回攻撃を予約する（クロノホールで攻撃）');
     if (card.type === 'relic') lines.push(`耐久 ${card.hp}`, `<b>レリック</b>：${Cards.KEYWORD_HELP['レリック']}`);
-    const kws = Cards.keywords(card).map((k) => k.replace(/\d+秒?$/, ''));
+    const kws = Cards.keywords(card).map((k) => k.replace(/\d+$/, ''));
     if (card.target) kws.push('対象');
     if (card.hpCost) kws.push('代償');
     if (card.sacCost) kws.push('生贄');

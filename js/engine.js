@@ -1,13 +1,20 @@
 /*
  * engine.js — ゲームのルール処理（画面表示とは完全に分離）
  *
- * ゲームは「時間」で進みます。update(dt) を呼ぶたびに dt 秒だけ時間が進み、
- *   ・マナが少しずつ回復（毎秒 manaRate。最大マナまで）
- *   ・drawInterval 秒ごとにカードを1枚引く
- *   ・詠唱中のカードの残り時間が減り、0になったら発動
- *   ・フェーズタイマーが0になったら次のフェーズ（2枚ドロー＋フェーズ開始時の効果）
- *   ・試合時間が尽きたら体力の多い方が勝ち
- * という処理が行われます。
+ * ■ 1フェーズは3つのステップでできています（v0.11）
+ *   1. プレイステップ（playTime 秒）
+ *        お互いに自由にカードを使う。マナが時間で回復し、drawInterval 秒ごとに1枚引く。
+ *        クリーチャーの攻撃と、プレイヤー本体へのダメージは、その場では起きず「予約」になる（attack(), damagePlayer()）。
+ *        クリーチャーへのダメージ・回復・ドローなどはその場で起きる。
+ *        両者が「準備完了」を押すか時間切れで終わる。誰かが詠唱中なら、詠唱が終わるまで延長（延長中は瞬間のみ）。
+ *   2. カウンターステップ（counterTime 秒）
+ *        時間が止まる（マナ回復・ドロー・封印などの残り時間も止まる）。
+ *        【カウンター】を持つカードだけが、詠唱なしで使える（1人 counterLimit 枚まで）。
+ *        両者が「パス」するか時間切れで終わる。誰かがカウンターを使うと、相手のパスは取り消される。
+ *   3. クロノホール
+ *        このフェーズに溜まった予約（攻撃・本体へのダメージ）を、予約された順に1つずつ実行する。操作はできない。
+ *        体力0の決着は、ここでだけ付く。
+ *        終わったら次のフェーズへ。maxPhases フェーズ目のクロノホールの後は、体力の多い方が勝ち。
  *
  * ブラウザでは毎フレーム実時間で update を呼び、
  * バランス検証用シミュレーター（tools/simulate.js）では 0.1 秒刻みで高速に回します。
@@ -24,7 +31,8 @@
  *   onLifeLoss   自分（プレイヤー）が体力を失った時（第2引数 'damage'=ダメージ / 'self'=代償や自傷）
  *   onHeal       自分（プレイヤー）が体力を回復した時
  *   onGrow       このクリーチャーが強化された（+X/+Yを得た）時
- *   autoAttack   【自律】この秒数ごとに自動で攻撃する
+ *   autoAttack   【自律】プレイステップの終わりに、自動で攻撃を予約する（値は真偽として扱う）
+ *   afterAttack  このクリーチャーがクロノホールで攻撃した後
  *
  * ■ 対象を選ぶカード
  *   target: { side: 'enemy' | 'ally' | 'any', optional, filter(g, me, unit, owner), label }
@@ -41,7 +49,7 @@
  *   noAttack     召喚時に攻撃しない（鈍重）
  *
  * ■ 守護は1フェーズに1回
- *   守護が攻撃を受け止められるのは、1フェーズにつき1回まで（フェーズ開始時に回復）。
+ *   守護が攻撃を受け止められるのは、1フェーズにつき1回まで（＝1回のクロノホールで1回。フェーズ開始時に回復）。
  *   安いクリーチャーで守護を使わせ、その隙に本命を通す…という駆け引きのためのルール。
  *   auraAtk      場にいる間、他の味方の攻撃力を増やす数値
  *   auraCost     場にいる間、自分のカードのコストを補正する関数
@@ -56,24 +64,35 @@
 
   // ── バランス調整の要となる数値はすべてここに集約 ──
   const CONFIG = {
-    startHP: 50,        // 初期体力（＝最大体力）
-    matchTime: 180,     // 試合の制限時間（秒）
-    phaseTime: 10,      // 1フェーズの長さ（秒）
+    startHP: 60,        // 初期体力（＝最大体力）
+    maxPhases: 6,       // 試合のフェーズ数。最後のクロノホールの後、体力が多い方の勝ち
+    playTime: 60,       // プレイステップの長さ（秒）
+    counterTime: 30,    // カウンターステップの長さ（秒）
+    counterMin: 1.5,    // カウンターステップの最短の長さ（両者がすぐパスしても、画面で状況を確認できるように）
+    counterExtend: 8,   // カウンターが使われたら、残り時間を最低この秒数にする（後出しの応酬に余地を残す）
+    counterLimit: 2,    // 1回のカウンターステップで、1人が使えるカウンターの枚数
+    hallInterval: 0.8,  // クロノホールで、攻撃1回ごとの間隔（秒）
+    hallPause: 1.2,     // クロノホールの始まりと終わりの間（秒）
+    hallMaxStrikes: 60, // 1回のクロノホールで実行する攻撃の上限（誘発の無限連鎖を防ぐ）
     startMana: 5,       // 試合開始時のマナ
     baseMaxMana: 10,    // 最大マナ（最初から固定。カード効果でのみ増減する）
     maxManaCap: 15,     // カード効果で最大マナを増やせる上限
-    manaRegen: 1,       // マナの回復速度（毎秒）。カード効果で速くできる
-    manaRegenCap: 3,    // 回復速度の上限（毎秒）
+    manaRegen: 0.25,    // マナの回復速度（毎秒）。カード効果で速くできる（4秒で1マナ）
+    manaRegenBoostCap: 2, // カード効果による回復速度の上昇の上限（+200% = 3倍）
     startHand: 5,       // 初期手札
     phaseDraw: 0,       // フェーズ開始時に引く枚数（v0.8から時間によるドローに置き換え）
-    drawInterval: 3,    // この秒数ごとにカードを1枚引く（0なら時間によるドローなし）
+    drawInterval: 8,    // プレイステップ中、この秒数ごとにカードを1枚引く（0なら時間によるドローなし）
     handLimit: 10,      // 手札上限（超えて引いたカードは墓地へ）
     fieldLimit: 5,      // 場に出せるクリーチャーの上限（満杯で召喚すると一番古い味方が倒れる）
     fatigue: 2,         // 山札切れで引こうとしたときのダメージ
     shieldCap: 10,      // 防壁の上限
-    choiceTime: 6,      // 人間が効果の途中で選択するときの制限時間（秒）。この間は時間が止まる
+    choiceTime: 10,     // 人間が効果の途中で選択するときの制限時間（秒）。この間は時間が止まる
     maxTriggerDepth: 10, // 誘発が誘発を呼ぶ連鎖の上限（無限ループ防止）
     guardRetaliate: false, // 守護が攻撃を受け止めた時、攻撃してきたクリーチャーに反撃するか（反撃すると守護が強すぎた）
+    guardBlocks: 1,     // 守護が1回のクロノホールで受け止められる回数
+    finalAllAttack: true,  // 最終フェーズのプレイステップの終わりに、場の全クリーチャーが攻撃を予約する
+    finalNoGuard: false,   // 最終フェーズのクロノホールでは、守護が攻撃を受け止めない
+    allAttack: false,      // （検証用）毎フェーズ、プレイステップの終わりに場の全クリーチャーが攻撃を予約する
     deckSize: 40,       // デッキ枚数
     maxCopies: 4,       // 同名カードの上限枚数
   };
@@ -115,9 +134,19 @@
     constructor(opts) {
       this.cfg = Object.assign({}, CONFIG, opts.config || {});
       this.rand = mulberry32(opts.seed != null ? opts.seed : (Math.random() * 2 ** 32) >>> 0);
-      this.time = 0;
+      this.time = 0;          // プレイステップの経過時間の合計（詠唱・封印などの「時間」はこれで進む）
+      this.clock = 0;         // 試合全体の経過時間（カウンターステップ・クロノホールも含む）
       this.phase = 1;
-      this.phaseTimer = this.cfg.phaseTime;
+      this.step = 'play';     // 'play'（プレイステップ）/ 'counter'（カウンターステップ）/ 'hall'（クロノホール）
+      this.stepTimer = this.cfg.playTime; // 今のステップの残り秒数
+      this.stepElapsed = 0;   // 今のステップの経過秒数
+      this.ready = [false, false];  // プレイステップで「準備完了」を押したか
+      this.passed = [false, false]; // カウンターステップで「パス」したか
+      this.queue = [];        // 攻撃予約 [{ pi, uid, seq }]。クロノホールで先頭から実行する
+      this.reserveSeq = 1;
+      this.hallT = 0;         // クロノホールで、次の攻撃までの残り秒数
+      this.hallDone = false;  // クロノホールで、全ての攻撃が終わったか
+      this.hallStrikes = 0;
       this.over = false;
       this.winner = null;     // 0 / 1 / -1(引き分け)
       this.endReason = '';
@@ -143,7 +172,7 @@
         hp: this.cfg.startHP,
         mana: this.cfg.startMana,   // 今のマナ（時間で少しずつ増えるので小数になる。使えるのは整数部分）
         maxMana: this.cfg.baseMaxMana,
-        manaRate: this.cfg.manaRegen, // マナの回復速度（毎秒）
+        manaBoost: 0,       // カード効果によるマナ回復速度の上昇（0.15 = +15%）
         deck: [...deck],
         hand: [],
         field: [],
@@ -169,7 +198,8 @@
         lastSacrificed: [], // 直前に生贄にしたクリーチャー（死の呼び手などが参照）
         human: false,       // 人間が操作するか（効果の途中での選択を画面に任せる）
         chooser: null,      // AIの選択関数 (kind, options, count, req) => 選んだ番号の配列
-        stats: { damageDealt: 0, cardsPlayed: 0, countered: 0, played: {} },
+        countersUsed: 0,    // このカウンターステップで使ったカウンターの枚数
+        stats: { damageDealt: 0, cardsPlayed: 0, countered: 0, countersUsed: 0, played: {} },
       };
     }
 
@@ -265,7 +295,10 @@
     }
 
     /** 今すぐ攻撃を受け止められる（このフェーズにまだ受け止めていない）守護 */
-    readyGuards(p) { return p.field.filter((u) => u.guard && u.hp > 0 && !u.spent); }
+    readyGuards(p) {
+      if (this.cfg.finalNoGuard && this.phase >= this.cfg.maxPhases && this.step === 'hall') return [];
+      return p.field.filter((u) => u.guard && u.hp > 0 && (u.blocks || 0) < this.cfg.guardBlocks);
+    }
 
     addShield(p, n) {
       p.shield = Math.min(this.cfg.shieldCap, p.shield + n);
@@ -283,42 +316,44 @@
         if (this.pending.timeLeft <= 0) this.resolveChoice(null);
         return;
       }
+      this.clock += dt;
+      this.stepElapsed += dt;
+      if (this.step === 'play') this._updatePlay(dt);
+      else if (this.step === 'counter') this._updateCounter(dt);
+      else this._updateHall(dt);
+    }
+
+    /** プレイステップの延長中か（時間切れだが、誰かの詠唱が終わるのを待っている） */
+    get overtime() { return this.step === 'play' && this.stepTimer <= 0; }
+
+    _updatePlay(dt) {
+      const overtime = this.overtime;
+      this.stepTimer = Math.max(0, this.stepTimer - dt);
       this.time += dt;
 
-      // 時間によるドロー（drawPause の間は止まる）
-      if (this.cfg.drawInterval > 0) {
-        for (const p of this.players) {
-          if (p.drawPause > 0) { p.drawPause = Math.max(0, p.drawPause - dt); continue; }
-          p.drawT -= dt;
-          if (p.drawT <= 0) { p.drawT += this.cfg.drawInterval; this.draw(p, 1); }
+      if (!overtime) {
+        // 時間によるドロー（drawPause の間は止まる）
+        if (this.cfg.drawInterval > 0) {
+          for (const p of this.players) {
+            if (p.drawPause > 0) { p.drawPause = Math.max(0, p.drawPause - dt); continue; }
+            p.drawT -= dt;
+            if (p.drawT <= 0) { p.drawT += this.cfg.drawInterval; this.draw(p, 1); }
+          }
+          if (this.over) return;
         }
-        if (this.over) return;
-      }
-      // マナの回復（最大マナまで。時間停止や封印の間も回復は続く）
-      for (const p of this.players) {
-        if (p.mana < p.maxMana) {
-          const before = Math.floor(p.mana);
-          p.mana = Math.min(p.maxMana, p.mana + this.regenOf(p) * dt);
-          if (Math.floor(p.mana) !== before) this._bump(); // 使えるマナが1増えたら画面を更新
+        // マナの回復（最大マナまで。時間停止や封印の間も回復は続く）
+        for (const p of this.players) {
+          if (p.mana < p.maxMana) {
+            const before = Math.floor(p.mana);
+            p.mana = Math.min(p.maxMana, p.mana + this.regenOf(p) * dt);
+            if (Math.floor(p.mana) !== before) this._bump(); // 使えるマナが1増えたら画面を更新
+          }
         }
       }
 
       for (const p of this.players) {
         for (const k of ['silence', 'stun', 'haste', 'curse']) {
           if (p[k] > 0) { p[k] = Math.max(0, p[k] - dt); if (p[k] === 0) this._bump(); }
-        }
-      }
-      // 【自律】攻撃（時間停止中は止まる）
-      for (const p of this.players) {
-        if (p.stun > 0) continue;
-        for (const u of [...p.field]) {
-          if (!u.auto || u.muted || !p.field.includes(u)) continue;
-          u.autoT -= dt;
-          if (u.autoT <= 0) {
-            u.autoT += u.auto;
-            this.attack(p, u);
-            if (this.over) return;
-          }
         }
       }
       // 詠唱の進行（両者同時。同じ瞬間に完了した場合はプレイヤー番号順）
@@ -333,15 +368,108 @@
         }
       }
 
-      this.phaseTimer -= dt;
-      if (this.phaseTimer <= 0) this._newPhase();
+      // 時間切れ、または両者が準備完了 → 詠唱中のカードがなくなったらカウンターステップへ
+      const done = this.stepTimer <= 0 || (this.ready[0] && this.ready[1]);
+      if (done && !this.players.some((p) => p.casting)) this._beginCounter();
+    }
 
-      if (!this.over && this.time >= this.cfg.matchTime) this._timeUp();
+    _beginCounter() {
+      // 【自律】のクリーチャーは、プレイステップの終わりに攻撃を予約する
+      const final = this.phase >= this.cfg.maxPhases;
+      for (const p of this.players) {
+        for (const u of [...p.field]) if (!u.relic && ((u.auto && !u.muted) || (final && this.cfg.finalAllAttack) || this.cfg.allAttack)) this.attack(p, u);
+      }
+      this.step = 'counter';
+      this.stepTimer = this.cfg.counterTime;
+      this.stepElapsed = 0;
+      this.passed = [false, false];
+      this.players.forEach((p) => { p.countersUsed = 0; });
+      this.log(`カウンターステップ（予約 ${this.queue.length}）`, 'phase');
+      this._autoPass();
+      this._emit({ type: 'step', step: 'counter' });
+      this._bump();
+    }
+
+    /** 使えるカウンターが1枚もないプレイヤーは自動でパスする */
+    _autoPass() {
+      for (const p of this.players) {
+        if (this.passed[p.index]) continue;
+        if (!p.hand.some((_, i) => this.canPlay(p.index, i).ok)) this.passed[p.index] = true;
+      }
+    }
+
+    _updateCounter(dt) {
+      this.stepTimer = Math.max(0, this.stepTimer - dt);
+      const allPassed = this.passed[0] && this.passed[1];
+      if (this.stepTimer <= 0 || (allPassed && this.stepElapsed >= this.cfg.counterMin)) this._beginHall();
+    }
+
+    _beginHall() {
+      this.step = 'hall';
+      this.stepTimer = 0;
+      this.stepElapsed = 0;
+      this.hallT = this.cfg.hallPause;
+      this.hallDone = false;
+      this.hallStrikes = 0;
+      this.log('クロノホール', 'phase');
+      this._emit({ type: 'step', step: 'hall' });
+      this._bump();
+    }
+
+    _updateHall(dt) {
+      this.hallT -= dt;
+      while (this.hallT <= 0 && !this.over && this.step === 'hall') {
+        if (!this.hallDone && this.queue.length && this.hallStrikes < this.cfg.hallMaxStrikes) {
+          const r = this.queue.shift();
+          this.hallStrikes++;
+          this._strikeReserved(r);
+          this.hallT += this.cfg.hallInterval;
+        } else if (!this.hallDone) {
+          if (this.queue.length) { this.log('攻撃が多すぎるため、残りの予約は消えた', 'info'); this.queue = []; }
+          this.hallDone = true;
+          this.hallT += this.cfg.hallPause;
+          this._bump();
+        } else {
+          this._endPhase();
+        }
+      }
+    }
+
+    /** 攻撃予約を1つ実行する。予約したクリーチャーが場を離れていたら（持ち主が変わっていても）不発 */
+    _strikeReserved(r) {
+      if (r.kind === 'damage') {
+        this._emit({ type: 'strike', reservation: r });
+        this._emit({ type: 'burn', from: r.pi, to: r.target, amount: r.amount });
+        this.damagePlayer(this.players[r.target], r.amount, r.name);
+        return;
+      }
+      const p = this.players[r.pi];
+      const unit = p.field.find((u) => u.uid === r.uid);
+      this._emit({ type: 'strike', reservation: r });
+      if (!unit || unit.hp <= 0 || unit.relic) {
+        this.log(`${r.name}の攻撃予約は消えた`, 'info', r.pi);
+        this._emit({ type: 'fizzle', reservation: r });
+        this._bump();
+        return;
+      }
+      this._strike(p, unit);
+      if (p.field.includes(unit)) this._self(p, unit, 'afterAttack');
+      this._cleanup();
+      this._checkDeath();
+    }
+
+    _endPhase() {
+      this._emit({ type: 'hallEnd', phase: this.phase });
+      if (this.phase >= this.cfg.maxPhases) { this._timeUp(); return; }
+      this._newPhase();
     }
 
     _newPhase() {
       this.phase++;
-      this.phaseTimer += this.cfg.phaseTime;
+      this.step = 'play';
+      this.stepTimer = this.cfg.playTime;
+      this.stepElapsed = 0;
+      this.ready = [false, false];
       this.log(`第${this.phase}フェーズ開始`, 'phase');
       for (const p of this.players) {
         // マナはフェーズをまたいでもそのまま（回復は時間で行う）。前借り・貯蓄の精算だけ行う
@@ -357,7 +485,7 @@
         }
         p.spellsThisPhase = 0;
         p.phaseDiscount = 0;
-        p.field.forEach((u) => { u.spent = false; });
+        p.field.forEach((u) => { u.spent = false; u.blocks = 0; });
         const n = this.cfg.phaseDraw + p.bonusDraw;
         if (p.bonusDraw) this.log(`${p.name}は追加でカードを${p.bonusDraw}枚引く`, 'info', p.index);
         p.bonusDraw = 0;
@@ -368,7 +496,36 @@
       for (const p of this.players) this._fire(p, 'onPhase');
       this._cleanup();
       this._emit({ type: 'phase', phase: this.phase });
+      this._emit({ type: 'step', step: 'play' });
       this._bump();
+    }
+
+    /** プレイステップの「準備完了」、カウンターステップの「パス」 */
+    setReady(pi, on = true) {
+      if (this.over) return;
+      if (this.step === 'play') this.ready[pi] = !!on;
+      else if (this.step === 'counter') this.passed[pi] = !!on;
+      this._bump();
+    }
+
+    /** 残りフェーズ数の目安（今のフェーズの残りを小数で含む）。カード効果やAIが「終盤か」の判断に使う */
+    phasesLeft() {
+      const frac = this.step === 'play' ? this.stepTimer / this.cfg.playTime : 0;
+      return Math.max(0, this.cfg.maxPhases - this.phase + frac);
+    }
+
+    /** プレイヤー pi が受ける予定の「ダメージ予約」の合計（クリーチャーの攻撃は含まない） */
+    pendingDamage(pi) { return this.queue.reduce((n, r) => n + (r.kind === 'damage' && r.target === pi ? r.amount : 0), 0); }
+
+    /** uid のクリーチャーが持っている攻撃予約の数 */
+    reservedOf(uid) { return this.queue.reduce((n, r) => n + (r.uid === uid ? 1 : 0), 0); }
+
+    /** uid のクリーチャーの攻撃予約を取り消す。n を省略すると全て。取り消した数を返す */
+    cancelReservations(uid, n = Infinity) {
+      let k = 0;
+      this.queue = this.queue.filter((r) => { if (r.uid === uid && k < n) { k++; return false; } return true; });
+      if (k) this._bump();
+      return k;
     }
 
     _timeUp() {
@@ -401,12 +558,21 @@
       const id = p.hand[idx];
       if (this.over || id == null) return { ok: false, reason: '' };
       const c = Cards.get(id);
-      if (p.stun > 0) return { ok: false, reason: '時間停止中' };
-      if (p.silence > 0) return { ok: false, reason: '封印中' };
+      const counterStep = this.step === 'counter';
+      if (this.step === 'hall') return { ok: false, reason: 'クロノホール' };
+      if (counterStep) {
+        // カウンターステップは「時間の外」。【カウンター】だけが使え、封印や時間停止の影響を受けない
+        if (!c.counter) return { ok: false, reason: 'カウンターではない' };
+        if (p.countersUsed >= this.cfg.counterLimit) return { ok: false, reason: `カウンターは${this.cfg.counterLimit}枚まで` };
+      } else {
+        if (p.stun > 0) return { ok: false, reason: '時間停止中' };
+        if (p.silence > 0) return { ok: false, reason: '封印中' };
+        if (this.overtime && this.castOf(p, id) > 0) return { ok: false, reason: '延長中は瞬間のみ' };
+      }
       if (p.mana < this.costOf(p, id)) return { ok: false, reason: 'マナ不足' };
       if (c.hpCost && p.hp <= c.hpCost) return { ok: false, reason: '体力不足' };
       if (c.sacCost && p.field.length < c.sacCost) return { ok: false, reason: `生贄が${c.sacCost}体必要` };
-      if (this.castOf(p, id) > 0 && p.casting) return { ok: false, reason: '詠唱中' };
+      if (!counterStep && this.castOf(p, id) > 0 && p.casting) return { ok: false, reason: '詠唱中' };
       if (c.canUse && !c.canUse(this, p, this.opp(p))) return { ok: false, reason: c.needText || '条件未達' };
       if (c.target && !c.target.optional && !this.validTargets(p, c).length) return { ok: false, reason: '対象がいない' };
       if (this.pending) return { ok: false, reason: '選択中' };
@@ -433,7 +599,8 @@
       }
       // コストと詠唱時間は手札から取り除く前に確定させる
       const cost = this.costOf(p, id);
-      const cast = this.castOf(p, id);
+      const counterStep = this.step === 'counter';
+      const cast = counterStep ? 0 : this.castOf(p, id); // カウンターステップでは詠唱なしで発動する
       p.hand.splice(idx, 1);
       p.mana -= cost;
       if (c.hpCost) this.loseLife(p, c.hpCost, `【${c.name}】の代償`);
@@ -447,15 +614,25 @@
       }
       p.stats.cardsPlayed++;
       p.stats.played[id] = (p.stats.played[id] || 0) + 1;
+      if (counterStep) {
+        p.countersUsed++;
+        p.stats.countersUsed++;
+        // 相手に応じ返す余地を残す：相手のパスを取り消し、残り時間を最低 counterExtend 秒にする
+        this.passed[op.index] = false;
+        this.passed[p.index] = false;
+        this.stepTimer = Math.max(this.stepTimer, this.cfg.counterExtend);
+      } else {
+        this.ready[p.index] = false; // カードを使ったら「準備完了」は取り消し
+      }
 
       if (cast > 0) {
         p.casting = { card: c, total: cast, remain: cast, start: this.time, target };
         const tu = target != null ? this.findUnit(target) : null;
         this.log(`${p.name}：【${c.name}】詠唱開始${tu ? `（対象：${tu.unit.name}）` : ''}`, 'cast', p.index);
       } else {
-        this.log(`${p.name}：【${c.name}】${c.cast > 0 ? '（即時詠唱）' : '（瞬間）'}`, 'play', p.index);
+        this.log(`${p.name}：【${c.name}】${counterStep ? '（カウンター）' : c.cast > 0 ? '（即時詠唱）' : '（瞬間）'}`, 'play', p.index);
       }
-      this._emit({ type: 'play', player: p.index, card: c, instant: cast <= 0 });
+      this._emit({ type: 'play', player: p.index, card: c, instant: cast <= 0, counter: counterStep });
 
       // 「カードを使った時」に誘発する能力
       this._fire(p, 'onAllyPlay', c);
@@ -464,6 +641,7 @@
       if (p.curse > 0) this.damagePlayer(p, 1, '呪いの刻印');
 
       if (cast <= 0 && !this.over) this._resolve(p, c, target);
+      if (counterStep && !this.over) this._autoPass();
       this._bump();
       return chk;
     }
@@ -518,15 +696,20 @@
         double: !!c.double, undying: !!c.undying, armor: c.armor || 0, pierce: !!c.pierce, token: !!c.token,
         relic: c.type === 'relic', // レリック：攻撃せず、「クリーチャー」を対象にする効果も効かない
         spent: false, // 守護がこのフェーズに既に攻撃を受け止めたか
-        auto: c.autoAttack || 0, autoT: c.autoAttack || 0, // 【自律】の間隔と、次の攻撃までの残り秒数
+        auto: !!c.autoAttack, // 【自律】プレイステップの終わりに攻撃を予約する
         muted: false, // 能力を消されたか
         ctx: opts.ctx || null, // 召喚時の対象（反響の竪琴が召喚時効果を再現するのに使う）
       };
       p.field.push(unit);
       this.log(`${p.name}：【${c.name}】${c.token ? '生成' : c.type === 'relic' ? '設置' : '召喚'}`, 'resolve', p.index);
       this._emit({ type: 'summon', player: p.index, unit });
-      if (c.onSummon) c.onSummon(this, p, op, unit, unit.ctx);
-      if (opts.attack !== false && !c.noAttack && !unit.relic) {
+      // 召喚時の効果も誘発の連鎖として数える（死霊術師が死霊術師を蘇らせ続ける、などの無限連鎖を防ぐ）
+      if (c.onSummon && this._depth < this.cfg.maxTriggerDepth) {
+        this._depth++;
+        try { c.onSummon(this, p, op, unit, unit.ctx); } finally { this._depth--; }
+      }
+      // カウンターステップで出たクリーチャーは、召喚時の攻撃をしない（後出しで攻撃を足せないように）
+      if (opts.attack !== false && !c.noAttack && !unit.relic && this.step !== 'counter') {
         this.attack(p, unit);
         if (unit.double) this.attack(p, unit);
       }
@@ -537,8 +720,21 @@
       return unit;
     }
 
-    /** クリーチャー unit で攻撃する。敵に守護がいればそちらが受け止める */
+    /**
+     * クリーチャー unit で攻撃する。
+     * 攻撃はその場では起きず「攻撃予約」になり、クロノホールで予約された順に実行される。
+     * クロノホール中に誘発した攻撃も予約の最後に加わり、同じクロノホールの中で実行される。
+     */
     attack(p, unit) {
+      if (this.over || unit.relic || !p.field.includes(unit) || unit.hp <= 0) return;
+      const r = { pi: p.index, uid: unit.uid, name: unit.name, icon: unit.icon, seq: this.reserveSeq++ };
+      this.queue.push(r);
+      this._emit({ type: 'reserve', player: p.index, unit, reservation: r });
+      this._bump();
+    }
+
+    /** 攻撃を実際に行う（クロノホールから呼ばれる）。敵に守護がいればそちらが受け止める */
+    _strike(p, unit) {
       if (this.over || unit.relic || !p.field.includes(unit) || unit.hp <= 0) return;
       const op = this.opp(p);
       const atk = this.atkOf(p, unit);
@@ -548,8 +744,9 @@
         if (guards.length) target = guards.reduce((a, b) => (b.hp > a.hp ? b : a));
       }
       if (target) {
-        // 守護が受け止められるのは1フェーズに1回まで
-        target.spent = true;
+        // 守護が受け止められるのは1回のクロノホールで guardBlocks 回まで
+        target.blocks = (target.blocks || 0) + 1;
+        target.spent = target.blocks >= this.cfg.guardBlocks;
         // クリーチャー同士は互いに攻撃力分のダメージを与え合う
         const overflow = atk - (target.armor || 0) - Math.max(0, target.hp);
         this._hitUnit(target, atk);
@@ -569,9 +766,21 @@
       this._bump();
     }
 
-    /** プレイヤー本体へのダメージ。防壁で軽減された後、実際に与えたダメージを返す */
+    /**
+     * プレイヤー本体へのダメージ。
+     * クロノホール以外では「ダメージ予約」になり、クロノホールで予約順に与えられる（決着は必ずクロノホールで付く）。
+     * クロノホール中は即座に与え、防壁で軽減された後の実際のダメージを返す。
+     */
     damagePlayer(target, amount, src) {
       if (this.over || amount <= 0) return 0;
+      if (this.step !== 'hall') {
+        const r = { kind: 'damage', pi: 1 - target.index, target: target.index, amount, name: src, icon: '🔥', seq: this.reserveSeq++ };
+        this.queue.push(r);
+        this.log(`${src} → ${target.name}に${amount}ダメージ（予約）`, 'damage', 1 - target.index);
+        this._emit({ type: 'reserve', player: r.pi, reservation: r });
+        this._bump();
+        return amount;
+      }
       const absorbed = Math.min(target.shield, amount);
       target.shield -= absorbed;
       const dealt = amount - absorbed;
@@ -627,7 +836,7 @@
 
     /** 能力を消す（キーワードも誘発もオーラも失う） */
     muteUnit(owner, unit) {
-      Object.assign(unit, { muted: true, guard: false, stealth: false, lifesteal: false, double: false, undying: false, armor: 0, pierce: false, auto: 0 });
+      Object.assign(unit, { muted: true, guard: false, stealth: false, lifesteal: false, double: false, undying: false, armor: 0, pierce: false, auto: false });
       this.log(`${unit.name}は能力を失った`, 'info', owner.index);
       this._bump();
     }
@@ -651,7 +860,9 @@
         return false;
       }
       from.field = from.field.filter((u) => u !== unit);
+      this.cancelReservations(unit.uid); // 持ち主が変わったら、元の持ち主の攻撃予約は消える
       unit.spent = false;
+      unit.blocks = 0;
       to.field.push(unit);
       this.log(`${to.name}は${unit.name}を奪った！`, 'counter', to.index);
       this._bump();
@@ -664,7 +875,7 @@
       const before = unit.name;
       Object.assign(unit, {
         id: t.id, name: t.name, icon: t.icon, atk: t.atk, hp: t.hp, maxHp: t.hp, token: true,
-        guard: false, stealth: false, lifesteal: false, double: false, undying: false, armor: 0, pierce: false, auto: 0, muted: false,
+        guard: false, stealth: false, lifesteal: false, double: false, undying: false, armor: 0, pierce: false, auto: false, muted: false,
       });
       this.log(`${before}は${t.name}に変えられた`, 'info', owner.index);
       this._bump();
@@ -802,17 +1013,17 @@
       this._bump();
     }
 
-    /** 実際のマナ回復速度（場のクリーチャーのオーラ auraRegen を含む。上限 manaRegenCap） */
+    /** 実際のマナ回復速度（毎秒）。カード効果の上昇 manaBoost と、場のオーラ auraRegen（割合）を含む */
     regenOf(p) {
-      let r = p.manaRate;
-      for (const u of p.field) { const d = Cards.get(u.id); if (d.auraRegen && !u.muted) r += d.auraRegen; }
-      return Math.min(this.cfg.manaRegenCap, r);
+      let boost = p.manaBoost;
+      for (const u of p.field) { const d = Cards.get(u.id); if (d.auraRegen && !u.muted) boost += d.auraRegen; }
+      return this.cfg.manaRegen * (1 + Math.min(this.cfg.manaRegenBoostCap, boost));
     }
 
-    /** マナの回復速度を変える（上限 manaRegenCap） */
+    /** マナの回復速度を上げる。n は割合（0.15 = +15%）。上昇の合計は manaRegenBoostCap まで */
     addManaRate(p, n) {
-      p.manaRate = Math.max(0, Math.min(this.cfg.manaRegenCap, Math.round((p.manaRate + n) * 100) / 100));
-      this.log(`${p.name}のマナ回復速度が毎秒${p.manaRate}になった`, 'info', p.index);
+      p.manaBoost = Math.max(0, Math.min(this.cfg.manaRegenBoostCap, Math.round((p.manaBoost + n) * 100) / 100));
+      this.log(`${p.name}のマナ回復速度が+${Math.round(p.manaBoost * 100)}%になった`, 'info', p.index);
       this._bump();
     }
 
@@ -893,11 +1104,10 @@
       return this.summon(p, id, { attack: false });
     }
 
-    /** 生贄に選ばれるクリーチャー（弱い順。トークンを優先） */
+    /** 生贄に選ばれるクリーチャー（弱い順。トークンを優先し、攻撃予約を持つものは予約が無駄になるので後回し） */
     sacrificeTargets(p, n) {
-      return [...p.field]
-        .sort((a, b) => (b.token ? 1 : 0) - (a.token ? 1 : 0) || (a.atk + a.hp) - (b.atk + b.hp))
-        .slice(0, n);
+      const w = (u) => u.atk + u.hp + this.reservedOf(u.uid) * (u.atk + 2) - (u.token ? 6 : 0);
+      return [...p.field].sort((a, b) => w(a) - w(b)).slice(0, n);
     }
 
     _paySacrifice(p, c) {

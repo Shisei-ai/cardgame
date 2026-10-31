@@ -31,7 +31,7 @@
         <button class="btn big" data-go="builder">📜 デッキ構築</button>
         <button class="btn big" data-go="tips">💡 TIPS</button>
       </div>
-      <p class="version">prototype v0.10</p>
+      <p class="version">prototype v0.11</p>
     </div>
   </section>
 
@@ -135,11 +135,19 @@
             <div class="pc-ring" id="phase-ring"></div>
             <div class="pc-num"><small>PHASE</small><b id="phase-num">1</b></div>
           </div>
-          <div class="phase-text" id="phase-label"></div>
-          <div class="phase-gauge"><div id="phase-fill"></div></div>
-          <div class="match-clock" title="試合の残り時間">
-            <span class="mc-icon">⌛</span><span class="clock" id="clock">3:00</span>
+          <div class="steps" id="steps">
+            <span class="st" data-step="play"><i>Ⅰ</i>プレイ</span>
+            <span class="st" data-step="counter"><i>Ⅱ</i>カウンター</span>
+            <span class="st" data-step="hall"><i>Ⅲ</i>クロノホール</span>
           </div>
+          <div class="chrono-line" id="chrono-line" title="攻撃予約（クロノホールで左から順に実行）">
+            <div class="cl-gauge"><div id="phase-fill"></div></div>
+            <div class="cl-chips" id="cl-chips"></div>
+          </div>
+          <div class="match-clock" title="今のステップの残り時間">
+            <span class="mc-icon" id="clock-icon">⌛</span><span class="clock" id="clock">1:00</span>
+          </div>
+          <button class="btn primary step-btn" id="btn-step" title="Space">準備完了</button>
           <button class="btn icon" id="btn-pause" title="一時停止（Esc）">❚❚</button>
         </div>
         <!-- 自分 -->

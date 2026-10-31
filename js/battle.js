@@ -7,6 +7,12 @@
  *   ・詠唱の進み具合や時計など「連続的に変わるもの」は毎フレーム値だけ更新する
  *   ・演出（攻撃の光・ダメージ数値など）は、エンジンが出すイベント（onEvent）をきっかけに再生する
  *
+ * ステップ（v0.11）:
+ *   ・プレイステップ：自由にカードを使う。右下のボタン（Space）で「準備完了」
+ *   ・カウンターステップ：【カウンター】だけ使える。ボタン（Space）で「パス」
+ *   ・クロノホール：攻撃予約を1つずつ実行する演出。操作なし
+ *   攻撃予約は、クリーチャーの ⚔ バッジと、中央の「クロノライン」に並ぶ
+ *
  * 選択の操作（どちらも選んでいる間は時間が止まる）:
  *   ・対象選択モード：対象を選ぶカードを使おうとすると入る。光っているクリーチャーをクリック
  *     （または数字キー）で決定、右クリック・Esc でキャンセル。TARGET_TIME 秒で自動キャンセル
@@ -55,7 +61,7 @@
     $('#vignette').classList.remove('on');
     UI.closeOverlay();
     UI.showScreen('battle');
-    showBanner('BATTLE START', '同時詠唱の決闘、開始');
+    showBanner('BATTLE START', `第1フェーズ　プレイステップ ${B.game.cfg.playTime}秒`);
     B.last = performance.now();
     B.raf = requestAnimationFrame(loop);
   }
@@ -134,7 +140,17 @@
       return;
     }
     if (e.key === 'Escape') { togglePause(); return; }
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggleStep(); return; }
     if (i >= 0) tryPlay(i);
+  }
+
+  /** 「準備完了」（プレイステップ）／「パス」（カウンターステップ）の切り替え */
+  function toggleStep() {
+    const g = B.game;
+    if (!g || g.over || B.paused || g.pending || g.step === 'hall') return;
+    const on = g.step === 'play' ? !g.ready[ME] : !g.passed[ME];
+    if (B.targeting) cancelTargeting();
+    g.setReady(ME, on);
   }
 
   function togglePause() {
@@ -255,26 +271,63 @@
         break;
       }
       case 'phase':
-        showBanner(`PHASE ${ev.phase}`, B.game.cfg.phaseDraw ? `カードを${B.game.cfg.phaseDraw}枚ドロー` : '守護が回復・フェーズ開始時の効果');
+        showBanner(`PHASE ${ev.phase}`, `プレイステップ ${B.game.cfg.playTime}秒　—　守護が回復・フェーズ開始時の効果`);
         break;
+      case 'step':
+        if (ev.step === 'counter') {
+          const g = B.game;
+          showBanner('COUNTER STEP', g.passed[ME] ? '使えるカウンターがないため自動でパス' : `〔カウンター〕だけが使える（${g.cfg.counterLimit}枚まで）`, 'counter');
+        } else if (ev.step === 'hall') {
+          showBanner('CHRONO HALL', `攻撃予約 ${B.game.queue.length}件を実行`, 'hall');
+        }
+        break;
+      case 'reserve':
+        if (!ev.unit) { // 本体へのダメージの予約：相手の帯を一瞬光らせる
+          UI.pulseClass($('#pbar-' + ev.reservation.target), 'doomed', 600);
+          break;
+        }
+        later(() => {
+          const el = unitElOf(ev.unit);
+          if (el) UI.pulseClass(el, 'reserved', 500);
+        });
+        break;
+      case 'burn':
+        // クロノホールで、ダメージ予約が相手の帯へ飛んでいく
+        fx.bolt(UI.stagePoint(portraitOf(ev.from), 0.5), UI.stagePoint(portraitOf(ev.to), 0.5), ev.from === ME ? '#ffd27a' : '#ff8a5a');
+        break;
+      case 'strike': {
+        // 攻撃するクリーチャーを強調（クロノラインは予約の列から作り直される）
+        const el = B.elByUid.get(ev.reservation.uid);
+        if (el) UI.pulseClass(el, 'striking', 600);
+        break;
+      }
+      case 'fizzle': {
+        const el = B.elByUid.get(ev.reservation.uid);
+        const p = el ? UI.stagePoint(el, 0.4) : UI.stagePoint($('#chrono-line'), 0.5);
+        fx.float(p.x, p.y, '不発', 'shield');
+        break;
+      }
     }
   }
 
-  function showBanner(big, small) {
+  function showBanner(big, small, kind = '') {
     const el = $('#phase-banner');
+    el.className = 'phase-banner ' + kind;
     el.innerHTML = `<b>${esc(big)}</b><span>${esc(small)}</span>`;
-    UI.pulseClass(el, 'show', 1200);
+    UI.pulseClass(el, 'show', 1400);
   }
 
   // ───────────── 描画 ─────────────
   function render() {
     const g = B.game;
     // 秒単位の残り時間も signature に含め、表示の数字が変わる時だけ作り直す
-    const sig = g.version + '|' + g.players.map((p) => [Math.ceil(p.silence), Math.ceil(p.haste), Math.ceil(p.curse), Math.ceil(p.stun)].join(',')).join('|');
+    const sig = g.version + '|' + g.step + '|' + g.overtime + '|' + g.players.map((p) => [Math.ceil(p.silence), Math.ceil(p.haste), Math.ceil(p.curse), Math.ceil(p.stun)].join(',')).join('|');
     if (sig !== B.sig) {
       B.sig = sig;
       g.players.forEach((p) => { renderPbar(p); renderField(p); renderCast(p); });
       renderHand();
+      renderSteps();
+      renderChrono();
       $('#vignette').classList.toggle('on', g.players[ME].hp <= g.cfg.startHP * 0.3 && !g.over);
     }
     renderChoice();
@@ -286,13 +339,6 @@
     } else {
       tb.classList.add('hidden');
     }
-    // 【自律】の次の攻撃までのゲージ
-    g.players.forEach((p) => p.field.forEach((u) => {
-      if (!u.auto) return;
-      const el = B.unitEls[p.index].get(u.uid);
-      const f = el && el.querySelector('.u-auto i');
-      if (f) f.style.width = (100 * (1 - u.autoT / u.auto)).toFixed(0) + '%';
-    }));
     // 詠唱の進み具合
     g.players.forEach((p) => {
       if (!p.casting) return;
@@ -308,16 +354,74 @@
       const dg = $(`#pbar-${p.index} .drawgauge i`);
       if (dg && g.cfg.drawInterval > 0) dg.style.width = (p.drawPause > 0 ? 0 : 100 * (1 - p.drawT / g.cfg.drawInterval)).toFixed(0) + '%';
     });
-    // フェーズの時計と試合の残り時間
-    const pp = 1 - g.phaseTimer / g.cfg.phaseTime;
-    $('#phase-ring').style.setProperty('--p', pp.toFixed(3));
-    $('#phase-fill').style.width = (pp * 100) + '%';
+    // フェーズの時計（試合全体の進み具合）と、今のステップの残り時間
+    const total = g.step === 'play' ? g.cfg.playTime : g.step === 'counter' ? g.cfg.counterTime : 1;
+    const sp = g.step === 'hall' ? 1 : 1 - g.stepTimer / total;
+    $('#phase-ring').style.setProperty('--p', ((g.phase - 1 + (g.step === 'play' ? sp * 0.7 : g.step === 'counter' ? 0.7 + sp * 0.2 : 0.95)) / g.cfg.maxPhases).toFixed(3));
+    $('#phase-fill').style.width = (sp * 100) + '%';
     $('#phase-num').textContent = g.phase;
-    $('#phase-label').textContent = `次のフェーズまで ${Math.max(0, g.phaseTimer).toFixed(1)} 秒`;
-    const rest = Math.max(0, g.cfg.matchTime - g.time);
     const clock = $('#clock');
-    clock.textContent = `${Math.floor(rest / 60)}:${String(Math.floor(rest % 60)).padStart(2, '0')}`;
-    clock.classList.toggle('low', rest < 30);
+    if (g.step === 'hall') {
+      clock.textContent = '──';
+      clock.classList.remove('low');
+    } else if (g.overtime) {
+      clock.textContent = '延長';
+      clock.classList.add('low');
+    } else {
+      const rest = Math.ceil(g.stepTimer);
+      clock.textContent = `${Math.floor(rest / 60)}:${String(rest % 60).padStart(2, '0')}`;
+      clock.classList.toggle('low', rest <= 10);
+    }
+  }
+
+  /** 中央の線：今のステップと、準備完了／パスのボタン */
+  function renderSteps() {
+    const g = B.game;
+    document.querySelectorAll('#steps .st').forEach((el) => el.classList.toggle('on', el.dataset.step === g.step));
+    $('#board').dataset.step = g.step;
+    $('#clock-icon').textContent = g.step === 'play' ? '⌛' : g.step === 'counter' ? '⟲' : '⚔';
+    const btn = $('#btn-step');
+    if (g.step === 'play') {
+      btn.textContent = g.ready[ME] ? (g.ready[OP] ? '準備完了' : '相手を待っています…') : '準備完了 ▶';
+      btn.classList.toggle('waiting', g.ready[ME]);
+      btn.disabled = false;
+      btn.title = g.ready[ME] ? 'もう一度押すと取り消し（Space）' : 'このフェーズはもうカードを使わない（Space）。両者が押すとカウンターステップへ';
+    } else if (g.step === 'counter') {
+      btn.textContent = g.passed[ME] ? '相手を待っています…' : 'パス ▶';
+      btn.classList.toggle('waiting', g.passed[ME]);
+      btn.disabled = false;
+      btn.title = 'カウンターを使わずに進む（Space）。相手がカウンターを使うと、もう一度選べる';
+    } else {
+      btn.textContent = 'クロノホール';
+      btn.classList.add('waiting');
+      btn.disabled = true;
+    }
+  }
+
+  /** クロノライン：攻撃予約を、実行される順に並べる */
+  function renderChrono() {
+    const g = B.game;
+    const box = $('#cl-chips');
+    const key = g.queue.map((r) => r.seq).join(',');
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    // 既に場を離れたクリーチャーの予約（クロノホールで不発になる）は数だけ示す
+    let gone = 0;
+    const chips = [];
+    for (const r of g.queue) {
+      const side = r.pi === ME ? 'me' : 'op';
+      if (r.kind === 'damage') {
+        chips.push(`<span class="cl-chip ${side} burn" title="${esc(r.name)}：本体に${r.amount}ダメージ">🔥<b>${r.amount}</b></span>`);
+        continue;
+      }
+      const u = g.players[r.pi].field.find((x) => x.uid === r.uid);
+      if (!u) { gone++; continue; }
+      chips.push(`<span class="cl-chip ${side}" title="${esc(r.name)}の攻撃（攻撃力${g.atkOf(g.players[r.pi], u)}）">${r.icon}<b>${g.atkOf(g.players[r.pi], u)}</b></span>`);
+    }
+    const MAX = 22;
+    const shown = chips.slice(0, MAX).join('') + (chips.length > MAX ? `<span class="cl-more">+${chips.length - MAX}</span>` : '');
+    box.classList.toggle('dense', chips.length > 12);
+    box.innerHTML = (shown || '<span class="cl-empty">予約なし</span>') + (gone ? `<span class="cl-more" title="場を離れたクリーチャーの予約（不発になる）">不発${gone}</span>` : '');
   }
 
   function statusChips(p) {
@@ -336,6 +440,11 @@
     if (p.bonusMana) add('haste', `🐷次 マナ+${p.bonusMana}`);
     if (p.regen) add('haste', `🌿再生 あと${p.regen}回`);
     if (p.phaseDiscount) add('haste', `⚙️コスト-${p.phaseDiscount}`);
+    const g = B.game;
+    const doom = g.pendingDamage(p.index);
+    if (doom) add('doom', `🔥受けるダメージ予約 ${doom}`);
+    if (g.step === 'play' && g.ready[p.index]) add('ready', '✔準備完了');
+    if (g.step === 'counter') add(g.passed[p.index] ? 'ready' : 'haste', g.passed[p.index] ? '✔パス' : `⟲カウンター ${p.countersUsed}/${g.cfg.counterLimit}`);
     return st.join('');
   }
 
@@ -435,11 +544,13 @@
       const kw = [
         u.guard && (u.spent ? '守護(済)' : '守護'), u.stealth && '潜伏', g.hasLifesteal(p, u) && '吸血',
         u.pierce && '貫通', u.undying && !u.usedUndying && '不屈', u.armor && '堅牢',
-        u.auto && `自律${u.auto}s`, u.muted && '沈黙',
+        u.auto && '自律', u.muted && '沈黙',
       ].filter(Boolean).join('・');
       const tIdx = B.targeting ? B.targeting.uids.indexOf(u.uid) : -1;
       const aimed = g.players.some((q) => q.casting && q.casting.target === u.uid);
       const atk = g.atkOf(p, u);
+      const res = g.reservedOf(u.uid);
+      el.classList.toggle('has-res', res > 0);
       el.classList.toggle('guard', !!u.guard);
       el.classList.toggle('muted', !!u.muted);
       el.classList.toggle('targetable', tIdx >= 0);
@@ -448,14 +559,14 @@
       el.classList.toggle('token', !!u.token);
       el.classList.toggle('relic', !!u.relic);
       el.dataset.cid = u.id;
-      el.dataset.now = (u.relic ? `場の状態：耐久 ${u.hp}` : `場の状態：攻撃力 ${atk} ／ 体力 ${u.hp}`) + `${kw ? '　' + kw : ''}${u.guard && u.spent ? '（このフェーズは既に受け止めた）' : ''}`;
+      el.dataset.now = (u.relic ? `場の状態：耐久 ${u.hp}` : `場の状態：攻撃力 ${atk} ／ 体力 ${u.hp}`) + `${kw ? '　' + kw : ''}${u.guard && u.spent ? '（このフェーズは既に受け止めた）' : ''}${res ? `　⚔攻撃予約 ${res}回` : ''}`;
       el.innerHTML = `
         <div class="u-art">${u.icon}</div>
         <div class="u-name">${esc(u.name)}${d.text && !u.muted ? ' ✦' : ''}</div>
         <div class="u-kw">${u.relic ? `<span class="u-relic">レリック</span>${kw ? '・' + kw : ''}` : kw}</div>
         ${u.relic ? '' : `<div class="u-stat atk${atk > u.atk ? ' boosted' : ''}"><b>${atk}</b></div>`}
         <div class="u-stat ${u.relic ? 'dur' : 'hp'}${u.hp < u.maxHp ? ' hurt' : ''}">${u.hp}</div>
-        ${u.auto ? '<div class="u-auto"><i></i></div>' : ''}
+        ${res ? `<div class="u-res" title="攻撃予約 ${res}回（クロノホールで攻撃）">⚔${res > 1 ? '×' + res : ''}</div>` : ''}
         ${tIdx >= 0 ? `<div class="u-tnum">${KEYS[tIdx]}</div>` : ''}
         ${aimed ? '<div class="u-aim">🎯</div>' : ''}`;
     });
@@ -477,12 +588,13 @@
       const sac = chk.ok && c.sacCost ? '🔪' + g.sacrificeTargets(p, c.sacCost).map((u) => u.name).join('・') : '';
       const el = UI.cardEl(c, {
         key: KEYS[i], cost: g.costOf(p, id), cast: g.castOf(p, id),
-        badge: chk.ok ? (sac || (full ? `⚠${p.field[0].name}と入替` : '')) : chk.reason,
+        badge: chk.ok ? (sac || (full ? `⚠${p.field[0].name}と入替` : '')) : chk.reason === 'クロノホール' ? '' : chk.reason,
       });
       const off = i - (n - 1) / 2;
       el.style.setProperty('--r', (off * 3.2).toFixed(1) + 'deg');
       el.style.setProperty('--y', (Math.abs(off) ** 1.6 * 3).toFixed(1) + 'px');
       el.classList.add(chk.ok ? 'playable' : 'disabled');
+      if (g.step === 'counter' && c.counter) el.classList.add('counter-ready');
       if (B.targeting && B.targeting.idx === i) el.classList.add('selecting');
       el.onclick = () => tryPlay(i);
       box.appendChild(el);
@@ -500,13 +612,14 @@
       return `<tr><td>${label}</td><td class="${ba ? 'best' : ''}">${a}</td><td class="${!ba && a !== b ? 'best' : ''}">${b}</td></tr>`;
     };
     const body = `
-      <div class="result-sub">${jp}　${g.endReason}（${Math.floor(g.time / 60)}分${Math.floor(g.time % 60)}秒）</div>
+      <div class="result-sub">${jp}　${g.endReason}（第${g.phase}フェーズ・${Math.floor(g.clock / 60)}分${Math.floor(g.clock % 60)}秒）</div>
       <table class="result-stats">
         <tr><th></th><th>あなた</th><th>${esc(op.name)}</th></tr>
         ${row('残り体力', Math.max(0, me.hp), Math.max(0, op.hp))}
         ${row('与えたダメージ', me.stats.damageDealt, op.stats.damageDealt)}
         ${row('使ったカード', me.stats.cardsPlayed, op.stats.cardsPlayed)}
         ${row('打ち消した回数', me.stats.countered, op.stats.countered)}
+        ${row('使ったカウンター', me.stats.countersUsed, op.stats.countersUsed)}
       </table>`;
     $('#vignette').classList.remove('on');
     setTimeout(() => {
@@ -522,6 +635,7 @@
     // 右クリックで対象選択をキャンセル
     $('#screen-battle').addEventListener('contextmenu', (e) => { if (B.targeting) { e.preventDefault(); cancelTargeting(); } });
     $('#btn-pause').onclick = togglePause;
+    $('#btn-step').onclick = toggleStep;
   }
 
   root.Battle = { init, start };

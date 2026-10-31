@@ -8,6 +8,8 @@
  *   reserve : 打ち消し用のマナを温存するか
  *   blunder : 判断をサボる確率（弱いAIほど大きい）
  *   patience: 高コストのカードのために、マナが溜まるのを最大何秒待つか
+ *   counterBar: カウンターステップで、この価値以上のカウンターなら使う
+ *   keep    : プレイステップの終盤、カウンター用のマナを残すか
  *
  * カードごとの判断は cards.js の ai / aiBonus / react に書かれており、
  * このファイルはそれらを比べて一番良い手を選ぶだけです。
@@ -19,9 +21,9 @@
   'use strict';
 
   const LEVELS = {
-    easy:   { label: 'やさしい', think: 1.4, react: 1.6, counterAt: 6, reserve: false, blunder: 0.35, patience: 0 },
-    normal: { label: 'ふつう',   think: 0.7, react: 0.9, counterAt: 4, reserve: false, blunder: 0.12, patience: 2 },
-    hard:   { label: 'つよい',   think: 0.3, react: 0.45, counterAt: 3, reserve: true,  blunder: 0.0, patience: 3.5 },
+    easy:   { label: 'やさしい', think: 1.4, react: 1.6, counterAt: 6, reserve: false, blunder: 0.35, patience: 0,  counterBar: 3,   keep: false },
+    normal: { label: 'ふつう',   think: 0.7, react: 0.9, counterAt: 4, reserve: false, blunder: 0.12, patience: 8,  counterBar: 1, keep: true },
+    hard:   { label: 'つよい',   think: 0.3, react: 0.45, counterAt: 3, reserve: true,  blunder: 0.0, patience: 14, counterBar: 0.2, keep: true },
   };
 
   class AI {
@@ -65,11 +67,50 @@
     }
 
     update(dt) {
-      if (this.g.over) return;
+      const g = this.g;
+      if (g.over || g.pending || g.step === 'hall') return;
       this.timer += dt;
       if (this.timer < this.L.think) return;
       this.timer = 0;
-      this.act();
+      if (g.step === 'counter') this.counterAct();
+      else this.act();
+    }
+
+    /**
+     * カウンターステップ：使える【カウンター】を比べ、一番価値の高いものを使う。何もなければパス。
+     * 相手がカウンターを使うとパスが取り消されるので、そのたびに考え直す。
+     */
+    counterAct() {
+      const g = this.g;
+      const me = g.players[this.pi];
+      const op = g.opp(me);
+      if (g.passed[this.pi]) return;
+      // 状況を見るための「間」（反射神経の分）
+      if (g.stepElapsed < this.L.react) return;
+      let best = null;
+      me.hand.forEach((id, i) => {
+        if (!g.canPlay(this.pi, i).ok) return;
+        const card = Cards.get(id);
+        if (!card.counterAi) return;
+        const cands = card.target ? g.validTargets(me, card) : [null];
+        for (const t of cands) {
+          const v = card.counterAi(g, me, op, t) - g.costOf(me, id) * 0.3;
+          if (!best || v > best.v) best = { i, t, v };
+        }
+      });
+      if (best && best.v >= this.L.counterBar && !(this.L.blunder && g.rand() < this.L.blunder)) {
+        g.play(this.pi, best.i, { target: best.t && best.t.unit.uid });
+        return;
+      }
+      g.setReady(this.pi, true);
+    }
+
+    /** プレイステップの終盤に残しておきたい、カウンター用のマナ */
+    counterReserve(me) {
+      const g = this.g;
+      if (!this.L.keep || g.stepTimer > 25) return 0;
+      const costs = me.hand.map(Cards.get).filter((c) => c.counter && c.counterAi).map((c) => g.costOf(me, c.id)).sort((a, b) => a - b);
+      return costs.length ? costs[0] + (costs[1] && g.stepTimer < 10 ? costs[1] : 0) : 0;
     }
 
     act() {
@@ -82,7 +123,16 @@
       const playable = all.filter((h) => h.chk.ok);
       // マナが足りないだけのカード（時間が経てば使える）
       const waiting = all.filter((h) => h.chk.reason === 'マナ不足');
-      if (!playable.length) return;
+      // このプレイステップの残り時間では、もうマナが足りるカードがない → 準備完了
+      const keep = this.counterReserve(me);
+      const reachable = all.some((h) => {
+        const need = g.costOf(me, h.card.id) + keep - me.mana;
+        return need <= 0 ? h.chk.ok || h.chk.reason === 'マナ不足' : need / g.regenOf(me) < g.stepTimer;
+      });
+      if (!me.casting && !reachable && !g.ready[this.pi]) g.setReady(this.pi, true);
+      // 相手（人間）が準備完了で待っているなら、今すぐ使いたいカードがない時点で準備完了にする
+      const oppReady = g.ready[1 - this.pi] && !me.casting;
+      if (!playable.length) { if (oppReady) g.setReady(this.pi, true); return; }
       if (this.L.blunder && g.rand() < this.L.blunder) return;
 
       // ① 相手の詠唱への反応（打ち消し・遅延・防壁など）
@@ -120,21 +170,23 @@
         const cost = g.costOf(me, h.card.id);
         // 打ち消し用マナを残せなくなる場合は、よほど価値が高くない限り見送る
         if (reserveCost && me.mana - cost < reserveCost && score < 6) score *= 0.4;
+        // プレイステップの終盤は、カウンター用のマナを残す（カウンター自身を使う場合は除く）
+        if (keep && me.mana - cost < keep && score < 9) continue;
         // 体力を払うカードは、体力が少ないほど慎重に
         if (h.card.hpCost) score -= h.card.hpCost * (me.hp <= g.cfg.startHP / 3 ? 1.2 : 0.25);
         // 少しだけ揺らぎを入れて単調さを防ぐ
         score += g.rand() * 0.5;
         if (!best || score > best.score) best = { h, score, t };
       }
-      if (!best || best.score <= 1) return;
+      if (!best || best.score <= 1) { if (oppReady) g.setReady(this.pi, true); return; }
       // 数秒待てば使える、ずっと価値の高いカードがあるなら、マナを温存して待つ
       for (const h of waiting) {
         if (h.card.reactive) continue;
         const t = h.card.target ? this.pickTarget(h.card, me, op) : null;
         if (h.card.target && !t && !h.card.target.optional) continue;
-        const wait = (g.costOf(me, h.card.id) - me.mana) / Math.max(0.1, me.manaRate);
+        const wait = (g.costOf(me, h.card.id) - me.mana) / Math.max(0.01, g.regenOf(me));
         const v = this.score(h.card, me, op, t);
-        if (wait <= this.L.patience && v >= best.score * 1.4 + 1) return;
+        if (wait <= Math.min(this.L.patience, g.stepTimer) && v >= best.score * 1.4 + 1) return;
       }
       g.play(this.pi, best.h.i, { target: best.t && best.t.unit.uid });
     }
@@ -173,7 +225,7 @@
         }
         if (card.guard) v += 1.5 + op.field.length * 0.5;
         if (card.lifesteal) v += card.atk * 0.5;
-        if (card.autoAttack) v += card.atk * (12 / card.autoAttack) * 0.6; // 残り時間で何回攻撃できるかの目安
+        if (card.autoAttack) v += card.atk * Math.min(3, g.phasesLeft()) * 0.7; // 残りのフェーズで何回攻撃できるかの目安
         if (card.aiBonus) v += card.aiBonus(g, me, op);
         // 場が満杯なら一番古い味方を失う（遺言持ちならむしろ得）
         if (me.field.length >= g.cfg.fieldLimit) {

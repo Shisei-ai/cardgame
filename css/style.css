@@ -957,3 +957,95 @@ input[type=text]:focus, select:focus { outline: none; border-color: var(--gold);
 .key-table { border-collapse: collapse; width: 100%; }
 .key-table td { padding: 8px 10px; border-bottom: 1px solid #ffffff14; }
 .key-table td:first-child { width: 260px; white-space: nowrap; }
+
+/* ═════════════ ステップ制（v0.11）：プレイ／カウンター／クロノホール ═════════════ */
+:root { --counter: #b07cff; --counter2: #e0c8ff; --hall: #ff9a4a; }
+
+/* 中央の線：ステップ表示・クロノライン・残り時間・ボタン */
+.steps { position: relative; display: flex; gap: 3px; flex-shrink: 0; }
+.steps .st {
+  display: flex; align-items: center; gap: 5px; padding: 3px 10px 3px 6px; font-size: 11.5px; letter-spacing: .06em;
+  color: #8d93b8; background: #0a0e1ccc; border: 1px solid #ffffff14; border-radius: 3px;
+  clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 50%, calc(100% - 7px) 100%, 0 100%, 6px 50%);
+  padding-left: 12px; transition: all .3s;
+}
+.steps .st:first-child { clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 50%, calc(100% - 7px) 100%, 0 100%); padding-left: 8px; }
+.steps .st i { font-style: normal; font-family: var(--font-logo); font-size: 10px; opacity: .7; }
+.steps .st.on { color: #1a1204; font-weight: 700; background: linear-gradient(180deg, var(--gold2), #b07c22); text-shadow: 0 1px 0 #ffffff55; }
+.steps .st[data-step="counter"].on { color: #fff; background: linear-gradient(180deg, #a77cff, #5a35a8); text-shadow: 0 0 6px #000; }
+.steps .st[data-step="hall"].on { color: #fff; background: linear-gradient(180deg, #ffb066, #b0471c); text-shadow: 0 0 6px #000; }
+
+.chrono-line { position: relative; flex: 1; min-width: 0; height: 32px; display: flex; align-items: center; padding: 0 6px; background: linear-gradient(90deg, #05071299, #0a0e1ccc 10%, #0a0e1ccc 90%, #05071299); border: 1px solid #e3b55533; border-radius: 4px; box-shadow: inset 0 1px 6px #000; }
+.cl-gauge { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: #00000099; overflow: hidden; border-radius: 0 0 4px 4px; }
+.cl-chips { position: relative; display: flex; gap: 4px; overflow: hidden; align-items: center; }
+.cl-chip {
+  display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 6px 0 4px; font-size: 13px; border-radius: 11px; flex-shrink: 0;
+  background: linear-gradient(180deg, #1d3a6a, #0e1c3a); border: 1px solid #6fb8ff; box-shadow: 0 0 6px #4a9cff66;
+}
+.cl-chip b { font-family: var(--font-logo); font-size: 12px; color: #cfe6ff; }
+.cl-chip.op { background: linear-gradient(180deg, #6a1d24, #3a0e12); border-color: #ff7a6b; box-shadow: 0 0 6px #ff5a4a66; }
+.cl-chip.op b { color: #ffd6cf; }
+.cl-chip.gone { opacity: .35; filter: grayscale(1); }
+.cl-chip.go { animation: chipGo .3s ease-in forwards; }
+.cl-chip:first-child { outline: 1px solid #ffffff55; outline-offset: 1px; }
+.cl-empty { font-size: 11.5px; color: #6c7298; letter-spacing: .1em; }
+@keyframes chipGo { to { transform: translateY(-14px) scale(1.4); opacity: 0; } }
+
+.step-btn { min-width: 168px; height: 34px; padding: 0 14px; font-size: 13.5px; letter-spacing: .08em; }
+.step-btn.waiting { filter: saturate(.3) brightness(.8); animation: waitPulse 1.6s ease-in-out infinite; }
+.step-btn:disabled { cursor: default; }
+@keyframes waitPulse { 50% { filter: saturate(.3) brightness(1.05); } }
+.board[data-step="counter"] .step-btn:not(.waiting) { background: linear-gradient(180deg, #b48cff, #6a3fc0); color: #fff; border-color: #d9c2ff; text-shadow: 0 1px 2px #000; }
+
+/* ステップごとの盤面の色合い */
+.board::after { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 1; opacity: 0; transition: opacity .6s; }
+.board[data-step="counter"]::after { opacity: 1; background: radial-gradient(ellipse at 50% 50%, transparent 40%, #4a2a8a55 100%); box-shadow: inset 0 0 0 2px #b07cff55, inset 0 0 60px #6a3fc066; }
+.board[data-step="hall"]::after { opacity: 1; background: radial-gradient(ellipse at 50% 50%, transparent 35%, #5a2a0a66 100%); box-shadow: inset 0 0 0 2px #ff9a4a44, inset 0 0 80px #b0471c55; }
+.board[data-step="hall"] .unit:not(.has-res):not(.guard) { filter: brightness(.65) saturate(.7); }
+
+/* 攻撃予約のバッジ */
+.unit .u-res {
+  position: absolute; top: -9px; right: -9px; z-index: 4; min-width: 24px; height: 22px; padding: 0 5px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff;
+  background: radial-gradient(circle at 35% 30%, #ffb27a, #c2410c 70%); border: 1.5px solid #ffe0b8; box-shadow: 0 0 10px #ff7a2acc, 0 2px 4px #000;
+}
+.unit.has-res::before { content: ''; position: absolute; inset: -3px; border-radius: 10px; pointer-events: none; box-shadow: 0 0 0 1px #ff9a4a88, 0 0 14px #ff7a2a55; animation: resGlow 1.8s ease-in-out infinite; }
+@keyframes resGlow { 50% { box-shadow: 0 0 0 1px #ffc08acc, 0 0 22px #ff7a2a99; } }
+.unit.reserved { animation: reserved .5s ease-out; }
+@keyframes reserved { 40% { transform: scale(1.1); filter: brightness(1.5) sepia(.4); } }
+.unit.striking { animation: striking .6s ease-out; z-index: 6; }
+@keyframes striking { 30% { transform: scale(1.18); filter: brightness(1.7); } }
+
+/* 手札：カウンターステップで使えるカード */
+.hand .card.counter-ready { box-shadow: 0 0 0 .18em var(--counter), 0 0 1.6em #b07cffaa; }
+.hand .card.counter-ready:hover { transform: translateY(-40px) rotate(0) scale(1.16); }
+
+/* カードの「COUNTER」の帯 */
+.c-counter {
+  position: absolute; left: .35em; right: .35em; top: 7.05em; z-index: 3; height: 1.05em; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(90deg, transparent, #5a35a8ee 15%, #8a5ce0 50%, #5a35a8ee 85%, transparent);
+  border-top: 1px solid #d9c2ff88; border-bottom: 1px solid #d9c2ff88; pointer-events: none;
+}
+.c-counter span { font-family: var(--font-logo); font-size: .62em; font-weight: 800; letter-spacing: .28em; color: #fff; text-shadow: 0 0 .4em #b07cff; }
+
+/* バナーの色違い */
+.phase-banner.counter b { color: var(--counter2); text-shadow: 0 0 18px #b07cffcc; }
+.phase-banner.hall b { color: #ffd2a8; text-shadow: 0 0 18px #ff7a2acc; }
+.status.ready { background: #1d4a2c; border-color: #6fdc8c; color: #c8ffd8; }
+/* TIPS の図（ステップの帯・クロノライン） */
+.steps.demo { justify-content: center; margin: 4px auto 10px; }
+.steps.demo .st { font-size: 14px; padding: 6px 16px 6px 14px; }
+.chrono-line.demo { flex: none; width: 420px; max-width: 100%; margin: 10px auto 0; height: 36px; justify-content: center; }
+.tp-demo .unit-row .card { --cs: 8.5px; }
+.flow-list { margin: 0; padding-left: 1.4em; display: grid; gap: 10px; }
+.flow-list li { line-height: 1.7; }
+.key-table.narrow td:first-child { width: 90px; color: var(--gold2); font-weight: 700; }
+.pbar.doomed { animation: doomed .6s ease-out; }
+@keyframes doomed { 30% { box-shadow: inset 0 0 0 2px #ff7a2a, 0 0 18px #ff7a2a88; } }
+.status.doom { background: #6a2a10; border-color: #ff9a4a; color: #ffd8b8; }
+.cl-chip.burn { background: linear-gradient(180deg, #6a3a10, #3a1e08); border-color: #ffb066; box-shadow: 0 0 6px #ff9a4a66; }
+.cl-chip.burn.me { border-color: #ffd27a; }
+.cl-chips.dense { gap: 2px; }
+.cl-chips.dense .cl-chip { height: 18px; padding: 0 4px 0 2px; font-size: 10.5px; }
+.cl-chips.dense .cl-chip b { font-size: 10px; }
+.cl-more { flex-shrink: 0; font-size: 11px; color: #9aa0c8; padding: 0 4px; white-space: nowrap; }
