@@ -336,7 +336,7 @@
       tier: 'niche', arch: ['control'], text: '相手が詠唱を始めるたび、その詠唱を0.8秒遅らせる。',
       onEnemyPlay(g, me, op) { if (op.casting) g.delayCasting(op, 0.8); }, aiBonus: () => 1.5 },
 
-    // ═══════════════════ 召喚術 ═══════════════════
+    // ═══════════════════ 呪文（主なタグ：召喚） ═══════════════════
     { id: 'reinforce', name: '増援要請', type: 'spell', tags: ['summon'], cost: 1, cast: 1.0, icon: '🪖',
       tier: 'niche', arch: ['swarm'], text: '新兵(1/1)を2体生成（召喚時の攻撃はしない）。',
       canUse: (g, me) => room(g, me) > 0, needText: '場が満杯',
@@ -359,7 +359,7 @@
       ai: (g, me) => { const m = Math.max(0, ...me.hand.map(get).filter((c) => c.type === 'creature').map((c) => c.cost)); return m >= 6 ? m : 0; },
       threat: 6 },
 
-    // ═══════════════════ 攻撃 ═══════════════════
+    // ═══════════════════ 呪文（主なタグ：攻撃） ═══════════════════
     { id: 'spark', name: '火花', type: 'spell', tags: ['attack'], cost: 0, cast: 0.5, icon: '✴️',
       tier: 'weak', arch: ['spell'], text: '敵本体に1ダメージ。',
       effect(g, me, op) { g.damagePlayer(op, 1, '火花'); }, ai: () => 1.2 },
@@ -424,7 +424,7 @@
       tier: 'niche', arch: ['spell', 'ramp'], text: '敵本体に7ダメージ。',
       effect(g, me, op) { g.damagePlayer(op, 7, '獄炎'); }, ai: () => 7, threat: 7 },
 
-    // ═══════════════════ ドロー ═══════════════════
+    // ═══════════════════ 呪文（主なタグ：ドロー） ═══════════════════
     { id: 'foresight', name: '予見', type: 'spell', tags: ['draw'], cost: 1, cast: 0.5, icon: '👁️',
       tier: 'weak', arch: ['generic'], text: 'カードを1枚引く。',
       effect(g, me) { g.draw(me, 1); }, ai: (g, me) => (me.hand.length <= 4 ? 2 : 0) },
@@ -452,7 +452,7 @@
       tier: 'niche', arch: ['spell'], text: 'カードを2枚引く。次に使う呪文のコスト-2。',
       effect(g, me) { g.draw(me, 2); me.spellDiscount += 2; }, ai: (g, me) => (me.hand.length <= 6 ? 3.5 : 1) },
 
-    // ═══════════════════ リソース ═══════════════════
+    // ═══════════════════ 呪文（主なタグ：マナ） ═══════════════════
     { id: 'drop', name: 'マナの雫', type: 'spell', tags: ['mana'], cost: 0, cast: 0.5, icon: '💠',
       tier: 'niche', arch: ['spell', 'ramp'], text: 'マナを2得る。',
       effect(g, me) { g.addMana(me, 2); },
@@ -494,7 +494,7 @@
       },
       ai: (g, me, op) => { if (!me.lastSpell) return 0; const c = get(me.lastSpell); if (c.reactive || (c.canUse && !c.canUse(g, me, op))) return 0; return c.ai ? c.ai(g, me, op) - 0.5 : c.cost; } },
 
-    // ═══════════════════ 妨害 ═══════════════════
+    // ═══════════════════ 呪文（主なタグ：妨害） ═══════════════════
     { id: 'seal', name: '封じ手', type: 'spell', tags: ['disrupt'], cost: 2, cast: 0, icon: '✋',
       tier: 'weak', arch: ['control'], reactive: true, text: '【瞬間】相手が詠唱中のコスト2以下のカードを打ち消す。',
       canUse: (g, me, op) => !!op.casting && op.casting.card.cost <= 2, needText: '対象がない',
@@ -551,7 +551,7 @@
       effect(g, me, op) { g.cancelCasting(op, me); g.stunPlayer(op, 3); },
       react: (g, me, op, threat, L) => (threat >= L.counterAt + 1 ? threat + 1 : 0) },
 
-    // ═══════════════════ 回復・防御 ═══════════════════
+    // ═══════════════════ 呪文（主なタグ：回復・防御） ═══════════════════
     { id: 'barrier', counter: true, counterAi: (g, me) => savedValue(g, me, Math.min(6, pendingFace(g, g.opp(me))) - me.shield * 0.5) - 1, name: '防壁', type: 'spell', tags: ['heal'], cost: 2, cast: 0, icon: '🔰',
       tier: 'niche', arch: ['fortress', 'control'], reactive: true, text: '【瞬間】防壁+6（本体へのダメージを先に吸収する。上限10）。',
       effect(g, me) { g.addShield(me, 6); },
