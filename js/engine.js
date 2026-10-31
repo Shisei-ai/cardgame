@@ -14,7 +14,7 @@
  *
  * ■ クリーチャーの能力（cards.js に書く「フック」）
  *   onSummon     召喚時（攻撃の前）          afterSummon  召喚時の攻撃の後
- *   onDeath      このクリーチャーが倒れた時（遺言）
+ *   onDeath      このクリーチャーが倒れた時（遺言）。レリックなら「壊れた時」
  *   onAnyDeath   いずれかのクリーチャーが倒れた時
  *   onPhase      フェーズ開始時
  *   onAllyPlay   自分がカードを使った時       onEnemyPlay  相手がカードを使った時
@@ -102,7 +102,7 @@
     return errors;
   }
 
-  const isSpell = (c) => c.type !== 'creature';
+  const isSpell = Cards.isSpell; // クリーチャーでもレリックでもないカード
 
   class Game {
     /**
@@ -204,6 +204,7 @@
 
     /** オーラ込みの攻撃力 */
     atkOf(p, unit) {
+      if (unit.relic) return 0; // レリックは攻撃しない
       let a = unit.atk;
       for (const u of p.field) {
         if (u === unit) continue;
@@ -232,7 +233,8 @@
       const list = [];
       if (t.side === 'enemy' || t.side === 'any') op.field.forEach((u) => list.push({ unit: u, owner: op }));
       if (t.side === 'ally' || t.side === 'any') p.field.forEach((u) => list.push({ unit: u, owner: p }));
-      return list.filter((x) => x.unit.hp > 0 && (!t.filter || t.filter(this, p, x.unit, x.owner)));
+      // レリックは relics: true の対象指定でだけ選べる
+      return list.filter((x) => x.unit.hp > 0 && (t.relics || !x.unit.relic) && (!t.filter || t.filter(this, p, x.unit, x.owner)));
     }
 
     /**
@@ -476,7 +478,7 @@
         this._bump();
         return;
       }
-      if (c.type === 'creature') {
+      if (Cards.isUnit(c)) {
         this.summon(p, c.id, { ctx });
       } else {
         if (c.cast > 0) this.log(`${p.name}：【${c.name}】発動`, 'resolve', p.index);
@@ -514,16 +516,17 @@
         atk: c.atk, hp: c.hp, maxHp: c.hp,
         guard: !!c.guard, stealth: !!c.stealth, lifesteal: !!c.lifesteal,
         double: !!c.double, undying: !!c.undying, armor: c.armor || 0, pierce: !!c.pierce, token: !!c.token,
+        relic: c.type === 'relic', // レリック：攻撃せず、「クリーチャー」を対象にする効果も効かない
         spent: false, // 守護がこのフェーズに既に攻撃を受け止めたか
         auto: c.autoAttack || 0, autoT: c.autoAttack || 0, // 【自律】の間隔と、次の攻撃までの残り秒数
         muted: false, // 能力を消されたか
         ctx: opts.ctx || null, // 召喚時の対象（反響の竪琴が召喚時効果を再現するのに使う）
       };
       p.field.push(unit);
-      this.log(`${p.name}：【${c.name}】${c.token ? '生成' : '召喚'}`, 'resolve', p.index);
+      this.log(`${p.name}：【${c.name}】${c.token ? '生成' : c.type === 'relic' ? '設置' : '召喚'}`, 'resolve', p.index);
       this._emit({ type: 'summon', player: p.index, unit });
       if (c.onSummon) c.onSummon(this, p, op, unit, unit.ctx);
-      if (opts.attack !== false && !c.noAttack) {
+      if (opts.attack !== false && !c.noAttack && !unit.relic) {
         this.attack(p, unit);
         if (unit.double) this.attack(p, unit);
       }
@@ -536,7 +539,7 @@
 
     /** クリーチャー unit で攻撃する。敵に守護がいればそちらが受け止める */
     attack(p, unit) {
-      if (this.over || !p.field.includes(unit) || unit.hp <= 0) return;
+      if (this.over || unit.relic || !p.field.includes(unit) || unit.hp <= 0) return;
       const op = this.opp(p);
       const atk = this.atkOf(p, unit);
       let target = null;
@@ -784,7 +787,7 @@
     playFree(p, id) {
       const c = Cards.get(id);
       this.log(`${p.name}：【${c.name}】をコストなしで発動`, 'resolve', p.index);
-      if (c.type === 'creature') {
+      if (Cards.isUnit(c)) {
         this.summon(p, id);
       } else {
         c.effect(this, p, this.opp(p));
@@ -933,11 +936,12 @@
           for (const { p, u } of deaths) {
             p.field = p.field.filter((x) => x !== u);
             if (!u.token) p.grave.push(u.id);
-            this.log(`${u.name}は倒れた`, 'info', p.index);
+            this.log(`${u.name}は${u.relic ? '壊れた' : '倒れた'}`, 'info', p.index);
           }
           for (const { p, u } of deaths) {
-            this._self(p, u, 'onDeath');
-            for (const q of this.players) this._fire(q, 'onAnyDeath', u, p);
+            this._self(p, u, 'onDeath'); // レリックの「壊れた時」もここ
+            // 「クリーチャーが倒れるたび」の効果は、レリックが壊れても誘発しない
+            if (!u.relic) for (const q of this.players) this._fire(q, 'onAnyDeath', u, p);
           }
         }
       } finally {

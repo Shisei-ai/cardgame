@@ -436,14 +436,15 @@
       el.classList.toggle('aimed', aimed);
       el.classList.toggle('spent', !!(u.guard && u.spent));
       el.classList.toggle('token', !!u.token);
+      el.classList.toggle('relic', !!u.relic);
       el.dataset.cid = u.id;
-      el.dataset.now = `場の状態：攻撃力 ${atk} ／ 体力 ${u.hp}${kw ? '　' + kw : ''}${u.guard && u.spent ? '（このフェーズは既に受け止めた）' : ''}`;
+      el.dataset.now = (u.relic ? `場の状態：耐久 ${u.hp}` : `場の状態：攻撃力 ${atk} ／ 体力 ${u.hp}`) + `${kw ? '　' + kw : ''}${u.guard && u.spent ? '（このフェーズは既に受け止めた）' : ''}`;
       el.innerHTML = `
         <div class="u-art">${u.icon}</div>
         <div class="u-name">${esc(u.name)}${d.text && !u.muted ? ' ✦' : ''}</div>
-        <div class="u-kw">${kw}</div>
-        <div class="u-stat atk${atk > u.atk ? ' boosted' : ''}"><b>${atk}</b></div>
-        <div class="u-stat hp${u.hp < u.maxHp ? ' hurt' : ''}">${u.hp}</div>
+        <div class="u-kw">${u.relic ? `<span class="u-relic">レリック</span>${kw ? '・' + kw : ''}` : kw}</div>
+        ${u.relic ? '' : `<div class="u-stat atk${atk > u.atk ? ' boosted' : ''}"><b>${atk}</b></div>`}
+        <div class="u-stat ${u.relic ? 'dur' : 'hp'}${u.hp < u.maxHp ? ' hurt' : ''}">${u.hp}</div>
         ${u.auto ? '<div class="u-auto"><i></i></div>' : ''}
         ${tIdx >= 0 ? `<div class="u-tnum">${KEYS[tIdx]}</div>` : ''}
         ${aimed ? '<div class="u-aim">🎯</div>' : ''}`;
@@ -461,7 +462,7 @@
       const c = Cards.get(id);
       const chk = g.canPlay(ME, i);
       // 場が満杯の時にクリーチャーを出すと、一番古い味方が倒れることを警告
-      const full = chk.ok && c.type === 'creature' && !c.sacCost && p.field.length >= g.cfg.fieldLimit;
+      const full = chk.ok && Cards.isUnit(c) && !c.sacCost && p.field.length >= g.cfg.fieldLimit;
       // 生贄になる味方を事前に知らせる
       const sac = chk.ok && c.sacCost ? '🔪' + g.sacrificeTargets(p, c.sacCost).map((u) => u.name).join('・') : '';
       const el = UI.cardEl(c, {

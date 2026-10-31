@@ -38,7 +38,7 @@ for (const [key, arch] of Object.entries(Cards.ARCHES)) {
   for (const c of cards) {
     const cost = c.cost + (c.hpCost ? `+♥${c.hpCost}` : '');
     const cast = c.cast > 0 ? `${c.cast}s` : '瞬間';
-    const stats = c.type === 'creature' ? `${c.atk}/${c.hp}` : '';
+    const stats = c.type === 'creature' ? `${c.atk}/${c.hp}` : c.type === 'relic' ? `耐久${c.hp}` : '';
     const text = (c.target ? `🎯${c.target.label}を選ぶ。 ` : '') + Cards.fullText(c, true).replace(/\|/g, '｜');
     out.push(`| ${Cards.TIERS[c.tier]} | ${cost} | ${cast} | ${c.icon} ${c.name} | ${Cards.TYPES[c.type].label} | ${stats} | ${text} |`);
   }

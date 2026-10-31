@@ -62,7 +62,8 @@
     const nameLen = [...card.name].length;
     const nameCls = nameLen >= 8 ? ' xxlong' : nameLen >= 7 ? ' xlong' : nameLen >= 6 ? ' long' : '';
     const stats = card.type === 'creature'
-      ? `<div class="c-stat atk"><b>${card.atk}</b></div><div class="c-stat hp"><b>${card.hp}</b></div>` : '';
+      ? `<div class="c-stat atk"><b>${card.atk}</b></div><div class="c-stat hp"><b>${card.hp}</b></div>`
+      : card.type === 'relic' ? `<div class="c-stat dur" title="耐久"><b>${card.hp}</b></div>` : '';
     const side = [
       card.hpCost ? `<span class="c-hpcost">♥${card.hpCost}</span>` : '',
       card.sacCost ? `<span class="c-saccost">🔪${card.sacCost}</span>` : '',
@@ -92,6 +93,7 @@
     const extra = (card.hpCost ? ` ＋ 体力${card.hpCost}` : '') + (card.sacCost ? ` ＋ 生贄${card.sacCost}体` : '');
     const lines = [`<b>${esc(card.name)}</b>（${Cards.TYPES[card.type].label}）`, `コスト ${card.cost}${extra}　/　${castLabel}`];
     if (card.type === 'creature') lines.push(card.noAttack ? '召喚時に攻撃しない' : card.double ? '召喚時に2回攻撃する' : '召喚時に1回攻撃する');
+    if (card.type === 'relic') lines.push(`耐久 ${card.hp}`, `<b>レリック</b>：${Cards.KEYWORD_HELP['レリック']}`);
     const kws = Cards.keywords(card).map((k) => k.replace(/\d+秒?$/, ''));
     if (card.target) kws.push('対象');
     if (card.hpCost) kws.push('代償');

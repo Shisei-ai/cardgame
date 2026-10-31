@@ -148,11 +148,12 @@
 
     score(card, me, op, t) {
       const g = this.g;
-      if (card.type === 'creature') {
-        // 鈍重（召喚時に攻撃しない）は、場に残る価値だけで評価する
-        let v = card.noAttack ? card.atk * 0.5 + card.hp * 0.5 : card.atk * (card.double ? 2 : 1) + card.hp * 0.5;
+      if (Cards.isUnit(card)) {
+        const relic = card.type === 'relic';
+        // 鈍重（召喚時に攻撃しない）とレリックは、場に残る価値だけで評価する
+        let v = relic ? card.hp * 0.35 : card.noAttack ? card.atk * 0.5 + card.hp * 0.5 : card.atk * (card.double ? 2 : 1) + card.hp * 0.5;
         // 敵に守護がいる場合、召喚時の攻撃は守護に受け止められる（潜伏は除く）
-        const guards = card.stealth || card.noAttack ? [] : g.readyGuards(op);
+        const guards = card.stealth || card.noAttack || relic ? [] : g.readyGuards(op);
         if (guards.length) {
           const t = guards.reduce((a, b) => (b.hp > a.hp ? b : a));
           const kills = card.atk - (t.armor || 0) >= t.hp;
@@ -187,6 +188,7 @@
 
     threat(card) {
       if (card.threat != null) return card.threat;
+      if (card.type === 'relic') return 2 + card.hp * 0.2;
       if (card.type === 'creature') return card.atk * 0.7 * (card.double ? 2 : 1) + card.hp * 0.3 + (card.onSummon ? 1 : 0);
       return card.cost;
     }
