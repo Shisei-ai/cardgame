@@ -41,6 +41,8 @@
   function onScreen(name, fn) { screenHooks[name] = fn; }
 
   // ───────────── カードの描画 ─────────────
+  // 種類の帯に付ける記号
+  const TYPE_GLYPH = { creature: '⚔', relic: '◈', summon: '✧', attack: '✹', draw: '❖', resource: '◆', disrupt: '✖', heal: '✚' };
   /**
    * カード1枚分のDOM要素を作る
    *   opts.cost / opts.cast : 補正後の実際のコスト・詠唱時間（手札表示用）。元の値と違えば色を変える
@@ -72,7 +74,7 @@
       <div class="c-frame">
         <div class="c-head"><span class="c-name${nameCls}">${esc(card.name)}</span></div>
         <div class="c-art"><span class="c-icon">${card.icon}</span></div>
-        <div class="c-typeline"><span>${Cards.TYPES[card.type].label}</span>${kw.length ? `<span class="c-kw">${kw.join('・')}</span>` : ''}</div>
+        <div class="c-typeline"><span><i class="c-glyph">${TYPE_GLYPH[card.type] || ''}</i>${Cards.TYPES[card.type].label}</span>${kw.length ? `<span class="c-kw">${kw.join('・')}</span>` : ''}</div>
         <div class="c-text">${esc(card.text || '')}</div>
       </div>
       <div class="c-cost${costCls}">${cost}</div>
@@ -150,6 +152,26 @@
     if (el !== pvTarget) showPreview(el);
   });
   document.addEventListener('mousedown', hidePreview);
+
+  // ───────────── 魔法陣（詠唱の台座や盤面の飾り） ─────────────
+  /** 時計の目盛りと六芒星を組み合わせた魔法陣の SVG（色は currentColor） */
+  function runeCircle(cls = '') {
+    return `<svg class="rune-circle ${cls}" viewBox="0 0 200 200" aria-hidden="true">
+      <g fill="none" stroke="currentColor">
+        <circle cx="100" cy="100" r="96" stroke-width="1.4"/>
+        <circle cx="100" cy="100" r="90" stroke-width=".7"/>
+        <circle cx="100" cy="100" r="82" stroke-width="5" stroke-dasharray="1.4 20.07" opacity=".8"/>
+        <circle cx="100" cy="100" r="70" stroke-width="1"/>
+        <polygon points="100,30 160.6,135 39.4,135" stroke-width="1"/>
+        <polygon points="100,170 39.4,65 160.6,65" stroke-width="1"/>
+        <circle cx="100" cy="100" r="38" stroke-width=".8" stroke-dasharray="3 3"/>
+      </g>
+      <g fill="currentColor">
+        <circle cx="100" cy="30" r="3"/><circle cx="160.6" cy="135" r="3"/><circle cx="39.4" cy="135" r="3"/>
+        <circle cx="100" cy="170" r="3"/><circle cx="39.4" cy="65" r="3"/><circle cx="160.6" cy="65" r="3"/>
+      </g>
+    </svg>`;
+  }
 
   // ───────────── 演出 ─────────────
   const fx = {
@@ -260,6 +282,6 @@
   fitStage();
   root.UI = {
     $, esc, showScreen, onScreen, cardEl, cardTip, cardHelp, allDecks, countOf, toast, overlay, closeOverlay,
-    stagePoint, fx, pulseClass, hidePreview, getScale: () => scale,
+    stagePoint, fx, pulseClass, hidePreview, getScale: () => scale, runeCircle,
   };
 })(this);

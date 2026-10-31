@@ -90,6 +90,10 @@
     Battle.start({ myDeck: myList, cpuDeck: cpuList, level, cpuName: 'CPU' });
   };
 
+  // タイトルの紋章の後ろに魔法陣を重ねる
+  $('.logo-emblem').insertAdjacentHTML('afterbegin', UI.runeCircle('title-circle'));
+
   Builder.init();
   Battle.init();
+  root.Tips.init();
 })(this);

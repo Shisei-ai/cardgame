@@ -50,7 +50,8 @@
     B.choiceKey = null;
     B.castKey = ['', ''];
     closeChoice();
-    ['#log', '#field-0', '#field-1', '#fx', '#cast-0', '#cast-1'].forEach((s) => { $(s).innerHTML = ''; });
+    ['#field-0', '#field-1', '#fx', '#cast-0', '#cast-1'].forEach((s) => { $(s).innerHTML = ''; });
+    buildSlots();
     $('#vignette').classList.remove('on');
     UI.closeOverlay();
     UI.showScreen('battle');
@@ -274,7 +275,6 @@
       B.sig = sig;
       g.players.forEach((p) => { renderPbar(p); renderField(p); renderCast(p); });
       renderHand();
-      renderLog();
       $('#vignette').classList.toggle('on', g.players[ME].hp <= g.cfg.startHP * 0.3 && !g.over);
     }
     renderChoice();
@@ -361,7 +361,7 @@
     let pips = '';
     const whole = Math.floor(p.mana);
     for (let i = 0; i < p.maxMana; i++) pips += `<span class="pip ${i < whole ? 'on' : i === whole ? 'next' : ''}"></span>`;
-    el.querySelector('.mana').innerHTML = `${pips}<span class="mtext">${whole}<small>/${p.maxMana}</small></span><span class="mrate" title="マナの回復速度">+${(() => { const r = g.regenOf(p); return r.toFixed(r % 1 ? 2 : 1); })()}/秒</span>`;
+    el.querySelector('.mana').innerHTML = `${pips}<span class="mtext">${whole}<small>/${p.maxMana}</small></span>`;
     el.querySelector('.pinfo').innerHTML = `<span class="handinfo" title="次のドローまで">🂠 手札 ${p.hand.length}<b class="drawgauge"><i></i></b></span><span>📚 山札 ${p.deck.length}</span><span class="grave" title="${esc(graveTip(p))}">⚰ 墓地 ${p.grave.length}</span>`;
     el.querySelector('.statuses').innerHTML = statusChips(p);
   }
@@ -384,11 +384,11 @@
     B.castKey[p.index] = key;
     el.classList.toggle('active', !!c);
     if (!c) {
-      el.innerHTML = '<div class="pd-empty">詠唱なし</div>';
+      el.innerHTML = `<div class="pd-empty">${UI.runeCircle('pd-circle idle')}<span>詠唱なし</span></div>`;
       return;
     }
     el.innerHTML = `
-      <div class="pd-ring"></div>
+      <div class="pd-ring">${UI.runeCircle('pd-circle')}</div>
       <div class="pd-info">
         <div class="pd-label">${p.index === ME ? '詠唱中' : '相手が詠唱中！'}</div>
         <div class="pd-left"></div>
@@ -398,9 +398,19 @@
   }
 
   // 場のクリーチャーは uid ごとに要素を使い回す（毎回作り直すと召喚アニメが繰り返されるため）
+  /** 場に5つの枠（空いている場所の目印）を描く。クリーチャーはその上に左から並ぶ */
+  function buildSlots() {
+    // 盤面の中央に、ゆっくり回る大きな魔法陣を敷く（飾り）
+    if (!$('#board .mat-circle')) $('#board').insertAdjacentHTML('afterbegin', UI.runeCircle('mat-circle'));
+    [0, 1].forEach((pi) => {
+      const f = $('#field-' + pi);
+      f.innerHTML = `<div class="slots">${'<div class="slot"></div>'.repeat(B.game.cfg.fieldLimit)}</div><div class="units"></div>`;
+    });
+  }
+
   function renderField(p) {
     const g = B.game;
-    const box = $('#field-' + p.index);
+    const box = $('#field-' + p.index + ' .units');
     const map = B.unitEls[p.index];
     const alive = new Set(p.field.map((u) => u.uid));
     for (const [uid, el] of map) {
@@ -477,23 +487,6 @@
       el.onclick = () => tryPlay(i);
       box.appendChild(el);
     });
-  }
-
-  function renderLog() {
-    const logs = B.game.logs;
-    const box = $('#log');
-    // 古いログが削除された場合に備えて、表示済み件数を調整
-    if (B.logShown > logs.length) B.logShown = 0;
-    for (let i = B.logShown; i < logs.length; i++) {
-      const l = logs[i];
-      const d = document.createElement('div');
-      d.className = `${l.kind} ${l.who != null ? 'who-' + l.who : ''}`;
-      d.textContent = l.kind === 'phase' ? `― ${l.text} ―` : l.text;
-      box.appendChild(d);
-    }
-    B.logShown = logs.length;
-    while (box.children.length > 120) box.firstChild.remove();
-    box.scrollTop = box.scrollHeight;
   }
 
   function showResult() {

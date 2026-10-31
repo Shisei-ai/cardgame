@@ -9,7 +9,7 @@
 - 制限時間3分。相手の体力（50）を0にするか、時間切れ時に体力が多い方が勝ち
 - マナは毎秒1回復（最大10）、カードは3秒ごとに1枚ドロー。今あるマナで使い切るか、少し待って大技を出すか
 
-ルールの詳細はゲーム内の「遊び方」、設計の考え方とバランス調整の記録は [docs/DESIGN.md](docs/DESIGN.md)、カードの一覧は [docs/CARDS.md](docs/CARDS.md) を参照してください。
+ルールの詳細はタイトル画面の「TIPS」（項目別のルール説明）、設計の考え方とバランス調整の記録は [docs/DESIGN.md](docs/DESIGN.md)、カードの一覧は [docs/CARDS.md](docs/CARDS.md) を参照してください。
 
 ---
 
@@ -56,6 +56,7 @@ js/storage.js       自作デッキの保存（ブラウザ内）
 js/ui-common.js     画面共通の部品（カード表示など）
 js/builder.js       デッキ構築画面
 js/battle.js        対戦画面
+js/tips.js          TIPS画面（項目別のルール説明）
 js/main.js          起動処理・対戦準備画面
 tools/simulate.js   バランス検証：プリセット同士の対戦表を作る
 tools/cardpower.js  バランス検証：カード1枚ごとの強さを測る
