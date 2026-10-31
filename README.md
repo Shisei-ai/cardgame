@@ -43,6 +43,20 @@ python3 -m http.server 8000
 
 3. 「Save & view page」で表示を確認し、問題なければ公開設定（Visibility）を `Public` にします。
 
+## itch.io へ自動でアップロードする（GitHub Actions）
+
+`.github/workflows/itch-deploy.yml` が、ゲームのファイル（`index.html`・`css/`・`js/`）の変更がプッシュされるたびに、itch.io 公式のアップロードツール **butler** でゲームページを更新します。対象のブランチは `main` と `claude/kind-babbage-l8gssf` です。
+
+最初に一度だけ、次の設定が必要です。
+
+1. itch.io の https://itch.io/user/settings/api-keys で API キーを作る
+2. GitHub のリポジトリの **Settings → Secrets and variables → Actions** を開き、
+   - **Secrets** タブ →「New repository secret」：名前 `BUTLER_API_KEY`、値に API キー
+   - **Variables** タブ →「New repository variable」：名前 `ITCH_TARGET`、値に `itch.io のユーザー名/ゲームのURL名`（例：`yourname/chrono-duel`）
+3. 初回のアップロードが終わったら、itch.io のゲーム編集画面で、butler が作ったファイル（`html5`）に「This file will be played in the browser」のチェックを入れて保存する（2回目以降は不要）
+
+手動で実行したいときは、GitHub の **Actions** タブ →「itch.io にアップロード」→「Run workflow」。
+
 ## ファイル構成
 
 ```

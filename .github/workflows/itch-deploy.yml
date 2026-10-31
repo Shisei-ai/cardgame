@@ -1,0 +1,62 @@
+# itch.io への自動アップロード
+#
+# ゲームのファイル（index.html, css/, js/）が変わってプッシュされると、
+# itch.io 公式のアップロードツール「butler」でゲームページを更新します。
+#
+# 事前に GitHub のリポジトリ設定（Settings → Secrets and variables → Actions）で次の2つを登録してください。
+#   Secrets   タブ: BUTLER_API_KEY … itch.io の API キー（https://itch.io/user/settings/api-keys で作成）
+#   Variables タブ: ITCH_TARGET    … 「itch.io のユーザー名/ゲームのURL名」（例: yourname/chrono-duel）
+name: itch.io にアップロード
+
+on:
+  push:
+    branches:
+      - main
+      - claude/kind-babbage-l8gssf
+    paths:
+      - index.html
+      - css/**
+      - js/**
+      - .github/workflows/itch-deploy.yml
+  workflow_dispatch: # Actions 画面の「Run workflow」ボタンから手動でも実行できる
+
+# 同じブランチで続けてプッシュしたら、古い方の実行は取り消して新しい方だけをアップロードする
+concurrency:
+  group: itch-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: 設定の確認
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+          ITCH_TARGET: ${{ vars.ITCH_TARGET }}
+        run: |
+          if [ -z "$BUTLER_API_KEY" ]; then echo "::error::Secrets に BUTLER_API_KEY が登録されていません"; exit 1; fi
+          if [ -z "$ITCH_TARGET" ]; then echo "::error::Variables に ITCH_TARGET（例: yourname/chrono-duel）が登録されていません"; exit 1; fi
+
+      - name: アップロードするファイルをまとめる
+        # tools/package.sh と同じく、ゲームの実行に必要なファイルだけを入れる
+        run: |
+          mkdir -p build
+          cp -r index.html css js build/
+
+      - name: butler を用意
+        run: |
+          curl -fsSL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d butler
+          chmod +x butler/butler
+          ./butler/butler -V
+
+      - name: itch.io にアップロード
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+          ITCH_TARGET: ${{ vars.ITCH_TARGET }}
+        run: |
+          VERSION="$(grep -o 'prototype v[0-9.]*' index.html | head -1 | sed 's/prototype //')-${GITHUB_SHA::7}"
+          ./butler/butler push build "${ITCH_TARGET}:html5" --userversion "$VERSION"
