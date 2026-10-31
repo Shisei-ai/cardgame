@@ -254,7 +254,7 @@
         break;
       }
       case 'phase':
-        showBanner(`PHASE ${ev.phase}`, 'マナ回復・2枚ドロー');
+        showBanner(`PHASE ${ev.phase}`, `カードを${B.game.cfg.phaseDraw}枚ドロー`);
         break;
     }
   }
@@ -300,6 +300,11 @@
       if (ring) ring.style.setProperty('--p', (1 - p.casting.remain / p.casting.total).toFixed(3));
       const left = $(`#cast-${p.index} .pd-left`);
       if (left) left.innerHTML = `${(p.casting.remain / (p.haste > 0 ? 2 : 1)).toFixed(1)}<small>秒</small>`;
+    });
+    // 次に溜まるマナの満ち具合
+    g.players.forEach((p) => {
+      const pip = $(`#pbar-${p.index} .pip.next`);
+      if (pip) pip.style.setProperty('--f', (p.mana % 1).toFixed(2));
     });
     // フェーズの時計と試合の残り時間
     const pp = 1 - g.phaseTimer / g.cfg.phaseTime;
@@ -350,10 +355,11 @@
     el.querySelector('.hptrail').style.width = hpPct + '%';
     el.querySelector('.hpbox').classList.toggle('low', p.hp <= 10);
     el.querySelector('.hptext').textContent = `♥ ${Math.max(0, p.hp)} / ${g.cfg.startHP}`;
+    // マナの宝石：使える分は光り、次に溜まる1つは下から満ちていく（満ち具合は毎フレーム更新）
     let pips = '';
-    const n = Math.max(p.maxMana, p.mana);
-    for (let i = 0; i < n; i++) pips += `<span class="pip ${i < p.mana ? (i >= p.maxMana ? 'extra' : 'on') : ''}"></span>`;
-    el.querySelector('.mana').innerHTML = `${pips}<span class="mtext">${p.mana}/${p.maxMana}</span>`;
+    const whole = Math.floor(p.mana);
+    for (let i = 0; i < p.maxMana; i++) pips += `<span class="pip ${i < whole ? 'on' : i === whole ? 'next' : ''}"></span>`;
+    el.querySelector('.mana').innerHTML = `${pips}<span class="mtext">${whole}<small>/${p.maxMana}</small></span><span class="mrate" title="マナの回復速度">+${p.manaRate.toFixed(p.manaRate % 1 ? 2 : 1)}/秒</span>`;
     el.querySelector('.pinfo').innerHTML = `<span>🂠 手札 ${p.hand.length}</span><span>📚 山札 ${p.deck.length}</span><span class="grave" title="${esc(graveTip(p))}">⚰ 墓地 ${p.grave.length}</span>`;
     el.querySelector('.statuses').innerHTML = statusChips(p);
   }

@@ -43,12 +43,13 @@ kbd { background: #2a2f48; border: 1px solid #4a5280; border-bottom-width: 2px; 
 .hidden { display: none !important; }
 
 /* ============ 舞台 ============ */
-#app { position: fixed; inset: 0; }
+#app { position: fixed; inset: 0; overflow: clip; }
 #stage {
   position: absolute; left: 50%; top: 50%;
   width: 1280px; height: 720px;
   transform: translate(-50%, -50%) scale(var(--scale, 1));
   overflow: hidden;
+  overflow: clip; /* hidden だと「画面内に見せるための自動スクロール」で舞台ごとずれることがあるため */
   background:
     radial-gradient(ellipse 80% 60% at 50% 45%, #1d2550 0%, transparent 70%),
     radial-gradient(ellipse at 50% 120%, #2a1a3a 0%, transparent 60%),
@@ -67,7 +68,7 @@ kbd { background: #2a2f48; border: 1px solid #4a5280; border-bottom-width: 2px; 
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.screen { display: none; position: absolute; inset: 0; }
+.screen { display: none; position: absolute; inset: 0; overflow: clip; }
 .screen.active { display: flex; align-items: center; justify-content: center; animation: screenIn .35s ease-out; }
 @keyframes screenIn { from { opacity: 0; transform: scale(.985); } }
 
@@ -346,8 +347,10 @@ input[type=text]:focus, select:focus { outline: none; border-color: var(--gold);
 .mana { display: flex; gap: 4px; align-items: center; }
 .mana .pip { width: 12px; height: 12px; transform: rotate(45deg); border: 1px solid #3a5aa0; background: #0b1230; border-radius: 2px; }
 .mana .pip.on { background: radial-gradient(circle at 35% 30%, #cfe0ff, var(--mana) 60%); border-color: #9fc0ff; box-shadow: 0 0 6px var(--mana); }
-.mana .pip.extra { background: radial-gradient(circle at 35% 30%, #fff, #a5c4ff); border-color: #fff; box-shadow: 0 0 8px #a5c4ff; }
-.mana .mtext { margin-left: 6px; font-family: var(--font-logo); font-weight: 800; font-size: 15px; color: #a9c6ff; }
+.mana .pip.next { background: linear-gradient(45deg, #4f8dffaa calc(var(--f, 0) * 100%), #0b1230 0); border-color: #6a8ad0; }
+.mana .mtext { margin-left: 6px; font-family: var(--font-logo); font-weight: 800; font-size: 18px; color: #cfe0ff; line-height: 1; }
+.mana .mtext small { font-size: 12px; color: #7f9bd6; }
+.mana .mrate { margin-left: 6px; font-size: 11px; color: #7f9bd6; background: #4f8dff1a; border-radius: 8px; padding: 1px 6px; }
 .pinfo { display: flex; gap: 5px; font-size: 12px; color: var(--muted); }
 .pinfo span { background: #ffffff0d; border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
 .pinfo .grave { cursor: help; }

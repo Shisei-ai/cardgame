@@ -2,8 +2,9 @@
  * engine.js — ゲームのルール処理（画面表示とは完全に分離）
  *
  * ゲームは「時間」で進みます。update(dt) を呼ぶたびに dt 秒だけ時間が進み、
+ *   ・マナが少しずつ回復（毎秒 manaRate。最大マナまで）
  *   ・詠唱中のカードの残り時間が減り、0になったら発動
- *   ・フェーズタイマーが0になったら次のフェーズ（マナ回復＋2枚ドロー＋フェーズ開始時の効果）
+ *   ・フェーズタイマーが0になったら次のフェーズ（2枚ドロー＋フェーズ開始時の効果）
  *   ・試合時間が尽きたら体力の多い方が勝ち
  * という処理が行われます。
  *
@@ -56,8 +57,11 @@
     startHP: 30,        // 初期体力（＝最大体力）
     matchTime: 180,     // 試合の制限時間（秒）
     phaseTime: 10,      // 1フェーズの長さ（秒）
-    startMana: 3,       // 最初のフェーズの最大マナ
-    maxManaCap: 10,     // 最大マナの上限
+    startMana: 5,       // 試合開始時のマナ
+    baseMaxMana: 10,    // 最大マナ（最初から固定。カード効果でのみ増減する）
+    maxManaCap: 15,     // カード効果で最大マナを増やせる上限
+    manaRegen: 1,       // マナの回復速度（毎秒）。カード効果で速くできる
+    manaRegenCap: 3,    // 回復速度の上限（毎秒）
     startHand: 5,       // 初期手札
     phaseDraw: 2,       // フェーズ開始時に引く枚数
     handLimit: 10,      // 手札上限（超えて引いたカードは墓地へ）
@@ -134,8 +138,9 @@
         index,
         name: name || (index === 0 ? 'プレイヤー1' : 'プレイヤー2'),
         hp: this.cfg.startHP,
-        mana: this.cfg.startMana,
-        maxMana: this.cfg.startMana,
+        mana: this.cfg.startMana,   // 今のマナ（時間で少しずつ増えるので小数になる。使えるのは整数部分）
+        maxMana: this.cfg.baseMaxMana,
+        manaRate: this.cfg.manaRegen, // マナの回復速度（毎秒）
         deck: [...deck],
         hand: [],
         field: [],
@@ -274,6 +279,15 @@
       }
       this.time += dt;
 
+      // マナの回復（最大マナまで。時間停止や封印の間も回復は続く）
+      for (const p of this.players) {
+        if (p.mana < p.maxMana) {
+          const before = Math.floor(p.mana);
+          p.mana = Math.min(p.maxMana, p.mana + p.manaRate * dt);
+          if (Math.floor(p.mana) !== before) this._bump(); // 使えるマナが1増えたら画面を更新
+        }
+      }
+
       for (const p of this.players) {
         for (const k of ['silence', 'stun', 'haste', 'curse']) {
           if (p[k] > 0) { p[k] = Math.max(0, p[k] - dt); if (p[k] === 0) this._bump(); }
@@ -315,16 +329,15 @@
       this.phaseTimer += this.cfg.phaseTime;
       this.log(`第${this.phase}フェーズ開始`, 'phase');
       for (const p of this.players) {
-        p.maxMana = Math.min(this.cfg.maxManaCap, p.maxMana + 1);
-        p.mana = p.maxMana; // 余ったマナは持ち越さない（最大値を超えている分も消える）。最大値まで回復
+        // マナはフェーズをまたいでもそのまま（回復は時間で行う）。前借り・貯蓄の精算だけ行う
         if (p.manaDebt) {
           this.log(`${p.name}は前借りしたマナを${p.manaDebt}返済`, 'info', p.index);
-          p.mana = Math.max(0, p.mana - p.manaDebt);
+          this.addMana(p, -p.manaDebt);
           p.manaDebt = 0;
         }
         if (p.bonusMana) {
           this.log(`${p.name}は蓄えたマナを${p.bonusMana}得た`, 'info', p.index);
-          p.mana += p.bonusMana;
+          this.addMana(p, p.bonusMana);
           p.bonusMana = 0;
         }
         p.spellsThisPhase = 0;
@@ -769,8 +782,16 @@
       this._cleanup();
     }
 
+    /** マナを増減する。最大マナを超えた分は切り捨て（余剰を溜め込めないようにするため） */
     addMana(p, n) {
-      p.mana = Math.max(0, p.mana + n);
+      p.mana = Math.max(0, Math.min(p.maxMana, p.mana + n));
+      this._bump();
+    }
+
+    /** マナの回復速度を変える（上限 manaRegenCap） */
+    addManaRate(p, n) {
+      p.manaRate = Math.max(0, Math.min(this.cfg.manaRegenCap, Math.round((p.manaRate + n) * 100) / 100));
+      this.log(`${p.name}のマナ回復速度が毎秒${p.manaRate}になった`, 'info', p.index);
       this._bump();
     }
 

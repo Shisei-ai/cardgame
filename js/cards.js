@@ -76,6 +76,7 @@
   // ── 効果やAI評価で使う小さな関数 ──
   const fieldPower = (g, p) => p.field.reduce((s, u) => s + g.atkOf(p, u), 0);
   const missingHp = (g, p) => g.cfg.startHP - p.hp;
+  const restTime = (g) => Math.max(0, g.cfg.matchTime - g.time); // 試合の残り秒数
   const strongest = (g, p) => p.field.reduce((b, u) => (!b || g.atkOf(p, u) > g.atkOf(p, b) ? u : b), null);
   const weakest = (g, p) => p.field.reduce((b, u) => (!b || u.atk + u.hp < b.atk + b.hp ? u : b), null);
   const guardsOf = (p) => p.field.filter((u) => u.guard);
@@ -414,9 +415,9 @@
       effect(g, me) { g.addMana(me, 4); },
       ai: (g, me) => (me.hp > 10 && me.hand.some((id) => { const c = g.costOf(me, id); return c > me.mana && c <= me.mana + 4; }) ? 4 : 0) },
     { id: 'resonance', name: '魔力共鳴', type: 'resource', cost: 1, cast: 1.0, icon: '🌀',
-      tier: 'niche', arch: ['ramp'], text: '最大マナを1増やし、マナを1得る。',
-      effect(g, me) { me.maxMana = Math.min(g.cfg.maxManaCap, me.maxMana + 1); g.addMana(me, 1); },
-      ai: (g, me) => (me.maxMana < g.cfg.maxManaCap - 2 ? 3.5 : 0) },
+      tier: 'niche', arch: ['ramp'], text: 'マナの回復速度を永続的に毎秒+0.15する。',
+      effect(g, me) { g.addManaRate(me, 0.15); },
+      ai: (g) => restTime(g) / 30 },
     { id: 'quickcast', name: '瞬唱', type: 'resource', cost: 1, cast: 0, icon: '💫',
       tier: 'strong', arch: ['spell', 'ramp'], text: '【瞬間】次に使うカードの詠唱時間が0になる。カードを1枚引く。',
       canUse: (g, me) => !me.instantNext, needText: '既に効果中',
@@ -432,9 +433,9 @@
       effect(g, me) { const u = weakest(g, me); if (u) { g.destroyUnit(me, u); g.addMana(me, 2); g.draw(me, 1); } },
       ai: (g, me) => { const u = weakest(g, me); if (!u) return 0; const full = room(g, me) === 0 && me.hand.some((id) => get(id).type === 'creature') ? 2 : 0; return full + (get(u.id).onDeath ? 5 : u.token ? 3 : u.atk + u.hp <= 3 ? 2 : 0); } },
     { id: 'earthpulse', name: '大地の脈動', type: 'resource', cost: 3, cast: 1.5, icon: '🌍',
-      tier: 'niche', arch: ['ramp'], text: '最大マナを2増やす。',
-      effect(g, me) { me.maxMana = Math.min(g.cfg.maxManaCap, me.maxMana + 2); },
-      ai: (g, me) => (me.maxMana <= g.cfg.maxManaCap - 3 ? 3.5 : 0) },
+      tier: 'niche', arch: ['ramp'], text: 'マナの回復速度を永続的に毎秒+0.4する。',
+      effect(g, me) { g.addManaRate(me, 0.4); },
+      ai: (g) => restTime(g) / 22 },
     { id: 'mimic', name: '秘術の模倣', type: 'resource', cost: 3, cast: 1.0, icon: '🪞',
       tier: 'niche', arch: ['spell'], noCopy: true, text: '直前に自分が使った呪文の効果を、もう一度発動する。',
       canUse: (g, me) => !!me.lastSpell, needText: 'まだ呪文を使っていない',
@@ -1017,7 +1018,7 @@
           g.draw(me, 1);
         });
       },
-      ai: (g, me) => (me.hand.some((id) => g.costOf(me, id) > me.maxMana) ? 1.5 : 0) },
+      ai: (g, me) => (me.hand.some((id) => g.costOf(me, id) > me.maxMana) || me.hand.length >= 8 ? 1.5 : 0) },
     { id: 'oldmap', name: '古地図', type: 'draw', cost: 2, cast: 1.5, icon: '🗺️',
       tier: 'weak', arch: ['generic'], text: 'カードを1枚引く。手札が2枚以下なら、さらに1枚引く。',
       effect(g, me) { g.draw(me, me.hand.length <= 2 ? 2 : 1); }, ai: (g, me) => (me.hand.length <= 3 ? 2 : 0.5) },
@@ -1074,7 +1075,7 @@
       tier: 'niche', arch: ['generic', 'ramp'], text: '次のフェーズ開始時、マナを3得る。',
       canUse: (g, me) => me.bonusMana === 0, needText: '効果が残っている',
       effect(g, me) { me.bonusMana = 3; },
-      ai: (g, me) => (g.cfg.matchTime - g.time > g.cfg.phaseTime && me.hand.some((id) => g.costOf(me, id) > me.maxMana) ? 3.5 : 1) },
+      ai: (g, me) => (restTime(g) > g.cfg.phaseTime && me.maxMana - me.mana >= 4 ? 2.5 : 0) },
     { id: 'efficiency', name: '効率化', type: 'resource', cost: 1, cast: 0.8, icon: '⚙️',
       tier: 'niche', arch: ['generic', 'spell'], text: 'このフェーズ中、自分のコスト1以上のカードのコスト-1（最低1）。',
       canUse: (g, me) => me.phaseDiscount === 0, needText: '効果が残っている',
@@ -1089,8 +1090,8 @@
       onDeath(g, me) { g.draw(me, 1); g.addMana(me, 1); }, aiBonus: () => 1.5 },
     { id: 'leyline', name: '地脈の掌握', type: 'resource', cost: 3, cast: 2.0, icon: '🌋',
       tier: 'strong', arch: ['generic', 'ramp'], text: '最大マナを1増やし、マナを最大値まで回復する。',
-      effect(g, me) { me.maxMana = Math.min(g.cfg.maxManaCap, me.maxMana + 1); me.mana = Math.max(me.mana, me.maxMana); g._bump(); },
-      ai: (g, me) => (me.hand.length >= 3 && g.phaseTimer > 4 ? Math.min(me.maxMana, 8) * 0.6 : 0) },
+      effect(g, me) { me.maxMana = Math.min(g.cfg.maxManaCap, me.maxMana + 1); g.addMana(me, me.maxMana); },
+      ai: (g, me) => (me.hand.length >= 3 ? (me.maxMana - me.mana) * 0.7 - 1 : 0) },
 
     // ═════ まとめて効く ═════
     { id: 'blessing', name: '天の恵み', type: 'heal', cost: 3, cast: 1.5, icon: '🌈',

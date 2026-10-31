@@ -7,6 +7,7 @@
  *   counterAt : この脅威度以上のカードなら打ち消しを使う
  *   reserve : 打ち消し用のマナを温存するか
  *   blunder : 判断をサボる確率（弱いAIほど大きい）
+ *   patience: 高コストのカードのために、マナが溜まるのを最大何秒待つか
  *
  * カードごとの判断は cards.js の ai / aiBonus / react に書かれており、
  * このファイルはそれらを比べて一番良い手を選ぶだけです。
@@ -18,9 +19,9 @@
   'use strict';
 
   const LEVELS = {
-    easy:   { label: 'やさしい', think: 1.4, react: 1.6, counterAt: 6, reserve: false, blunder: 0.35 },
-    normal: { label: 'ふつう',   think: 0.7, react: 0.9, counterAt: 4, reserve: false, blunder: 0.12 },
-    hard:   { label: 'つよい',   think: 0.3, react: 0.45, counterAt: 3, reserve: true,  blunder: 0.0 },
+    easy:   { label: 'やさしい', think: 1.4, react: 1.6, counterAt: 6, reserve: false, blunder: 0.35, patience: 0 },
+    normal: { label: 'ふつう',   think: 0.7, react: 0.9, counterAt: 4, reserve: false, blunder: 0.12, patience: 2 },
+    hard:   { label: 'つよい',   think: 0.3, react: 0.45, counterAt: 3, reserve: true,  blunder: 0.0, patience: 3.5 },
   };
 
   class AI {
@@ -77,9 +78,10 @@
       const op = g.opp(me);
       if (me.silence > 0 || me.stun > 0) return;
 
-      const playable = me.hand
-        .map((id, i) => ({ i, card: Cards.get(id) }))
-        .filter((h) => g.canPlay(this.pi, h.i).ok);
+      const all = me.hand.map((id, i) => ({ i, card: Cards.get(id), chk: g.canPlay(this.pi, i) }));
+      const playable = all.filter((h) => h.chk.ok);
+      // マナが足りないだけのカード（時間が経てば使える）
+      const waiting = all.filter((h) => h.chk.reason === 'マナ不足');
       if (!playable.length) return;
       if (this.L.blunder && g.rand() < this.L.blunder) return;
 
@@ -124,7 +126,17 @@
         score += g.rand() * 0.5;
         if (!best || score > best.score) best = { h, score, t };
       }
-      if (best && best.score > 1) g.play(this.pi, best.h.i, { target: best.t && best.t.unit.uid });
+      if (!best || best.score <= 1) return;
+      // 数秒待てば使える、ずっと価値の高いカードがあるなら、マナを温存して待つ
+      for (const h of waiting) {
+        if (h.card.reactive) continue;
+        const t = h.card.target ? this.pickTarget(h.card, me, op) : null;
+        if (h.card.target && !t && !h.card.target.optional) continue;
+        const wait = (g.costOf(me, h.card.id) - me.mana) / Math.max(0.1, me.manaRate);
+        const v = this.score(h.card, me, op, t);
+        if (wait <= this.L.patience && v >= best.score * 1.4 + 1) return;
+      }
+      g.play(this.pi, best.h.i, { target: best.t && best.t.unit.uid });
     }
 
     /** 手札にある一番安い「打ち消し系」カードのコスト（温存用） */
