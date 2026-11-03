@@ -61,14 +61,36 @@
         <li><b>容量 ＝（${Parts.CAP.BASE} ＋ ${Parts.CAP.PER_COST} × コスト）× 素質の倍率</b>。コストを高くするほど容量が増えます。</li>
         <li>パワー（${Parts.CAP.POWER_PER_POINT}ごとに1。5000を超える分は1.5倍）、キーワード効果、テキスト効果が容量を使います。合計が容量に収まれば完成です。</li>
         <li>【鈍重】【自壊】などの<b>デメリット</b>を付けると、容量が戻ってきます。</li>
-        <li>テキスト効果は「発動の場面」「条件」「代償」「効果」「量」「対象」を選んで組み立てます。強い組み合わせほど容量を使います。</li>
+        <li>テキスト効果は「発動の場面」「回数」「条件」「代償」「効果」「量」「対象」「期間」「〜につき」を選んで組み立てます（「テキスト効果の組み立て」のページ）。強い組み合わせほど容量を使います。</li>
         <li>作ったカードは<b>カードコード</b>（文字列）にして、友達と交換できます。</li>
       </ul>
       <p class="point">素質の高い原石は、軽くて強いカードにするか、重い切り札にするか。原石を見てから決めましょう。</p>` },
+    { id: 'text', icon: '🧩', title: 'テキスト効果の組み立て', body: () => {
+      const list = (obj, f = (v) => v.label) => Object.values(obj).map(f).join('、');
+      const grp = {};
+      for (const t of Object.values(Parts.TRIGGERS)) (grp[t.grp] = grp[t.grp] || []).push(t.label);
+      const cats = {};
+      for (const a of Object.values(Parts.ACTIONS)) (cats[a.cat] = cats[a.cat] || []).push(a.label);
+      return `
+      <p>テキスト効果は、次の要素を選んで組み立てます。強い組み合わせほど容量を使います（容量 ＝ 効果の基本値 × 対象 × 発動の場面 × 回数 × 条件 × 代償 × 倍化）。</p>
+      <table class="key-table elem">
+        <tr><td>発動の場面</td><td>${Object.entries(grp).map(([g, l]) => `<b>${esc(g)}</b>：${esc(l.join('、'))}`).join('<br>')}</td></tr>
+        <tr><td>回数</td><td>${esc(list(Parts.LIMITS))}（何度も起きる場面だけ）</td></tr>
+        <tr><td>条件（2つまで）</td><td>${esc(list(Parts.CONDS, (c) => c.label.replace('◯', '○')))}</td></tr>
+        <tr><td>代償</td><td>「〜してもよい。そうしたら」：${esc(list(Parts.COSTS, (c) => c.label.replace('◯', '○')).replace('なし、', ''))}。起動効果ではこれがコストになる</td></tr>
+        <tr><td>効果</td><td>${Object.entries(cats).map(([g, l]) => `<b>${esc(g)}</b>：${esc(l.join('、'))}`).join('<br>')}</td></tr>
+        <tr><td>対象</td><td>誰を（相手／自分／他の自分／敵味方問わず／このクリーチャー／攻撃してきたクリーチャー）・何体（1／2／3／全て）・どう選ぶ（選ぶ／ランダム／最も大きい／最も小さい）・絞り込み（${esc(list(Parts.FILTERS, (f) => f.label.replace('◯', '○')).replace('しぼらない、', ''))}）</td></tr>
+        <tr><td>期間</td><td>${esc(list(Parts.DURATIONS))}</td></tr>
+        <tr><td>〜につき（倍化）</td><td>${esc(list(Parts.PERS).replace('なし、', ''))}（最大${Parts.CAP.PER_MAX}倍）</td></tr>
+      </table>
+      <p class="point">【起動】は自分のメインステップに、コストを払っていつでも使える効果。【常在】は場にいる限りずっと働く効果。〔迎撃〕〔対抗〕は相手のターンに割り込む呪文です。</p>
+      <p class="hint">暴走を防ぐ決まり：テキスト効果は3つまで／デメリットで戻る容量は容量の1/4まで／効果の連鎖は12段まで／1つの効果は1ターン10回まで／1ターンに使えるカードは${CFG.playsPerTurn}枚まで。</p>`;
+    } },
     { id: 'keys', icon: '🖱', title: '操作', body: () => `
       <table class="key-table">
         <tr><td>手札のカードをクリック</td><td>カードを使う（メインステップ）</td></tr>
         <tr><td>自分のクリーチャー → 攻撃先</td><td>攻撃する（アタックステップ）</td></tr>
+        <tr><td>自分のクリーチャー（紫に光る）</td><td>【起動】効果を使う（メインステップ）</td></tr>
         <tr><td>右クリック ／ Esc</td><td>攻撃先選びをやめる</td></tr>
         <tr><td>マウスを乗せる</td><td>カードの詳しい説明</td></tr>
       </table>` },

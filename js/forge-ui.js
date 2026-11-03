@@ -18,7 +18,7 @@
 
   const F = { draft: null, editing: false };
 
-  const blankEffect = (kind) => ({ trig: kind === 'spell' ? 'cast' : 'summon', cond: 'none', pay: 'none', act: 'draw', amt: 1, tgt: null });
+  const blankEffect = (kind) => Parts.normalizeEffect({ kind }, { trig: kind === 'spell' ? 'cast' : 'summon', act: 'draw', n: 1, conds: [], pay: { k: 'none', n: 0 }, per: 'none' });
 
   function newDraft(grade) {
     return { name: '', icon: ICONS[Math.floor(Math.random() * ICONS.length)], color: COLORS[0], kind: 'creature', cost: 3, grade, power: 1000, keywords: [], effects: [] };
@@ -32,7 +32,9 @@
     box.innerHTML = list.length ? '' : '<p class="hint">まだありません。右の「原石を引く」から作りましょう。</p>';
     for (const c of list.slice().reverse()) {
       const row = document.createElement('div');
-      row.className = 'mini' + (F.draft && F.draft.id === c.id ? ' on' : '');
+      const bad = Parts.validate(c).length > 0;
+      row.className = 'mini' + (F.draft && F.draft.id === c.id ? ' on' : '') + (bad ? ' bad' : '');
+      if (bad) row.title = '規則の変更で容量に収まらなくなりました。作り直してください（このままでも対戦には使えます）';
       const g = Parts.GRADES[c.grade];
       row.innerHTML = `<span class="mi-cost">${c.cost}</span><span class="mi-icon">${esc(c.icon)}</span><span class="mi-name">${esc(c.name)}</span><span class="mi-grade" style="color:${g.color}">${g.label}</span>
         <span class="mi-acts"><button data-a="edit" title="作り直す">✎</button><button data-a="code" title="カードコード">⧉</button><button data-a="del" title="捨てる">✕</button></span>`;
@@ -164,45 +166,115 @@
     };
   }
 
-  const amountLabel = (act, n) => {
-    if (act === 'destroy') return n ? `パワー${n}以下` : 'パワー制限なし';
-    if (['draw', 'discardOpp', 'regrow'].includes(act)) return `${n}枚`;
-    if (['rampMax', 'manaGain', 'manaBurn'].includes(act)) return `${n}`;
+  /** 量の表示 */
+  function amountLabel(act, n) {
+    if (['searchCreature', 'searchSpell', 'reanimate', 'cheatHand'].includes(act)) return n >= 99 ? 'コスト制限なし' : `コスト${n}以下`;
+    if (['draw', 'loot', 'discardSelf', 'oppDiscard', 'oppDiscardPick', 'regrow', 'regrowAny', 'millSelf', 'millOpp'].includes(act)) return `${n}枚`;
+    if (act === 'lookTop') return `上から${n}枚`;
+    if (act === 'token') return `${n}体`;
+    if (['emberGain', 'emberBurn'].includes(act)) return `${n}つ`;
     return String(n);
-  };
+  }
+  const condLabel = (k, n) => (Parts.CONDS[k].label.includes('◯') ? Parts.CONDS[k].label.replace('◯', n) : Parts.CONDS[k].label);
+  const costLabel = (k, n) => (Parts.COSTS[k].label.includes('◯') ? Parts.COSTS[k].label.replace('◯', n) : Parts.COSTS[k].label);
+
+  /** <select> を作る。items は [{ id, label, grp }]（grp があれば optgroup にまとめる） */
+  function sel(key, items, cur, opts = {}) {
+    let html = '';
+    let grp = null;
+    for (const x of items) {
+      if (x.grp !== grp) { if (grp != null) html += '</optgroup>'; grp = x.grp; if (grp != null) html += `<optgroup label="${esc(grp)}">`; }
+      html += `<option value="${esc(String(x.id))}"${String(x.id) === String(cur) ? ' selected' : ''}>${esc(x.label)}</option>`;
+    }
+    if (grp != null) html += '</optgroup>';
+    return `<select data-k="${key}"${opts.disabled ? ' disabled' : ''}>${html}</select>`;
+  }
+  const field = (label, html, cls = '') => `<label class="ef ${cls}"><span>${label}</span>${html}</label>`;
 
   /** テキスト効果1つの編集欄 */
   function effectEditor(d, e, i) {
-    const opt = Parts.optionsFor(d.kind);
+    Parts.normalizeEffect(d, e);
+    const t = Parts.TRIGGERS[e.trig];
     const a = Parts.ACTIONS[e.act];
-    const tgs = Parts.targetsFor(d, e);
-    if (a.side !== 'none' && !tgs.some((t) => t.id === e.tgt)) e.tgt = tgs[0] ? tgs[0].id : null;
-    if (!a.amounts.includes(e.amt)) e.amt = a.amounts[0];
-    const sel = (key, items, cur, disabled) => `<select data-k="${key}"${disabled ? ' disabled' : ''}>${items.map((x) => `<option value="${x.id}"${x.id === cur ? ' selected' : ''}>${esc(x.label)}</option>`).join('')}</select>`;
+    const opt = Parts.optionsFor(d.kind);
+    const lockTrig = d.kind === 'spell' && i > 0;
     const box = document.createElement('div');
     box.className = 'eff';
     const pts = Parts.effectPoints(e);
-    const lockTrig = d.kind === 'spell' && i > 0;
-    if (lockTrig) e.trig = d.effects[0].trig;
+
+    // ① 発動
+    let row1 = field('発動の場面', sel('trig', opt.triggers.map((x) => ({ id: x.id, label: x.label, grp: x.grp })), e.trig, { disabled: lockTrig }), 'wide');
+    if (t.rep && !t.static) row1 += field('回数', sel('lim', Object.entries(Parts.LIMITS).map(([k, v]) => ({ id: k, label: v.label })), e.lim));
+    if (t.activated) {
+      row1 += field('起動のコスト', sel('payk', opt.costs.map((c) => ({ id: c.id, label: c.id === 'none' ? 'なし（タップだけ）' : c.label })), e.pay.k));
+      if (Parts.COSTS[e.pay.k].ns.length > 1) row1 += field('コストの量', sel('payn', Parts.COSTS[e.pay.k].ns.map((n) => ({ id: n, label: costLabel(e.pay.k, n) })), e.pay.n));
+      if (e.pay.k !== 'tapSelf' && d.kind === 'creature') row1 += `<label class="ef chk"><input type="checkbox" data-k="tapToo"${e.tapToo ? ' checked' : ''}><span>タップも必要</span></label>`;
+    }
+    // ② 条件と代償
+    let row2 = '';
+    if (!t.static) {
+      for (let c = 0; c < Parts.MAX_CONDS; c++) {
+        const cd = e.conds[c];
+        if (c > 0 && !e.conds[c - 1]) break;
+        row2 += field(`条件${c + 1}`, sel(`cond${c}`, [{ id: 'none', label: 'なし' }].concat(opt.conds.map((x) => ({ id: x.id, label: x.label.replace('◯', '○') }))), cd ? cd.k : 'none'));
+        if (cd && Parts.CONDS[cd.k].ns.length > 1) row2 += field('値', sel(`condn${c}`, Parts.CONDS[cd.k].ns.map((n) => ({ id: n, label: condLabel(cd.k, n) })), cd.n));
+      }
+      if (!t.activated) {
+        row2 += field('代償（〜してもよい）', sel('payk', opt.costs.map((c) => ({ id: c.id, label: c.label.replace('◯', '○') })), e.pay.k));
+        if (Parts.COSTS[e.pay.k].ns.length > 1) row2 += field('代償の量', sel('payn', Parts.COSTS[e.pay.k].ns.map((n) => ({ id: n, label: costLabel(e.pay.k, n) })), e.pay.n));
+      }
+    }
+    // ③ 効果
+    const acts = Parts.actionsFor(d, e.trig).map((k) => ({ id: k, label: Parts.ACTIONS[k].label, grp: Parts.ACTIONS[k].cat }));
+    let row3 = field('効果', sel('act', acts, e.act), 'wide');
+    if (a.ns && a.ns.length > 1) row3 += field('量', sel('n', a.ns.map((n) => ({ id: n, label: amountLabel(e.act, n) })), e.n));
+    if (e.act === 'token') {
+      row3 += field('トークンのパワー', sel('tp', [500, 1000, 1500, 2000, 3000].map((n) => ({ id: n, label: String(n) })), e.tp));
+      row3 += field('トークンのキーワード', sel('kw', [{ id: '', label: 'なし' }].concat(Object.entries(Parts.KEYWORDS).filter(([, k]) => k.pts > 0).map(([id, k]) => ({ id, label: k.label }))), e.kw || ''));
+    }
+    if (e.act === 'grantKw') row3 += field('与えるキーワード', sel('kw', Object.entries(Parts.KEYWORDS).filter(([, k]) => k.pts > 0).map(([id, k]) => ({ id, label: k.label })), e.kw));
+    if (a.dur && !t.static) row3 += field('期間', sel('dur', Object.entries(Parts.DURATIONS).filter(([k]) => !a.durs || a.durs.includes(k)).map(([k, v]) => ({ id: k, label: v.label })), e.dur));
+    if (a.per) row3 += field('〜につき（倍化）', sel('per', Object.entries(Parts.PERS).filter(([, v]) => !v.kind || v.kind === d.kind).map(([k, v]) => ({ id: k, label: v.label })), e.per));
+    // ④ 対象
+    let row4 = '';
+    if (Parts.unitAction(a)) {
+      const tg = e.tgt;
+      row4 += field('誰を', sel('who', Parts.whosFor(d, e).map((w) => ({ id: w.id, label: w.label })), tg.who));
+      if (!Parts.WHO[tg.who].self) {
+        const counts = Object.keys(Parts.COUNTS).filter((k) => (!a.counts || a.counts.includes(k)) && (!t.static || k === 'all'));
+        row4 += field('何体', sel('count', counts.map((k) => ({ id: k, label: Parts.COUNTS[k].label })), tg.count));
+        if (tg.count !== 'all') row4 += field('どう選ぶ', sel('how', Object.entries(Parts.HOWS).map(([k, v]) => ({ id: k, label: v.label })), tg.how));
+        const fs = Object.entries(Parts.FILTERS).filter(([k]) => !t.static || !['powerLE', 'powerGE'].includes(k));
+        row4 += field('絞り込み', sel('f', fs.map(([k, v]) => ({ id: k, label: v.label.replace('◯', '○') })), tg.f));
+        const F2 = Parts.FILTERS[tg.f];
+        if (F2.ns.length > 1) row4 += field('絞り込みの値', sel('fn', F2.ns.map((n) => ({ id: n, label: tg.f === 'hasKw' ? Parts.KEYWORDS[n].label : F2.label.replace('◯', n) })), tg.fn));
+      }
+    }
     box.innerHTML = `
-      <div class="eff-head"><b>効果${i + 1}</b><span class="eff-pts">${pts}pt</span><button class="eff-del" title="この効果を外す">✕</button></div>
-      <div class="eff-grid">
-        <label>発動の場面${sel('trig', opt.triggers, e.trig, lockTrig)}</label>
-        <label>条件${sel('cond', opt.conds, e.cond || 'none')}</label>
-        <label>代償（〜してもよい）${sel('pay', opt.pays.filter((p) => !(p.id === 'tapSelf' && e.trig === 'tap')), e.pay || 'none')}</label>
-        <label>効果${sel('act', opt.actions, e.act)}</label>
-        ${a.amounts.length > 1 ? `<label>量${sel('amt', a.amounts.map((n) => ({ id: String(n), label: amountLabel(e.act, n) })), String(e.amt))}</label>` : ''}
-        ${a.side !== 'none' ? `<label>対象（${a.side === 'enemy' ? '相手' : '自分'}のクリーチャー）${sel('tgt', tgs, e.tgt)}</label>` : ''}
+      <div class="eff-head"><b>効果${i + 1}</b><span class="eff-pts">${pts < 0 ? `容量 +${-pts}（デメリット）` : `${pts}pt`}</span><button class="eff-del" title="この効果を外す">✕</button></div>
+      <div class="eff-rows">
+        <div class="eff-row"><i class="eff-tag">発動</i>${row1}</div>
+        ${row2 ? `<div class="eff-row"><i class="eff-tag">条件</i>${row2}</div>` : ''}
+        <div class="eff-row"><i class="eff-tag">効果</i>${row3}</div>
+        ${row4 ? `<div class="eff-row"><i class="eff-tag">対象</i>${row4}</div>` : ''}
       </div>
       <p class="eff-text">${esc(Parts.effectText(d, e))}</p>
       ${Parts.effectErrors(d, e).map((m) => `<p class="eff-err">⚠ ${esc(m)}</p>`).join('')}`;
-    box.querySelectorAll('select').forEach((s) => {
-      s.onchange = () => {
-        const k = s.dataset.k;
-        e[k] = k === 'amt' ? Number(s.value) : s.value;
-        if (k === 'act') { e.amt = Parts.ACTIONS[e.act].amounts[0]; e.tgt = null; }
-        if (k === 'trig' && d.kind === 'spell') d.effects.forEach((x) => { x.trig = e.trig; });
-        if (k === 'trig' && e.trig === 'tap' && e.pay === 'tapSelf') e.pay = 'none';
+
+    const num = (v) => (v === '' ? '' : isNaN(Number(v)) ? v : Number(v));
+    box.querySelectorAll('select, input[type=checkbox]').forEach((el) => {
+      el.onchange = () => {
+        const k = el.dataset.k;
+        const v = el.type === 'checkbox' ? el.checked : num(el.value);
+        if (k === 'trig') { e.trig = v; if (d.kind === 'spell') d.effects.forEach((x) => { x.trig = v; Parts.normalizeEffect(d, x); }); }
+        else if (k === 'payk') e.pay = { k: v, n: Parts.COSTS[v].ns[0] };
+        else if (k === 'payn') e.pay.n = v;
+        else if (/^cond\d$/.test(k)) { const c = Number(k[4]); if (v === 'none') e.conds.splice(c); else e.conds[c] = { k: v, n: Parts.CONDS[v].ns[0] }; }
+        else if (/^condn\d$/.test(k)) e.conds[Number(k[5])].n = v;
+        else if (['who', 'count', 'how', 'f', 'fn'].includes(k)) { e.tgt[k] = k === 'count' && v !== 'all' ? Number(v) : v; if (k === 'f') e.tgt.fn = Parts.FILTERS[v].ns[0]; }
+        else if (k === 'kw') { if (v) e.kw = v; else delete e.kw; }
+        else e[k] = v;
+        Parts.normalizeEffect(d, e);
         render();
       };
     });
@@ -241,7 +313,8 @@
       <div class="m-bar${over ? ' over' : ''}">${seg(u.power, 'p', 'パワー')}${seg(Math.max(0, u.keywords), 'k', 'キーワード')}${seg(effTotal, 'e', 'テキスト効果')}<span class="m-cap" style="left:${Math.min(100, (cap / Math.max(cap, u.total)) * 100)}%"></span></div>
       <div class="m-legend"><span class="p">パワー ${Math.round(u.power)}</span><span class="k">キーワード ${u.keywords}</span><span class="e">テキスト ${effTotal}</span><span>残り ${cap - u.total}</span></div>`;
     const e = Parts.validate(d);
-    errs.innerHTML = e.map((m) => `<p>⚠ ${esc(m)}</p>`).join('');
+    const lines = Parts.cardLines(shown);
+    errs.innerHTML = (lines.length ? `<div class="full-text">${lines.map((l) => `<p>${esc(l)}</p>`).join('')}</div>` : '') + e.map((m) => `<p>⚠ ${esc(m)}</p>`).join('');
     $('#forge-save').disabled = e.length > 0;
     $('#forge-save').textContent = F.editing ? '作り直して保存' : '工房に保存';
   }

@@ -27,7 +27,7 @@
 
   const Store = {
     // ── オリジナルカード ──
-    cards() { return read(KEY_CARDS, []); },
+    cards() { return read(KEY_CARDS, []).map((c) => (root.Parts ? root.Parts.migrate(c) : c)); }, // 古い形式は今の形式に直して読む
     saveCard(spec) {
       const list = Store.cards();
       if (!spec.id) spec.id = newId('f_');

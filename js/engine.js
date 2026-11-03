@@ -26,6 +26,12 @@
  *     'discard' … 手札から捨てるカード。options はカードの iid。答えは iid の配列
  *     'react'   … 相手の攻撃に迎撃呪文を使うか。options は使える呪文の iid。答えは iid の配列（空なら使わない）
  *     'block'   … 火種を払ってブロックするか。options はブロックできるクリーチャーの uid。答えは uid の配列（空ならしない）
+ *     'counter' … 相手の呪文に対抗呪文を使うか。options は使える呪文の iid
+ *     'pickCard'… カードを選ぶ（サーチ・墓地回収・相手の手札など）。options は iid、cards は spec、zone は場所
+ *
+ * ■ テキスト効果（parts.js の文法）
+ *   発動の場面ごとに、出来事が起きた所から _selfTrigger / _trigger で効果を呼ぶ。
+ *   常在効果（場にいる限り）は効果としては動かさず、powerOf / hasKw / costOf の計算に毎回反映する。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./parts.js'));
@@ -48,6 +54,7 @@
     fieldLimit: 6,
     handLimit: 10,    // 超えて引いたカードは墓地へ
     maxDepth: 12,     // 効果が効果を呼ぶ連鎖の上限（無限ループ防止）
+    playsPerTurn: 12, // 1ターンに使えるカードの枚数の上限（「墓地から戻してまた使う」などの無限ループ防止）
   };
 
   function mulberry32(a) {
@@ -69,7 +76,8 @@
     return err;
   }
 
-  const has = (u, k) => !u.muted && u.spec.keywords && u.spec.keywords.includes(k);
+  const P = Parts;
+  const TRIG = P.TRIGGERS;
 
   class Game {
     /**
@@ -91,20 +99,25 @@
       this.pending = null;    // 人間の選択待ち
       this._task = null;
       this._depth = 0;
+      this._windows = 0;      // 対抗呪文の割り込みの深さ
       this.players = [0, 1].map((i) => ({
         index: i, name: (opts.names || [])[i] || (i ? 'CPU' : 'あなた'),
         hp: this.cfg.startHP, maxMana: 0, mana: 0, ember: 0,
-        deck: this._shuffle(opts.decks[i].map((spec) => this._inst(spec))),
-        hand: [], field: [], grave: [],
-        spellLock: false,  // 呪文を唱えられない（相手の効果）
-        chooser: null,     // AIの選択関数。null なら人間（pending で止まる）
+        deck: this._shuffle(opts.decks[i].map((spec) => this._inst(spec, i))),
+        hand: [], field: [], grave: [], exile: [],
+        locks: {},          // { spell, summon, attack: 解除するプレイヤー番号 }（相手の効果で封じられている）
+        nextDiscount: 0,    // 次に使うカードのコスト軽減（このターン）
+        spellsThisTurn: 0,
+        playsThisTurn: 0,
+        turns: 0,           // 自分のターンの回数
+        chooser: null,      // AIの選択関数。null なら人間（pending で止まる）
         stats: { damage: 0, played: 0, destroyed: 0 },
       }));
       this.first = opts.first != null ? opts.first : (this.rand() < 0.5 ? 0 : 1);
       this.players[1 - this.first].maxMana = this.cfg.secondMana;
     }
 
-    _inst(spec) { return { iid: this.seq++, spec }; }
+    _inst(spec, owner) { return { iid: this.seq++, spec, owner }; }
     opp(p) { return this.players[1 - p.index]; }
     findUnit(uid) { for (const p of this.players) { const u = p.field.find((x) => x.uid === uid); if (u) return u; } return null; }
     _emit(ev) { if (this.onEvent) this.onEvent(ev); }
@@ -114,8 +127,79 @@
       return a;
     }
 
+    // ───────────── 常在効果を含めた、今の状態 ─────────────
+    /** 常在効果（場にいる限り）の一覧 [{ src, owner, e }] */
+    _statics() {
+      const out = [];
+      for (const q of this.players) for (const s of q.field) {
+        if (s.silenced) continue;
+        for (const e of s.spec.effects || []) if (e.trig === 'static') out.push({ src: s, owner: q, e });
+      }
+      return out;
+    }
+
+    /** 常在効果 st の対象に u が入るか */
+    _staticHits(st, u) {
+      const t = st.e.tgt || {};
+      if (t.who === 'self') return u === st.src;
+      const mine = u.owner === st.owner.index;
+      if (t.who === 'enemy' && mine) return false;
+      if ((t.who === 'ally' || t.who === 'allyOther') && !mine) return false;
+      if (t.who === 'allyOther' && u === st.src) return false;
+      const f = P.FILTERS[t.f || 'none'];
+      if (f && f.test && !['powerLE', 'powerGE'].includes(t.f) && !f.test(this, u, t.fn)) return false;
+      return true;
+    }
+
+    /** 「〜につき」の倍率（最大 PER_MAX） */
+    perCount(p, source, per) {
+      if (!per || per === 'none') return 1;
+      const op = this.opp(p);
+      const n = ({
+        ally: p.field.length, allyOther: p.field.filter((u) => u !== source).length, enemy: op.field.length,
+        hand: p.hand.length, grave3: Math.floor(p.grave.length / 3), ember: p.ember, spells: p.spellsThisTurn,
+      })[per] || 0;
+      return Math.min(P.CAP.PER_MAX, n);
+    }
+
+    /** 今のパワー（効果の補正・常在効果を含む） */
+    powerOf(u) {
+      let v = u.power + u.plus;
+      for (const m of u.mods) if (m.pw) v += m.pw;
+      if (!this._inPower) {
+        this._inPower = true;
+        try {
+          for (const st of this._statics()) {
+            if (st.e.act !== 'buff' && st.e.act !== 'weaken') continue;
+            if (!this._staticHits(st, u)) continue;
+            const k = this.perCount(st.owner, st.src, st.e.per);
+            v += (st.e.act === 'buff' ? 1 : -1) * st.e.n * k;
+          }
+        } finally { this._inPower = false; }
+      }
+      return Math.max(0, v);
+    }
+
+    /** キーワード効果を持っているか（与えられたもの・常在効果を含む） */
+    hasKw(u, k) {
+      if (!u.silenced && (u.spec.keywords || []).includes(k)) return true;
+      if (u.kws.includes(k) || u.mods.some((m) => m.kw === k)) return true;
+      for (const st of this._statics()) if (st.e.act === 'grantKw' && st.e.kw === k && this._staticHits(st, u)) return true;
+      return false;
+    }
+
+    /** 実際のコスト（常在効果・次のカードの軽減を含む） */
+    costOf(p, spec) {
+      let c = spec.cost;
+      for (const st of this._statics()) {
+        if (st.e.act === 'auraCost' && st.owner === p) c -= st.e.n;
+        if (st.e.act === 'auraOppCost' && st.owner !== p) c += st.e.n;
+      }
+      c = Math.max(Math.min(1, spec.cost), c);
+      return Math.max(0, c - p.nextDiscount);
+    }
+
     // ───────────── 公開の操作（画面やAIから呼ぶ） ─────────────
-    /** 試合開始：お互いに初期手札を引き、先攻の1ターン目を始める */
     start() {
       this._run((function* () {
         for (const p of this.players) {
@@ -126,16 +210,22 @@
       }).call(this));
     }
 
+    _busy() { return this.over || this.pending || this._task; }
+
     /** 手札のカードを今使えるか { ok, reason } */
     canPlay(pi, iid) {
       const p = this.players[pi];
       const inst = p.hand.find((c) => c.iid === iid);
-      if (!inst || this.over || this.pending || this._task) return { ok: false, reason: '' };
+      if (!inst || this._busy()) return { ok: false, reason: '' };
       const s = inst.spec;
-      if (this.active !== pi || this.step !== 'main') return { ok: false, reason: s.kind === 'spell' && this._isReact(s) ? '相手の攻撃時に使える' : '自分のメインステップのみ' };
-      if (s.kind === 'spell' && this._isReact(s)) return { ok: false, reason: '相手の攻撃時に使える' };
-      if (s.cost > p.mana + p.ember) return { ok: false, reason: 'マナ不足' };
-      if (s.kind === 'spell' && p.spellLock) return { ok: false, reason: '呪文を封じられている' };
+      const timed = this._spellTiming(s);
+      if (timed === 'react') return { ok: false, reason: '相手の攻撃時に使える' };
+      if (timed === 'counter') return { ok: false, reason: '相手が呪文を唱えた時に使える' };
+      if (this.active !== pi || this.step !== 'main') return { ok: false, reason: '自分のメインステップのみ' };
+      if (p.playsThisTurn >= this.cfg.playsPerTurn) return { ok: false, reason: `1ターンに${this.cfg.playsPerTurn}枚まで` };
+      if (this.costOf(p, s) > p.mana + p.ember) return { ok: false, reason: 'マナ不足' };
+      if (s.kind === 'spell' && p.locks.spell != null) return { ok: false, reason: '呪文を封じられている' };
+      if (s.kind === 'creature' && p.locks.summon != null) return { ok: false, reason: '召喚を封じられている' };
       if (s.kind === 'creature' && p.field.length >= this.cfg.fieldLimit) return { ok: false, reason: '場がいっぱい' };
       return { ok: true, reason: '' };
     }
@@ -147,54 +237,59 @@
       return chk;
     }
 
-    /** 「タップして発動する」効果を今使えるか */
+    /** 起動効果（idx 番目のテキスト効果）を今使えるか */
     canActivate(pi, uid, idx) {
       const p = this.players[pi];
       const u = p.field.find((x) => x.uid === uid);
-      if (!u || this.over || this.pending || this._task || this.active !== pi || this.step !== 'main') return false;
-      const e = u.spec.effects[idx];
-      if (!e || e.trig !== 'tap' || u.muted) return false;
-      return !u.tapped && !u.sick && !u.used[idx];
+      if (!u || this._busy() || this.active !== pi || this.step !== 'main' || u.silenced) return false;
+      const e = (u.spec.effects || [])[idx];
+      if (!e || e.trig !== 'activate') return false;
+      if (!this._limitOk(u, idx, e)) return false;
+      const needTap = e.tapToo || (e.pay && e.pay.k === 'tapSelf');
+      if (needTap && (u.tapped || u.sick)) return false;
+      if (e.pay && e.pay.k !== 'tapSelf' && !this._canPayCost(p, u, e.pay)) return false;
+      return this._condsOk(p, u, e);
     }
 
     activate(pi, uid, idx) {
       if (!this.canActivate(pi, uid, idx)) return false;
       const p = this.players[pi];
       const u = p.field.find((x) => x.uid === uid);
+      const e = u.spec.effects[idx];
       this._run((function* () {
-        u.tapped = true;
-        u.used[idx] = true;
+        this._useLimit(u, idx, e);
+        if (e.tapToo || (e.pay && e.pay.k === 'tapSelf')) u.tapped = true;
+        if (e.pay && e.pay.k !== 'tapSelf' && e.pay.k !== 'none') yield* this._payCost(p, u, e.pay);
+        if (this.over) return;
         this._emit({ type: 'activate', player: pi, unit: u });
-        yield* this._runEffect(p, u, u.spec.effects[idx], {});
+        yield* this._runEffect(p, u, e, {}, null, true);
       }).call(this));
       return true;
     }
 
-    /** メインステップからアタックステップへ */
     toAttack(pi) {
-      if (this.over || this.pending || this._task || this.active !== pi || this.step !== 'main') return false;
+      if (this._busy() || this.active !== pi || this.step !== 'main') return false;
       this.step = 'attack';
       this._emit({ type: 'step', step: 'attack', player: pi });
       this._bump();
       return true;
     }
 
-    /** このクリーチャーが今攻撃できるか */
     canAttack(pi, uid) {
       const p = this.players[pi];
       const u = p.field.find((x) => x.uid === uid);
-      if (!u || this.over || this.pending || this._task || this.active !== pi || this.step !== 'attack') return false;
-      return !u.tapped && !u.sick && u.attacks > 0 && !has(u, 'slow');
+      if (!u || this._busy() || this.active !== pi || this.step !== 'attack') return false;
+      if (p.locks.attack != null) return false;
+      return !u.tapped && !u.sick && u.attacks > 0 && !this.hasKw(u, 'slow');
     }
 
-    /** 攻撃先の候補。'player' または相手クリーチャーの uid */
     attackTargets(pi, uid) {
       if (!this.canAttack(pi, uid)) return [];
       const p = this.players[pi];
       const u = p.field.find((x) => x.uid === uid);
       const op = this.opp(p);
       const list = ['player'];
-      for (const t of op.field) if (t.tapped || has(u, 'sniper')) list.push(t.uid);
+      for (const t of op.field) if (t.tapped || this.hasKw(u, 'sniper')) list.push(t.uid);
       return list;
     }
 
@@ -206,12 +301,11 @@
     }
 
     endTurn(pi) {
-      if (this.over || this.pending || this._task || this.active !== pi) return false;
+      if (this._busy() || this.active !== pi) return false;
       this._run(this._endTurnTask(this.players[pi]));
       return true;
     }
 
-    /** 人間の選択に答える */
     answer(value) {
       if (!this.pending) return;
       this.pending = null;
@@ -219,10 +313,7 @@
     }
 
     // ───────────── ジェネレーターの実行 ─────────────
-    _run(gen) {
-      this._task = gen;
-      this._step(undefined);
-    }
+    _run(gen) { this._task = gen; this._step(undefined); }
 
     _step(input) {
       let r;
@@ -251,33 +342,53 @@
       this.turn++;
       this.active = p.index;
       this.step = 'main';
+      p.turns++;
       const op = this.opp(p);
-      // 自分のターンが来たら、自分がかけた呪文封じは解ける（「次の自分のターンの始めまで」）
-      if (op.spellLockBy === p.index) { op.spellLock = false; op.spellLockBy = null; }
-      for (const u of p.field) {
-        u.tapped = false; u.sick = false; u.turnPlus = 0; u.used = {};
-        u.attacks = has(u, 'double') ? 2 : 1;
+      // 「次の自分のターンの始めまで」の効果が切れる
+      for (const q of this.players) {
+        for (const k of Object.keys(q.locks)) if (q.locks[k] === p.index) delete q.locks[k];
+        for (const u of q.field) {
+          u.mods = u.mods.filter((m) => !(m.exp === 'next' && m.pi === p.index));
+          if (u.protectedBy === p.index) u.protectedBy = null;
+        }
       }
-      for (const u of op.field) u.turnPlus = 0;
+      for (const q of this.players) for (const u of q.field) u.used = {};
+      for (const u of p.field) {
+        if (u.frozen) u.frozen = false; else u.tapped = false;
+        u.sick = false;
+        u.attacks = this.hasKw(u, 'double') ? 2 : 1;
+      }
       p.maxMana = Math.min(this.cfg.maxManaCap, p.maxMana + 1);
       p.mana = p.maxMana + (this.turn === 2 ? this.cfg.secondCoin : 0);
+      p.spellsThisTurn = 0;
+      p.playsThisTurn = 0;
+      p.nextDiscount = 0;
       this._emit({ type: 'turn', player: p.index, turn: this.turn });
-      // 先攻の1ターン目はドローしない
-      const skip = this.turn === 1;
-      if (!skip) { this._drawOne(p); if (this.over) return; }
+      if (this.turn !== 1) { this._drawOne(p); if (this.over) return; }
       yield* this._trigger(p, 'turnStart', {});
+      if (this.over) return;
+      yield* this._trigger(op, 'oppTurnStart', {});
       this._bump();
     }
 
     *_endTurnTask(p) {
+      const op = this.opp(p);
       yield* this._trigger(p, 'turnEnd', {});
       if (this.over) return;
-      // 【自壊】
-      for (const u of [...p.field]) if (has(u, 'fleeting')) yield* this._destroy(u, '自壊');
+      yield* this._trigger(op, 'oppTurnEnd', {});
       if (this.over) return;
-      for (const q of this.players) for (const u of q.field) u.turnPlus = 0;
+      for (const u of [...p.field]) if (this.hasKw(u, 'fleeting')) yield* this._destroy(u, '自壊');
+      if (this.over) return;
+      // 「このターンの間」奪ったクリーチャーを返す
+      for (const q of this.players) for (const u of [...q.field]) {
+        if (u.returnTo != null && u.returnTo !== q.index) this._moveControl(u, this.players[u.returnTo]);
+      }
+      for (const q of this.players) for (const u of q.field) u.mods = u.mods.filter((m) => m.exp !== 'turn');
+      p.nextDiscount = 0;
+      yield* this._sweep();
+      if (this.over) return;
       this._emit({ type: 'endTurn', player: p.index });
-      yield* this._beginTurn(this.opp(p));
+      yield* this._beginTurn(op);
     }
 
     // ───────────── カードを使う ─────────────
@@ -285,64 +396,100 @@
       const idx = p.hand.findIndex((c) => c.iid === iid);
       const inst = p.hand.splice(idx, 1)[0];
       const s = inst.spec;
-      this._pay(p, s.cost);
+      this._pay(p, this.costOf(p, s));
+      p.nextDiscount = 0;
+      p.playsThisTurn++;
       p.stats.played++;
-      if (s.kind === 'creature') {
-        yield* this._summon(p, inst);
-      } else {
-        yield* this._cast(p, inst, {});
-      }
+      if (s.kind === 'creature') yield* this._summon(p, inst);
+      else yield* this._cast(p, inst, {});
+    }
+
+    _newUnit(p, inst) {
+      const s = inst.spec;
+      return {
+        uid: this.seq++, inst, spec: s, owner: p.index, name: s.name, icon: s.icon,
+        power: s.power, plus: 0, mods: [], kws: [], tapped: false, frozen: false,
+        sick: !(s.keywords || []).includes('haste'), attacks: (s.keywords || []).includes('double') ? 2 : 1,
+        undyingUsed: false, silenced: false, used: {}, usedGame: {}, returnTo: null, protectedBy: null,
+      };
     }
 
     *_summon(p, inst) {
-      const s = inst.spec;
-      const u = {
-        uid: this.seq++, inst, spec: s, owner: p.index, name: s.name, icon: s.icon,
-        power: s.power, plus: 0, turnPlus: 0, tapped: false,
-        sick: !(s.keywords || []).includes('haste'), attacks: (s.keywords || []).includes('double') ? 2 : 1,
-        undyingUsed: false, muted: false, used: {},
-      };
+      if (p.field.length >= this.cfg.fieldLimit) { if (!inst.spec.token) p.grave.push(inst); return null; }
+      const u = this._newUnit(p, inst);
+      if (this.hasKw(u, 'haste')) u.sick = false;
       p.field.push(u);
       this._emit({ type: 'summon', player: p.index, unit: u });
       this._bump();
       yield* this._selfTrigger(p, u, 'summon', {});
-      if (this.over) return;
+      if (this.over) return u;
       yield* this._trigger(p, 'allySummon', { other: u }, u);
+      if (this.over) return u;
+      yield* this._trigger(this.opp(p), 'enemySummon', { other: u });
+      return u;
+    }
+
+    _spellTiming(s) {
+      if (s.kind !== 'spell' || !(s.effects || []).length) return 'main';
+      const t = s.effects[0].trig;
+      return t === 'react' || t === 'counter' ? t : 'main';
     }
 
     *_cast(p, inst, ctx) {
       const s = inst.spec;
+      const op = this.opp(p);
+      p.spellsThisTurn++;
       this._emit({ type: 'cast', player: p.index, card: s });
-      for (const e of s.effects) {
-        yield* this._runEffect(p, null, e, ctx, s);
-        if (this.over) return;
+      this._bump();
+      // 相手の対抗呪文
+      const spellCtx = { ...ctx, spell: s, negated: false };
+      yield* this._counterWindow(op, p, spellCtx);
+      if (this.over) return;
+      if (spellCtx.negated) {
+        this._emit({ type: 'negated', player: p.index, card: s });
+      } else {
+        for (const e of s.effects) {
+          yield* this._runEffect(p, null, e, spellCtx, s);
+          if (this.over) return;
+        }
       }
       p.grave.push(inst);
       this._bump();
       yield* this._trigger(p, 'spellCast', { card: s });
+      if (this.over) return;
+      yield* this._trigger(op, 'oppSpellCast', { card: s });
     }
 
-    /** コストを払う：まずマナから、足りない分を火種で */
+    /** 呪文 spellCtx が唱えられた時、相手（responder）が対抗呪文を使うか */
+    *_counterWindow(responder, caster, spellCtx) {
+      if (this._windows >= 3) return;
+      const usable = responder.hand.filter((c) => this._spellTiming(c.spec) === 'counter' && this.costOf(responder, c.spec) <= responder.mana + responder.ember && responder.locks.spell == null);
+      if (!usable.length) return;
+      const ans = yield { player: responder.index, kind: 'counter', prompt: `相手が【${spellCtx.spell.name}】を唱えた！ 対抗呪文を使いますか？`, options: usable.map((c) => c.iid), min: 0, max: 1, spell: spellCtx.spell };
+      const iid = ans && ans[0];
+      const i = iid ? responder.hand.findIndex((c) => c.iid === iid) : -1;
+      if (i < 0) return;
+      const inst = responder.hand.splice(i, 1)[0];
+      this._pay(responder, this.costOf(responder, inst.spec));
+      responder.stats.played++;
+      this._windows++;
+      try { yield* this._cast(responder, inst, { countering: spellCtx }); } finally { this._windows--; }
+    }
+
     _pay(p, cost) {
       const fromMana = Math.min(p.mana, cost);
       p.mana -= fromMana;
-      p.ember -= cost - fromMana;
+      p.ember = Math.max(0, p.ember - (cost - fromMana));
     }
 
-    _isReact(s) { return s.kind === 'spell' && s.effects.length && s.effects[0].trig === 'react'; }
-
     // ───────────── 攻撃とバトル ─────────────
-    powerOf(u) { return Math.max(0, u.power + u.plus + u.turnPlus); }
-
     *_attackTask(p, u, target) {
       const op = this.opp(p);
       u.attacks--;
       u.tapped = true;
-      // 攻撃された側は、攻撃が終わった後に火種を得る（攻撃のリスク）
       yield* this._attackBody(p, u, target);
       if (this.over) return;
-      const gain = Math.min(this.cfg.emberPerAttack, this.cfg.emberCap - op.ember);
-      if (gain > 0) { op.ember += gain; this._emit({ type: 'ember', player: op.index, amount: gain }); this._bump(); }
+      yield* this._gainEmber(op, this.cfg.emberPerAttack);
     }
 
     *_attackBody(p, u, target) {
@@ -350,25 +497,25 @@
       let tgt = target === 'player' ? null : op.field.find((x) => x.uid === target);
       this._emit({ type: 'attackDeclare', player: p.index, unit: u, target: tgt });
       this._bump();
-      // 攻撃した時の効果
       yield* this._selfTrigger(p, u, 'attack', { target: tgt });
       if (this.over || !p.field.includes(u)) return;
-      // 相手の迎撃呪文
+      yield* this._trigger(op, 'oppAttack', { attacker: u });
+      if (this.over || !p.field.includes(u)) return;
       yield* this._reactWindow(op, u);
       if (this.over || !p.field.includes(u)) return;
-      if (tgt && !op.field.includes(tgt)) return; // 攻撃先がいなくなった
-      // 守護：アンタップしている守護が、攻撃を代わりに受ける（隠密は無視する）
-      if (!has(u, 'stealth')) {
-        const guards = op.field.filter((g) => has(g, 'guard') && !g.tapped && g !== tgt);
+      if (tgt && !op.field.includes(tgt)) return;
+      let blocked = false;
+      if (!this.hasKw(u, 'stealth')) {
+        const guards = op.field.filter((g) => this.hasKw(g, 'guard') && !g.tapped && g !== tgt);
         if (guards.length) {
           const g = guards.reduce((a, b) => (this.powerOf(b) > this.powerOf(a) ? b : a));
           g.tapped = true;
           tgt = g;
+          blocked = true;
           this._emit({ type: 'guard', player: op.index, unit: g });
         }
       }
-      // ブロック：相手本体への攻撃を、火種を払ってアンタップのクリーチャーで受け止める（隠密は受け止められない）
-      if (!tgt && !has(u, 'stealth') && this.cfg.emberBlockCost > 0 && op.ember >= this.cfg.emberBlockCost) {
+      if (!tgt && !this.hasKw(u, 'stealth') && this.cfg.emberBlockCost > 0 && op.ember >= this.cfg.emberBlockCost) {
         const blockers = op.field.filter((b) => !b.tapped);
         if (blockers.length) {
           const ans = yield { player: op.index, kind: 'block', prompt: `【${u.name}】（パワー${this.powerOf(u)}）があなたを攻撃！ 火種${this.cfg.emberBlockCost}つでブロックしますか？`, options: blockers.map((b) => b.uid), min: 0, max: 1, attacker: u.uid };
@@ -377,50 +524,62 @@
             op.ember -= this.cfg.emberBlockCost;
             b.tapped = true;
             tgt = b;
+            blocked = true;
             this._emit({ type: 'block', player: op.index, unit: b, attacker: u });
           }
         }
       }
-      if (!tgt) {
+      if (tgt) {
+        if (blocked) { yield* this._selfTrigger(op, tgt, 'block', { attacker: u }); if (this.over) return; }
+        yield* this._selfTrigger(op, tgt, 'attacked', { attacker: u });
+        if (this.over || !p.field.includes(u)) return;
+        if (!op.field.includes(tgt)) return;
+        yield* this._battle(p, u, op, tgt, true);
+      } else {
         const dmg = this.powerOf(u);
         this._emit({ type: 'hitPlayer', player: p.index, unit: u, amount: dmg });
-        this._damage(op, dmg, p);
-        if (has(u, 'drain')) this._heal(p, dmg);
-        // 攻撃が終わったら、残りの攻撃回数があればアンタップして次に備える（連撃）
-        if (u.attacks > 0 && p.field.includes(u)) u.tapped = false;
-        return;
+        yield* this._damageGen(op, dmg, p);
+        if (this.over) return;
+        if (this.hasKw(u, 'drain')) yield* this._healGen(p, dmg);
+        if (p.field.includes(u)) yield* this._selfTrigger(p, u, 'hitPlayer', { amount: dmg });
       }
-      yield* this._battle(p, u, op, tgt, true);
       if (u.attacks > 0 && p.field.includes(u)) u.tapped = false;
     }
 
     *_battle(p, a, op, d, attacking) {
       const pa = this.powerOf(a), pd = this.powerOf(d);
       this._emit({ type: 'battle', a, d, pa, pd });
-      const aWins = pa > pd, dWins = pd > pa;
-      // パワーが小さい方が破壊される。同じパワーなら両方破壊
+      yield* this._selfTrigger(p, a, 'battle', { other: d });
+      if (this.over) return;
+      yield* this._selfTrigger(op, d, 'battle', { other: a });
+      if (this.over) return;
+      const qa = this.powerOf(a), qd = this.powerOf(d);
+      const aWins = qa > qd, dWins = qd > qa;
       const toDestroy = new Set();
       if (!aWins) toDestroy.add(a);
       if (!dWins) toDestroy.add(d);
-      // 刺客：勝敗に関わらず、バトルした相手を破壊する
-      if (has(a, 'assassin')) toDestroy.add(d);
-      if (has(d, 'assassin')) toDestroy.add(a);
+      if (this.hasKw(a, 'assassin')) toDestroy.add(d);
+      if (this.hasKw(d, 'assassin')) toDestroy.add(a);
       for (const u of toDestroy) {
         yield* this._destroy(u, 'バトル');
         if (this.over) return;
       }
       if (aWins && p.field.includes(a)) {
-        if (attacking && has(a, 'pierce')) { this._damage(op, pa - pd, p); if (has(a, 'drain')) this._heal(p, pa - pd); }
-        if (this.over) return;
+        if (attacking && this.hasKw(a, 'pierce')) {
+          yield* this._damageGen(op, qa - qd, p);
+          if (this.over) return;
+          if (this.hasKw(a, 'drain')) yield* this._healGen(p, qa - qd);
+          yield* this._selfTrigger(p, a, 'hitPlayer', { amount: qa - qd });
+          if (this.over) return;
+        }
         yield* this._selfTrigger(p, a, 'win', {});
       }
       if (dWins && op.field.includes(d)) yield* this._selfTrigger(op, d, 'win', {});
     }
 
-    /** 攻撃された側が、迎撃呪文を使うか選ぶ */
     *_reactWindow(defender, attacker) {
-      for (let guard = 0; guard < 3; guard++) {
-        const usable = defender.hand.filter((c) => this._isReact(c.spec) && c.spec.cost <= defender.mana + defender.ember && !defender.spellLock);
+      for (let k = 0; k < 3; k++) {
+        const usable = defender.hand.filter((c) => this._spellTiming(c.spec) === 'react' && this.costOf(defender, c.spec) <= defender.mana + defender.ember && defender.locks.spell == null);
         if (!usable.length) return;
         const ans = yield { player: defender.index, kind: 'react', prompt: `${attacker.name}が攻撃してきた！ 迎撃呪文を使いますか？`, options: usable.map((c) => c.iid), min: 0, max: 1, attacker: attacker.uid };
         const iid = ans && ans[0];
@@ -428,15 +587,14 @@
         const i = defender.hand.findIndex((c) => c.iid === iid);
         if (i < 0) return;
         const inst = defender.hand.splice(i, 1)[0];
-        this._pay(defender, inst.spec.cost);
+        this._pay(defender, this.costOf(defender, inst.spec));
         defender.stats.played++;
         yield* this._cast(defender, inst, { attacker });
         if (this.over || !this.players[attacker.owner].field.includes(attacker)) return;
       }
     }
 
-    // ───────────── 効果 ─────────────
-    /** p の場のクリーチャー全ての trig 効果を発動する（except は除外するクリーチャー） */
+    // ───────────── 効果の発動 ─────────────
     *_trigger(p, trig, ctx, except) {
       for (const u of [...p.field]) {
         if (u === except || !p.field.includes(u)) continue;
@@ -445,130 +603,341 @@
       }
     }
 
+    _limitOk(u, i, e) {
+      const t = TRIG[e.trig];
+      if (!t || !t.rep || t.static) return true;
+      const lim = P.LIMITS[e.lim || 'turn1'] || P.LIMITS.turn1;
+      if (lim.game) return !u.usedGame[i];
+      return (u.used[i] || 0) < lim.max;
+    }
+    _useLimit(u, i, e) {
+      const t = TRIG[e.trig];
+      if (!t || !t.rep || t.static) return;
+      const lim = P.LIMITS[e.lim || 'turn1'] || P.LIMITS.turn1;
+      if (lim.game) u.usedGame[i] = true;
+      u.used[i] = (u.used[i] || 0) + 1;
+    }
+
     *_selfTrigger(p, u, trig, ctx) {
-      if (u.muted) return;
+      if (u.silenced) return;
       const effs = u.spec.effects || [];
       for (let i = 0; i < effs.length; i++) {
         const e = effs[i];
         if (e.trig !== trig) continue;
-        const once = Parts.TRIGGERS[trig] && Parts.TRIGGERS[trig].once;
-        if (once && u.used[i]) continue;
-        if (once) u.used[i] = true;
+        if (!this._limitOk(u, i, e)) continue;
+        if (!this._condsOk(p, u, e)) continue;
+        this._useLimit(u, i, e);
         yield* this._runEffect(p, u, e, ctx);
         if (this.over) return;
       }
     }
 
-    /** テキスト効果1つを処理する。source はそのクリーチャー（呪文なら null） */
-    *_runEffect(p, source, e, ctx, spellSpec) {
+    _condsOk(p, source, e) {
+      for (const c of e.conds || []) {
+        const cd = P.CONDS[c.k];
+        if (cd && !cd.test(this, p, source, c.n)) return false;
+      }
+      return true;
+    }
+
+    _canPayCost(p, source, pay) {
+      const n = pay.n;
+      switch (pay.k) {
+        case 'none': return true;
+        case 'tapSelf': return !!source && !source.tapped;
+        case 'discard': return p.hand.length >= n;
+        case 'life': return p.hp > n;
+        case 'mana': return p.mana + p.ember >= n;
+        case 'ember': return p.ember >= n;
+        case 'sacSelf': return !!source && p.field.includes(source);
+        case 'sacAlly': return p.field.some((u) => u !== source);
+        case 'exileGrave': return p.grave.length >= n;
+      }
+      return false;
+    }
+
+    *_payCost(p, source, pay) {
+      const n = pay.n;
+      switch (pay.k) {
+        case 'tapSelf': source.tapped = true; break;
+        case 'discard': {
+          const ans = yield { player: p.index, kind: 'discard', prompt: `捨てるカードを${n}枚選んでください`, options: p.hand.map((c) => c.iid), min: n, max: n };
+          const ids = (ans || []).slice(0, n);
+          while (ids.length < n && p.hand.length > ids.length) { const c = p.hand.find((x) => !ids.includes(x.iid)); ids.push(c.iid); }
+          for (const iid of ids) { yield* this._discard(p, iid); if (this.over) return; }
+          break;
+        }
+        case 'life': this._loseLife(p, n); break;
+        case 'mana': this._pay(p, n); break;
+        case 'ember': p.ember -= n; break;
+        case 'sacSelf': yield* this._destroy(source, '代償'); break;
+        case 'sacAlly': {
+          const pool = p.field.filter((u) => u !== source);
+          const ans = yield { player: p.index, kind: 'targets', prompt: '破壊する味方を1体選んでください（代償）', options: pool.map((u) => u.uid), min: 1, max: 1, cost: true };
+          const u = pool.find((x) => x.uid === (ans && ans[0])) || pool[0];
+          yield* this._destroy(u, '代償');
+          break;
+        }
+        case 'exileGrave': for (let i = 0; i < n && p.grave.length; i++) p.exile.push(p.grave.shift()); break;
+      }
+      this._bump();
+    }
+
+    /** テキスト効果1つを処理する。source はそのクリーチャー（呪文なら null）。activated は起動効果（コスト支払い済み） */
+    *_runEffect(p, source, e, ctx, spellSpec, activated) {
       if (this._depth >= this.cfg.maxDepth) return;
       this._depth++;
       try {
-        const op = this.opp(p);
-        const cond = Parts.CONDS[e.cond || 'none'];
-        if (cond.test && !cond.test(this, p)) return;
+        if (spellSpec && !this._condsOk(p, source, e)) return;
+        const name = (source && source.name) || (spellSpec && spellSpec.name) || '';
         // 「〜してもよい。そうしたら」
-        if (e.pay && e.pay !== 'none') {
-          if (!this._canPay(p, source, e.pay)) return;
-          const name = (source && source.name) || (spellSpec && spellSpec.name) || '';
-          const yes = yield { player: p.index, kind: 'confirm', prompt: `【${name}】${Parts.PAYS[e.pay].label}？`, effect: e, source: source && source.uid };
+        if (!activated && e.pay && e.pay.k && e.pay.k !== 'none') {
+          if (!this._canPayCost(p, source, e.pay)) return;
+          const yes = yield { player: p.index, kind: 'confirm', prompt: `【${name}】${P.COSTS[e.pay.k].dict(e.pay.n)}？`, effect: e, source: source && source.uid, spec: spellSpec || (source && source.spec) };
           if (!yes) return;
-          yield* this._pay(p, source, e.pay);
+          yield* this._payCost(p, source, e.pay);
           if (this.over) return;
         }
-        const a = Parts.ACTIONS[e.act];
+        const a = P.ACTIONS[e.act];
+        const mult = a.per && e.per && e.per !== 'none' ? this.perCount(p, source, e.per) : 1;
+        if (mult <= 0) return;
         let targets = [];
         if (a.side !== 'none') {
-          targets = yield* this._pickTargets(p, source, e, a, ctx);
+          targets = yield* this._pickTargets(p, source, e, a, ctx, name);
           if (!targets.length) return;
         }
         this._emit({ type: 'effect', player: p.index, source, effect: e, card: spellSpec || (source && source.spec) });
-        yield* this._apply(p, op, source, e, targets);
+        yield* this._apply(p, source, e, targets, mult, ctx, spellSpec);
+        if (this.over) return;
+        yield* this._sweep();
       } finally {
         this._depth--;
       }
     }
 
-    _canPay(p, source, pay) {
-      if (pay === 'tapSelf') return source && !source.tapped;
-      if (pay === 'discard1') return p.hand.length > 0;
-      if (pay === 'life500') return p.hp > 500;
-      if (pay === 'life1000') return p.hp > 1000;
-      return true;
-    }
-
-    *_pay(p, source, pay) {
-      if (pay === 'tapSelf') source.tapped = true;
-      else if (pay === 'life500') this._loseLife(p, 500);
-      else if (pay === 'life1000') this._loseLife(p, 1000);
-      else if (pay === 'discard1') {
-        const ans = yield { player: p.index, kind: 'discard', prompt: '捨てるカードを1枚選んでください', options: p.hand.map((c) => c.iid), min: 1, max: 1 };
-        const iid = (ans && ans[0]) || p.hand[0].iid;
-        yield* this._discard(p, iid);
-      }
-      this._bump();
-    }
-
-    /** 効果の対象を決める。選べる候補がなければ空配列 */
-    *_pickTargets(p, source, e, a, ctx) {
+    /** 効果の対象になれるクリーチャーの一覧（選ぶ前の候補） */
+    targetPool(p, source, e, ctx) {
       const op = this.opp(p);
-      const tg = Parts.TARGETS[e.tgt];
-      if (tg.how === 'self') return source && p.field.includes(source) ? [source] : [];
-      if (tg.how === 'attacker') return ctx.attacker && op.field.includes(ctx.attacker) ? [ctx.attacker] : [];
-      let pool = a.side === 'enemy' ? op.field.filter((u) => !has(u, 'ward')) : p.field.slice();
-      if (a.filter && e.amt) pool = pool.filter((u) => this.powerOf(u) <= e.amt);
+      const t = e.tgt || {};
+      const targetable = (u) => !(u.owner !== p.index && this.hasKw(u, 'ward') && t.count !== 'all');
+      let pool;
+      switch (t.who) {
+        case 'self': return source && p.field.includes(source) ? [source] : [];
+        case 'attacker': return ctx && ctx.attacker && op.field.includes(ctx.attacker) && !this.hasKw(ctx.attacker, 'ward') ? [ctx.attacker] : [];
+        case 'ally': pool = p.field.slice(); break;
+        case 'allyOther': pool = p.field.filter((u) => u !== source); break;
+        case 'any': pool = [...op.field, ...p.field]; break;
+        default: pool = op.field.slice();
+      }
+      pool = pool.filter(targetable);
+      const f = P.FILTERS[t.f || 'none'];
+      if (f && f.test) pool = pool.filter((u) => f.test(this, u, t.fn));
+      return pool;
+    }
+
+    *_pickTargets(p, source, e, a, ctx, name) {
+      const t = e.tgt || {};
+      let pool = this.targetPool(p, source, e, ctx);
       if (!pool.length) return [];
-      if (tg.how === 'all') return pool;
-      if (tg.how === 'random') return [pool[Math.floor(this.rand() * pool.length)]];
-      const n = Math.min(tg.n, pool.length);
-      const ans = yield { player: p.index, kind: 'targets', prompt: `対象を${n === 1 ? '1体' : n + '体まで'}選んでください（${a.label}）`, options: pool.map((u) => u.uid), min: 1, max: n, effect: e, source: source && source.uid };
+      if (t.who === 'self' || t.who === 'attacker') return pool;
+      const n = t.count === 'all' ? pool.length : Math.min(Number(t.count || 1), pool.length);
+      if (t.count === 'all') return pool;
+      const how = t.how || 'choose';
+      if (how === 'random') { this._shuffle(pool); return pool.slice(0, n); }
+      if (how === 'strongest' || how === 'weakest') {
+        pool.sort((x, y) => (how === 'strongest' ? this.powerOf(y) - this.powerOf(x) : this.powerOf(x) - this.powerOf(y)));
+        return pool.slice(0, n);
+      }
+      const ans = yield { player: p.index, kind: 'targets', prompt: `【${name}】対象を${n === 1 ? '1体' : n + '体まで'}選んでください（${a.label}）`, options: pool.map((u) => u.uid), min: 1, max: n, effect: e, source: source && source.uid };
       const picked = (ans || []).map((uid) => pool.find((u) => u.uid === uid)).filter(Boolean).slice(0, n);
       return picked.length ? picked : pool.slice(0, 1);
     }
 
-    *_apply(p, op, source, e, targets) {
-      const n = e.amt;
+    /** カードを選ぶ（サーチ・墓地回収・相手の手札を見て捨てさせる、など） */
+    *_pickCards(p, zone, list, n, prompt) {
+      if (!list.length) return [];
+      if (list.length <= n && zone !== 'deck' && zone !== 'top') return list.slice();
+      const ans = yield { player: p.index, kind: 'pickCard', prompt, zone, options: list.map((c) => c.iid), cards: list.map((c) => c.spec), min: Math.min(n, list.length), max: n };
+      const picked = (ans || []).map((iid) => list.find((c) => c.iid === iid)).filter(Boolean).slice(0, n);
+      return picked.length ? picked : list.slice(0, Math.min(n, list.length));
+    }
+
+    _mod(u, pw, kw, dur, pi) {
+      if (dur === 'perm') { if (pw) u.plus += pw; if (kw && !u.kws.includes(kw)) u.kws.push(kw); return; }
+      u.mods.push({ pw: pw || 0, kw: kw || null, exp: dur === 'untilNext' ? 'next' : 'turn', pi });
+    }
+
+    *_apply(p, source, e, targets, mult, ctx, spellSpec) {
+      const op = this.opp(p);
+      const n = e.n;
+      const k = mult;
       switch (e.act) {
-        case 'draw': for (let i = 0; i < n && !this.over; i++) this._drawOne(p); break;
-        case 'rampMax': p.maxMana = Math.min(this.cfg.maxManaCap, p.maxMana + n); break;
-        case 'manaGain': p.mana = Math.min(p.maxMana, p.mana + n); break;
-        case 'heal': this._heal(p, n); break;
-        case 'burn': this._damage(op, n, p); break;
-        case 'discardOpp':
+        // カード・手札
+        case 'draw': for (let i = 0; i < n * k && !this.over; i++) this._drawOne(p); break;
+        case 'loot': {
+          for (let i = 0; i < n && !this.over; i++) this._drawOne(p);
+          if (this.over || !p.hand.length) break;
+          const ans = yield { player: p.index, kind: 'discard', prompt: '捨てるカードを1枚選んでください', options: p.hand.map((c) => c.iid), min: 1, max: 1 };
+          yield* this._discard(p, (ans && ans[0]) || p.hand[0].iid);
+          break;
+        }
+        case 'discardSelf': {
+          const m = Math.min(n, p.hand.length);
+          if (!m) break;
+          const ans = yield { player: p.index, kind: 'discard', prompt: `捨てるカードを${m}枚選んでください`, options: p.hand.map((c) => c.iid), min: m, max: m };
+          const ids = (ans || []).slice(0, m);
+          while (ids.length < m) ids.push(p.hand.find((c) => !ids.includes(c.iid)).iid);
+          for (const iid of ids) yield* this._discard(p, iid);
+          break;
+        }
+        case 'oppDiscard':
           for (let i = 0; i < n && op.hand.length; i++) yield* this._discard(op, op.hand[Math.floor(this.rand() * op.hand.length)].iid);
           break;
-        case 'manaBurn': op.maxMana = Math.max(0, op.maxMana - n); op.mana = Math.min(op.mana, op.maxMana); break;
-        case 'spellLock': op.spellLock = true; op.spellLockBy = p.index; break;
-        case 'regrow': {
-          for (let i = 0; i < n; i++) {
-            const idxs = p.grave.map((c, j) => j).filter((j) => p.grave[j].spec.kind === 'creature');
-            if (!idxs.length || p.hand.length >= this.cfg.handLimit) break;
-            p.hand.push(p.grave.splice(idxs[Math.floor(this.rand() * idxs.length)], 1)[0]);
+        case 'oppDiscardPick': {
+          const picked = yield* this._pickCards(p, 'oppHand', op.hand.slice(), n, `相手の手札から、捨てさせるカードを${n}枚選んでください`);
+          for (const c of picked) yield* this._discard(op, c.iid);
+          break;
+        }
+        case 'searchCreature': case 'searchSpell': {
+          const kind = e.act === 'searchCreature' ? 'creature' : 'spell';
+          const list = p.deck.filter((c) => c.spec.kind === kind && c.spec.cost <= n);
+          const picked = yield* this._pickCards(p, 'deck', list, 1, '山札から手札に加えるカードを選んでください');
+          for (const c of picked) { p.deck.splice(p.deck.indexOf(c), 1); this._toHand(p, c); }
+          this._shuffle(p.deck);
+          break;
+        }
+        case 'lookTop': {
+          const top = p.deck.slice(-n).reverse();
+          if (!top.length) break;
+          const picked = yield* this._pickCards(p, 'top', top, 1, `山札の上から${top.length}枚。手札に加えるカードを1枚選んでください（残りは墓地へ）`);
+          for (const c of top) {
+            p.deck.splice(p.deck.indexOf(c), 1);
+            if (picked.includes(c)) this._toHand(p, c); else p.grave.push(c);
           }
           break;
         }
+        case 'regrow': case 'regrowAny': {
+          const list = p.grave.filter((c) => e.act === 'regrowAny' || c.spec.kind === 'creature');
+          const picked = yield* this._pickCards(p, 'grave', list, n, `墓地から手札に戻すカードを${n}枚選んでください`);
+          for (const c of picked) { p.grave.splice(p.grave.indexOf(c), 1); this._toHand(p, c); }
+          break;
+        }
+        case 'millSelf': for (let i = 0; i < n && p.deck.length; i++) p.grave.push(p.deck.pop()); break;
+        case 'millOpp': for (let i = 0; i < n * k && op.deck.length; i++) op.grave.push(op.deck.pop()); break;
+        // マナ・火種
+        case 'manaGain': p.mana = Math.min(p.maxMana, p.mana + n * k); break;
+        case 'rampMax': p.maxMana = Math.min(this.cfg.maxManaCap, p.maxMana + n); p.mana = Math.min(p.maxMana, p.mana + n); break;
+        case 'manaBurn': op.maxMana = Math.max(0, op.maxMana - n); op.mana = Math.min(op.mana, op.maxMana); break;
+        case 'emberGain': yield* this._gainEmber(p, n * k); break;
+        case 'emberBurn': op.ember = Math.max(0, op.ember - n); break;
+        case 'costDown': p.nextDiscount += n; break;
+        // 体力
+        case 'burn': yield* this._damageGen(op, n * k, p); break;
+        case 'drainLife': yield* this._damageGen(op, n * k, p); if (!this.over) yield* this._healGen(p, n * k); break;
+        case 'burnBoth': yield* this._damageGen(op, n, p); if (!this.over) yield* this._damageGen(p, n, op); break;
+        case 'heal': yield* this._healGen(p, n * k); break;
+        case 'selfDamage': yield* this._damageGen(p, n, null); break;
+        // 除去
         case 'destroy': for (const u of targets) { yield* this._destroy(u, '効果'); if (this.over) return; } break;
-        case 'tapEnemy': for (const u of targets) u.tapped = true; break;
-        case 'weaken': for (const u of targets) u.turnPlus -= n; break;
-        case 'bounce':
+        case 'exile': for (const u of targets) { yield* this._leave(u, 'exile'); if (this.over) return; } break;
+        case 'bounce': for (const u of targets) { yield* this._leave(u, 'hand'); if (this.over) return; } break;
+        case 'deckBottom': for (const u of targets) { yield* this._leave(u, 'bottom'); if (this.over) return; } break;
+        case 'weaken': for (const u of targets) this._mod(u, -n * k, null, e.dur || 'turn', p.index); break;
+        case 'fight': {
+          const mine = source && p.field.includes(source) ? source : p.field.slice().sort((x, y) => this.powerOf(y) - this.powerOf(x))[0];
+          const t = targets[0];
+          if (!mine || !t || !op.field.includes(t)) break;
+          yield* this._battle(p, mine, op, t, false);
+          break;
+        }
+        // 妨害・封じ
+        case 'tap': for (const u of targets) u.tapped = true; break;
+        case 'freeze': for (const u of targets) { u.tapped = true; u.frozen = true; } break;
+        case 'silence': for (const u of targets) { u.silenced = true; u.kws = []; u.mods = u.mods.filter((m) => !m.kw); } break;
+        case 'steal':
           for (const u of targets) {
-            const q = this.players[u.owner];
-            if (!q.field.includes(u)) continue;
-            q.field = q.field.filter((x) => x !== u);
-            if (q.hand.length < this.cfg.handLimit) q.hand.push(u.inst); else q.grave.push(u.inst);
-            this._emit({ type: 'bounce', unit: u });
+            if (!op.field.includes(u) || p.field.length >= this.cfg.fieldLimit) continue;
+            this._moveControl(u, p);
+            if (e.dur === 'perm') { u.returnTo = null; u.sick = true; } else { u.returnTo = op.index; u.tapped = false; u.sick = false; u.attacks = this.hasKw(u, 'double') ? 2 : 1; }
+            this._emit({ type: 'steal', player: p.index, unit: u });
           }
           break;
-        case 'buffTurn': for (const u of targets) u.turnPlus += n; break;
-        case 'buffPerm': for (const u of targets) u.plus += n; break;
+        case 'spellLock': op.locks.spell = p.index; break;
+        case 'summonLock': op.locks.summon = p.index; break;
+        case 'attackLock': op.locks.attack = p.index; break;
+        case 'negate': if (ctx.countering) ctx.countering.negated = true; break;
+        // 強化
+        case 'buff': for (const u of targets) this._mod(u, n * k, null, e.dur || 'turn', p.index); break;
+        case 'grantKw':
+          for (const u of targets) {
+            this._mod(u, 0, e.kw, e.dur || 'turn', p.index);
+            if (e.kw === 'haste' && u.sick) u.sick = false;
+            if (e.kw === 'double' && this.active === u.owner) u.attacks = Math.max(u.attacks, 1) + 1;
+          }
+          break;
         case 'untap': for (const u of targets) u.tapped = false; break;
+        case 'extraAttack': for (const u of targets) { u.attacks += 1; u.tapped = false; } break;
+        case 'protect': for (const u of targets) u.protectedBy = p.index; break;
+        // 召喚
+        case 'token':
+          for (let i = 0; i < n && p.field.length < this.cfg.fieldLimit; i++) {
+            const tspec = { id: `tk_${e.tp || 1000}_${e.kw || ''}`, name: 'トークン', icon: '✨', kind: 'creature', cost: 0, power: e.tp || 1000, keywords: e.kw ? [e.kw] : [], effects: [], token: true, grade: 'silver', base: true };
+            yield* this._summon(p, this._inst(tspec, p.index));
+            if (this.over) return;
+          }
+          break;
+        case 'reanimate': case 'cheatHand': {
+          const zone = e.act === 'reanimate' ? p.grave : p.hand;
+          const list = zone.filter((c) => c.spec.kind === 'creature' && c.spec.cost <= n);
+          if (!list.length || p.field.length >= this.cfg.fieldLimit) break;
+          const picked = yield* this._pickCards(p, e.act === 'reanimate' ? 'grave' : 'hand', list, 1, '場に出すクリーチャーを選んでください');
+          for (const c of picked) { zone.splice(zone.indexOf(c), 1); yield* this._summon(p, c); }
+          break;
+        }
+        case 'topSummon': {
+          const c = p.deck.pop();
+          if (!c) break;
+          this._emit({ type: 'reveal', player: p.index, card: c.spec });
+          if (c.spec.kind === 'creature' && p.field.length < this.cfg.fieldLimit) yield* this._summon(p, c);
+          else this._toHand(p, c);
+          break;
+        }
+        case 'returnSelf': {
+          if (!source) break;
+          if (p.field.includes(source)) { yield* this._leave(source, 'hand'); break; }
+          const i = p.grave.indexOf(source.inst);
+          if (i >= 0) { p.grave.splice(i, 1); this._toHand(p, source.inst); }
+          break;
+        }
       }
-      // パワーが0以下になったクリーチャーは破壊される
-      for (const q of this.players) for (const u of [...q.field]) if (this.powerOf(u) <= 0) { yield* this._destroy(u, 'パワー0'); if (this.over) return; }
       this._bump();
     }
 
     // ───────────── 基本の処理 ─────────────
+    _toHand(p, inst) {
+      if (inst.spec.token) return;
+      if (p.hand.length < this.cfg.handLimit) p.hand.push(inst); else p.grave.push(inst);
+    }
+
+    _moveControl(u, to) {
+      const from = this.players[u.owner];
+      from.field = from.field.filter((x) => x !== u);
+      to.field.push(u);
+      u.owner = to.index;
+      if (u.returnTo === to.index) u.returnTo = null;
+      this._bump();
+    }
+
+    /** パワーが0になったクリーチャーを破壊する */
+    *_sweep() {
+      for (let loop = 0; loop < 5; loop++) {
+        const dead = [];
+        for (const q of this.players) for (const u of q.field) if (this.powerOf(u) <= 0) dead.push(u);
+        if (!dead.length) return;
+        for (const u of dead) { yield* this._destroy(u, 'パワー0'); if (this.over) return; }
+      }
+    }
+
     _drawOne(p) {
       if (p.deck.length === 0) {
         this.endReason = `${p.name}の山札が尽きた`;
@@ -594,40 +963,77 @@
     *_destroy(u, cause) {
       const p = this.players[u.owner];
       if (!p.field.includes(u)) return;
-      if (has(u, 'undying') && !u.undyingUsed) {
+      if (u.protectedBy != null) { this._emit({ type: 'protected', unit: u }); return; }
+      if (this.hasKw(u, 'undying') && !u.undyingUsed) {
         u.undyingUsed = true;
         this._emit({ type: 'undying', unit: u });
         this._bump();
         return;
       }
       p.field = p.field.filter((x) => x !== u);
-      p.grave.push(u.inst);
+      if (!u.spec.token) (this.players[u.inst.owner] || p).grave.push(u.inst);
       this.opp(p).stats.destroyed++;
       this._emit({ type: 'destroy', unit: u, cause });
       this._bump();
       yield* this._selfTrigger(p, u, 'destroyed', {});
+      if (this.over) return;
+      yield* this._selfTrigger(p, u, 'leave', {});
+      if (this.over) return;
+      yield* this._trigger(p, 'allyDestroyed', { other: u });
+      if (this.over) return;
+      yield* this._trigger(this.opp(p), 'enemyDestroyed', { other: u });
     }
 
-    _damage(target, amount, from) {
+    /** 破壊以外で場を離れる（hand: 手札へ / exile: 除外 / bottom: 山札の一番下へ） */
+    *_leave(u, to) {
+      const p = this.players[u.owner];
+      if (!p.field.includes(u)) return;
+      p.field = p.field.filter((x) => x !== u);
+      // 奪われていたクリーチャーは、元の持ち主のところへ行く
+      const home = this.players[u.inst.owner] || p;
+      if (!u.spec.token) {
+        if (to === 'hand') this._toHand(home, u.inst);
+        else if (to === 'exile') home.exile.push(u.inst);
+        else home.deck.unshift(u.inst);
+      }
+      this._emit({ type: to === 'hand' ? 'bounce' : to === 'exile' ? 'exile' : 'toDeck', unit: u });
+      this._bump();
+      yield* this._selfTrigger(p, u, 'leave', {});
+    }
+
+    *_gainEmber(p, n) {
+      const gain = Math.min(n, this.cfg.emberCap - p.ember);
+      if (gain <= 0) return;
+      p.ember += gain;
+      this._emit({ type: 'ember', player: p.index, amount: gain });
+      this._bump();
+      yield* this._trigger(p, 'emberGained', { amount: gain });
+    }
+
+    *_damageGen(target, amount, from) {
       if (this.over || amount <= 0) return;
       target.hp -= amount;
       if (from) from.stats.damage += amount;
       this._emit({ type: 'damage', player: target.index, amount });
       this._bump();
-      if (target.hp <= 0) { this.endReason = '体力0'; this._finish(1 - target.index); }
+      if (target.hp <= 0) { this.endReason = '体力0'; this._finish(1 - target.index); return; }
+      yield* this._trigger(target, 'damaged', { amount });
+    }
+
+    *_healGen(p, amount) {
+      if (amount <= 0) return;
+      const before = p.hp;
+      p.hp = Math.min(this.cfg.startHP, p.hp + amount);
+      if (p.hp === before) return;
+      this._emit({ type: 'heal', player: p.index, amount: p.hp - before });
+      this._bump();
+      yield* this._trigger(p, 'healed', { amount: p.hp - before });
     }
 
     _loseLife(p, amount) {
       p.hp -= amount;
       this._emit({ type: 'damage', player: p.index, amount, self: true });
       if (p.hp <= 0) { this.endReason = '体力0'; this._finish(1 - p.index); }
-    }
-
-    _heal(p, amount) {
-      if (amount <= 0) return;
-      p.hp = Math.min(this.cfg.startHP, p.hp + amount);
-      this._emit({ type: 'heal', player: p.index, amount });
-      this._bump();
     }
 
     _finish(winner) {

@@ -58,7 +58,7 @@
     el.style.setProperty('--gc', g.color);
     const lines = Parts.cardLines(spec);
     const len = lines.join('').length;
-    const textCls = len > 120 ? ' tiny' : len > 70 ? ' small' : '';
+    const textCls = len > 170 ? ' micro' : len > 120 ? ' tiny' : len > 70 ? ' small' : '';
     const react = spec.kind === 'spell' && (spec.effects || []).some((e) => e.trig === 'react');
     el.innerHTML = `
       <div class="c-frame">
@@ -67,7 +67,7 @@
         <div class="c-type"><span>${KIND_LABEL[spec.kind]}</span>${react ? '<span class="c-react">迎撃</span>' : ''}</div>
         <div class="c-text${textCls}">${lines.map((l) => `<p${l.startsWith('【') ? ' class="kw"' : ''}>${esc(l)}</p>`).join('') || '<p class="vanilla">（効果なし）</p>'}</div>
       </div>
-      <div class="c-cost">${spec.cost}</div>
+      <div class="c-cost${opts.cost != null && opts.cost !== spec.cost ? (opts.cost < spec.cost ? ' down' : ' up') : ''}">${opts.cost != null ? opts.cost : spec.cost}</div>
       ${spec.kind === 'creature' ? `<div class="c-power${opts.power != null && opts.power !== spec.power ? (opts.power > spec.power ? ' up' : ' down') : ''}">${opts.power != null ? opts.power : spec.power}</div>` : ''}
       ${opts.key != null ? `<div class="c-key">${opts.key}</div>` : ''}
       ${opts.badge ? `<div class="c-badge">${esc(opts.badge)}</div>` : ''}
@@ -91,6 +91,8 @@
       `容量 ${u.total} / ${Parts.capacity(spec.cost, spec.grade)}`,
     ];
     for (const k of spec.keywords || []) lines.push(`<b>${Parts.KEYWORDS[k].label}</b>：${esc(Parts.KEYWORDS[k].desc)}`);
+    const text = Parts.cardLines(spec).filter((l) => !/^【[^】]*】$/.test(l)); // キーワードだけの行は上に説明があるので除く
+    if (text.length) lines.push(`<div class="pv-text">${text.map((l) => `<p>${esc(l)}</p>`).join('')}</div>`);
     return lines;
   }
 

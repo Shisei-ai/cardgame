@@ -2,7 +2,7 @@
  * battle.js — 対戦画面
  *
  * 操作：
- *   メインステップ … 手札のカードをクリックで使う。「タップして発動」の効果を持つ自分のクリーチャーはクリックで効果を使う
+ *   メインステップ … 手札のカードをクリックで使う。【起動】効果を持つ自分のクリーチャーはクリックで効果を使う
  *   アタックステップ … 攻撃できる自分のクリーチャーをクリック → 光っている攻撃先（相手の帯・タップした相手クリーチャー）をクリック
  *   右クリック／Esc … 攻撃先選びをやめる
  * CPUの手番は、間を空けて1手ずつ進める（何をしたかは右上の記録に出る）。
@@ -86,15 +86,16 @@
       } else if (B.attackFrom) UI.toast('アンタップしている相手のクリーチャーは攻撃できない');
       return;
     }
-    // メインステップ：タップして発動する効果
+    // メインステップ：【起動】効果
     if (myTurn('main') && u.owner === ME) {
-      const idx = (u.spec.effects || []).findIndex((e) => e.trig === 'tap');
-      if (idx < 0) return;
-      if (!g.canActivate(ME, uid, idx)) { UI.toast(u.tapped ? 'タップしている' : u.sick ? '召喚したターンは使えない' : 'このターンは使った'); return; }
-      UI.modal(`【${esc(u.name)}】の効果を使う`, `<p class="m-effect">${esc(Parts.effectText(u.spec, u.spec.effects[idx]))}</p><p class="hint">使うと、このクリーチャーはタップします（このターン攻撃できず、相手の攻撃対象になります）。</p>`, [
+      const idxs = (u.spec.effects || []).map((e, i) => (e.trig === 'activate' ? i : -1)).filter((i) => i >= 0);
+      if (!idxs.length) return;
+      const usable = idxs.filter((i) => g.canActivate(ME, uid, i));
+      if (!usable.length) { UI.toast(u.silenced ? '能力を消されている' : '今は使えない（コスト・回数・タップの状態を確認）'); return; }
+      const m = UI.modal(`【${esc(u.name)}】の起動効果`, `<div class="act-list">${idxs.map((i) => `<button class="act-item" data-i="${i}" ${usable.includes(i) ? '' : 'disabled'}>${esc(Parts.effectText(u.spec, u.spec.effects[i]))}</button>`).join('')}</div><p class="hint">タップするコストがあると、このターンは攻撃できず、相手の攻撃対象になります。</p>`, [
         { label: 'やめる', onClick: UI.closeModal },
-        { label: '使う', primary: true, onClick: () => { UI.closeModal(); g.activate(ME, uid, idx); } },
       ]);
+      m.querySelectorAll('.act-item').forEach((b) => { b.onclick = () => { UI.closeModal(); g.activate(ME, uid, Number(b.dataset.i)); }; });
     }
   }
 
@@ -143,7 +144,7 @@
     if (B.pendingShown === pd) return;
     B.pendingShown = pd;
     if (pd.kind === 'confirm') {
-      UI.modal('確認', `<p>${esc(pd.prompt)}</p><p class="m-effect">${esc(Parts.effectText({ kind: 'creature' }, pd.effect))}</p>`, [
+      UI.modal('確認', `<p>${esc(pd.prompt)}</p><p class="m-effect">${esc(Parts.effectText(pd.spec || { kind: 'creature' }, pd.effect))}</p>`, [
         { label: 'しない', onClick: () => { UI.closeModal(); B.pendingShown = null; g.answer(false); } },
         { label: 'する', primary: true, onClick: () => { UI.closeModal(); B.pendingShown = null; g.answer(true); } },
       ]);
@@ -161,21 +162,34 @@
         el.onclick = () => { UI.closeModal(); B.pendingShown = null; g.answer([uid]); };
         box.appendChild(el);
       }
-    } else if (pd.kind === 'discard' || pd.kind === 'react') {
+    } else if (pd.kind === 'discard' || pd.kind === 'react' || pd.kind === 'counter' || pd.kind === 'pickCard') {
+      // カードを選ぶ画面（手札を捨てる・迎撃・対抗・サーチや墓地回収など）
       const me = g.players[ME];
       const att = pd.kind === 'react' ? g.findUnit(pd.attacker) : null;
-      const m = UI.modal(pd.kind === 'react' ? '迎撃' : '手札を捨てる',
-        `<p>${esc(pd.prompt)}</p>${att ? `<p class="hint">攻撃してきた：${esc(att.name)}（パワー ${g.powerOf(att)}）</p>` : ''}<div class="m-cards"></div>`,
-        pd.kind === 'react' ? [{ label: '使わない', onClick: () => { UI.closeModal(); B.pendingShown = null; g.answer([]); } }] : [], 'wide');
+      const title = { discard: '手札を捨てる', react: '迎撃', counter: '対抗', pickCard: 'カードを選ぶ' }[pd.kind];
+      const optional = pd.kind === 'react' || pd.kind === 'counter';
+      const multi = (pd.max || 1) > 1;
+      const picked = [];
+      const extra = att ? `<p class="hint">攻撃してきた：${esc(att.name)}（パワー ${g.powerOf(att)}）</p>` : pd.kind === 'counter' ? '<div class="m-spell"></div>' : '';
+      const buttons = [];
+      if (optional) buttons.push({ label: '使わない', onClick: () => { UI.closeModal(); B.pendingShown = null; g.answer([]); } });
+      if (multi) buttons.push({ label: '決定', primary: true, onClick: () => { if (picked.length < (pd.min || 1)) { UI.toast(`${pd.min}枚選んでください`); return; } UI.closeModal(); B.pendingShown = null; g.answer(picked.slice()); } });
+      const m = UI.modal(title, `<p>${esc(pd.prompt)}${multi ? `（${pd.max}枚）` : ''}</p>${extra}<div class="m-cards"></div>`, buttons, 'wide');
+      if (pd.kind === 'counter' && pd.spell) { const sp = UI.cardEl(pd.spell); $('.m-spell', m).appendChild(sp); }
       const box = $('.m-cards', m);
-      for (const iid of pd.options) {
-        const c = me.hand.find((x) => x.iid === iid);
-        if (!c) continue;
-        const el = UI.cardEl(c.spec);
+      pd.options.forEach((iid, k) => {
+        const spec = pd.cards ? pd.cards[k] : (me.hand.find((x) => x.iid === iid) || {}).spec;
+        if (!spec) return;
+        const el = UI.cardEl(spec);
         el.classList.add('pickable');
-        el.onclick = () => { UI.closeModal(); B.pendingShown = null; g.answer([iid]); };
+        el.onclick = () => {
+          if (!multi) { UI.closeModal(); B.pendingShown = null; g.answer([iid]); return; }
+          const j = picked.indexOf(iid);
+          if (j >= 0) picked.splice(j, 1); else if (picked.length < pd.max) picked.push(iid);
+          el.classList.toggle('picked', picked.includes(iid));
+        };
         box.appendChild(el);
-      }
+      });
     }
   }
 
@@ -257,6 +271,25 @@
       case 'undying':
         log(`【${ev.unit.name}】は不屈で踏みとどまった`, ev.unit.owner);
         break;
+      case 'negated':
+        log(`【${ev.card.name}】は打ち消された！`, ev.player);
+        UI.toast(`【${ev.card.name}】は打ち消された！`);
+        break;
+      case 'exile':
+        log(`【${ev.unit.name}】は除外された`, ev.unit.owner);
+        break;
+      case 'toDeck':
+        log(`【${ev.unit.name}】は山札の一番下へ`, ev.unit.owner);
+        break;
+      case 'steal':
+        log(`${nm(ev.player)}が【${ev.unit.name}】を奪った！`, ev.player);
+        break;
+      case 'reveal':
+        log(`${nm(ev.player)}の山札の一番上は【${ev.card.name}】`, ev.player);
+        break;
+      case 'protected':
+        log(`【${ev.unit.name}】は守られて破壊されなかった`, ev.unit.owner);
+        break;
       case 'bounce':
         log(`【${ev.unit.name}】は手札に戻された`, ev.unit.owner);
         break;
@@ -319,7 +352,7 @@
       <div class="ember${p.ember ? ' on' : ''}" title="火種：攻撃されるたびに1つ得る（${g.cfg.emberCap}つまで）。マナの代わりに使えるほか、${g.cfg.emberBlockCost}つ払って相手の本体への攻撃をブロックできる">🔥<b>${p.ember}</b><small>/${g.cfg.emberCap}</small></div>
       <div class="pb-info">
         <span title="手札">🂠 ${p.hand.length}</span><span title="山札（0枚で引くと負け）" class="${p.deck.length <= 5 ? 'warn' : ''}">📚 ${p.deck.length}</span><span title="${esc(graveTip)}">⚰ ${p.grave.length}</span>
-        ${p.spellLock ? '<span class="lock">🔒呪文封じ</span>' : ''}
+        ${p.locks.spell != null ? '<span class="lock">🔒呪文封じ</span>' : ''}${p.locks.summon != null ? '<span class="lock">🔒召喚封じ</span>' : ''}${p.locks.attack != null ? '<span class="lock">🔒攻撃封じ</span>' : ''}${p.nextDiscount ? `<span class="buffchip">次のカード-${p.nextDiscount}</span>` : ''}
       </div>
       ${p.index === OP ? `<div class="op-hand">${'<i></i>'.repeat(Math.min(10, p.hand.length))}</div>` : ''}`;
     el.onclick = () => clickPlayer(p.index);
@@ -351,17 +384,17 @@
       }
       el.style.setProperty('--i', i);
       const pw = g.powerOf(u);
-      const kws = (u.spec.keywords || []).map((k) => Parts.KEYWORDS[k].label);
+      const kws = Object.keys(Parts.KEYWORDS).filter((k) => g.hasKw(u, k)).map((k) => Parts.KEYWORDS[k].label);
       const canAtt = p.index === ME && g.canAttack(ME, u.uid);
-      const tapIdx = (u.spec.effects || []).findIndex((e) => e.trig === 'tap');
+      const canAct = p.index === ME && (u.spec.effects || []).some((e, i) => e.trig === 'activate' && g.canActivate(ME, u.uid, i));
       el.className = 'unit' + (u.tapped ? ' tapped' : '') + (u.sick ? ' sick' : '') + (canAtt ? ' can-attack' : '')
         + (B.attackFrom === u.uid ? ' selected' : '') + (attackTargets.includes(u.uid) ? ' targetable' : '')
         + (pd && pd.options.includes(u.uid) ? ' pickable' : '') + (B.picks.includes(u.uid) ? ' picked' : '')
-        + ((u.spec.keywords || []).includes('guard') ? ' guard' : '') + (p.index === ME && tapIdx >= 0 && g.canActivate(ME, u.uid, tapIdx) ? ' can-activate' : '');
+        + (g.hasKw(u, 'guard') ? ' guard' : '') + (canAct ? ' can-activate' : '') + (u.silenced ? ' silenced' : '') + (u.frozen ? ' frozen' : '');
       el.style.setProperty('--cc', u.spec.color || '#5f8f4e');
       el.dataset.pv = '1';
       el.dataset.power = pw;
-      el.dataset.now = `今のパワー ${pw}${u.tapped ? '・タップ中（相手の攻撃対象になる）' : '・アンタップ（攻撃されない）'}${u.sick ? '・召喚したターン' : ''}`;
+      el.dataset.now = `今のパワー ${pw}${u.tapped ? '・タップ中（相手の攻撃対象になる）' : '・アンタップ（攻撃されない）'}${u.sick ? '・召喚したターン' : ''}${u.silenced ? '・能力を消されている' : ''}${u.frozen ? '・凍結（次のターンにアンタップしない）' : ''}${u.protectedBy != null ? '・破壊されない' : ''}${u.returnTo != null ? '・このターンだけ奪われている' : ''}${kws.length ? '　キーワード：' + kws.join('・') : ''}`;
       el.innerHTML = `
         <div class="u-inner">
           <div class="u-cost">${u.spec.cost}</div>
@@ -371,6 +404,7 @@
           <div class="u-power${pw > u.power ? ' up' : pw < u.power ? ' down' : ''}">${pw}</div>
           ${u.tapped ? '<div class="u-tap">TAP</div>' : ''}
           ${u.sick && !u.tapped ? '<div class="u-sick" title="召喚したターンは攻撃できない">💤</div>' : ''}
+          ${u.frozen ? '<div class="u-frozen" title="凍結">❄</div>' : ''}${u.silenced ? '<div class="u-silenced" title="能力を消されている">🚫</div>' : ''}
         </div>`;
       UI.bindSpec(el, u.spec); // マウスを乗せるとカードを拡大表示
     });
@@ -384,7 +418,7 @@
     const n = me.hand.length;
     me.hand.forEach((c, i) => {
       const chk = g.canPlay(ME, c.iid);
-      const el = UI.cardEl(c.spec, { badge: !chk.ok && g.active === ME && !g.pending ? chk.reason : '' });
+      const el = UI.cardEl(c.spec, { badge: !chk.ok && g.active === ME && !g.pending ? chk.reason : '', cost: g.costOf(me, c.spec) });
       const off = i - (n - 1) / 2;
       el.style.setProperty('--r', (off * 3).toFixed(1) + 'deg');
       el.style.setProperty('--y', (Math.abs(off) ** 1.5 * 3).toFixed(1) + 'px');
