@@ -157,7 +157,7 @@ button { font-family: inherit; }
 .pbar.op .portrait { border-color: #e07a6a; } .pbar.me .portrait { border-color: #7ad0ea; }
 .pb-name { font-family: var(--font-h); font-weight: 800; font-size: 16px; width: 60px; }
 .pbar.op .pb-name { color: #ffb1a5; } .pbar.me .pb-name { color: #bfeaf7; }
-.hpbar { position: relative; width: 300px; height: 24px; border-radius: 12px; background: #0a0705; border: 1px solid #5a3a28; overflow: hidden; box-shadow: inset 0 2px 4px #000; }
+.hpbar { position: relative; width: 260px; height: 24px; border-radius: 12px; background: #0a0705; border: 1px solid #5a3a28; overflow: hidden; box-shadow: inset 0 2px 4px #000; }
 .hpbar i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(180deg, #ff7a5a, #b02a18); transition: width .4s; box-shadow: inset 0 1px 0 #ffffff44; }
 .hpbar.low i { animation: lowHp 1s infinite; }
 @keyframes lowHp { 50% { filter: brightness(1.5); } }
@@ -165,6 +165,10 @@ button { font-family: inherit; }
 .mana { display: flex; align-items: baseline; gap: 4px; padding: 3px 12px; border-radius: 14px; background: #0c1a22; border: 1px solid #2e6e88; }
 .mana .gem { color: var(--me); text-shadow: 0 0 8px #5ec8e8; } .mana b { font-family: var(--font-logo); font-size: 20px; color: #d8f6ff; } .mana small { color: #8fc6d8; }
 .mana .mcap { font-size: 10.5px; color: #5d8a9a; margin-left: 4px; }
+.ember { display: flex; align-items: baseline; gap: 3px; padding: 3px 10px; border-radius: 14px; background: #221008; border: 1px solid #6a3a1e; color: #8a6a50; }
+.ember b { font-family: var(--font-logo); font-size: 18px; color: #a88a70; } .ember small { font-size: 11px; }
+.ember.on { border-color: #ff8a3d; box-shadow: 0 0 12px #ff8a3d66; color: #ffcf9a; } .ember.on b { color: #ffd8a8; text-shadow: 0 0 8px #ff8a3d; }
+.fx-float.ember { color: #ffb066; font-size: 24px; }
 .pb-info { display: flex; gap: 12px; font-size: 13.5px; color: #d8c8b0; }
 .pb-info .warn { color: var(--bad); font-weight: 700; } .pb-info .lock { color: #ffb0ff; }
 .op-hand { margin-left: auto; display: flex; }

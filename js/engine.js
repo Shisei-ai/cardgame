@@ -8,6 +8,13 @@
  * ■ 勝敗
  *   相手の体力を0にした方の勝ち。山札が0枚の時にカードを引こうとした方の負け。
  *
+ * ■ 火種（ひだね）… 攻撃のリスク
+ *   相手のクリーチャーに攻撃されるたび、攻撃された側は火種を emberPerAttack 個得る（emberCap 個まで）。
+ *   火種はマナの代わりに使える（支払いは、まずマナから、足りない分を火種で）。ターンをまたいで残る。
+ *   また、相手本体への攻撃を、火種を emberBlockCost 個払って、アンタップの自分のクリーチャーで
+ *   受け止める（ブロック）こともできる。ブロックしたクリーチャーはタップし、攻撃してきたクリーチャーとバトルする。
+ *   攻撃するほど相手に資源と守りの手段を与えるので、「攻撃する価値があるか」「どの順に攻撃するか」を考える必要が生まれる。
+ *
  * ■ 選択の仕組み（ジェネレーター）
  *   効果の対象選び・「〜してもよい」・迎撃呪文を使うか、などの選択が必要になると、処理は
  *   yield { player, kind, prompt, options, min, max } で一時停止する。
@@ -18,6 +25,7 @@
  *     'confirm' … 「〜してもよい」。答えは true / false
  *     'discard' … 手札から捨てるカード。options はカードの iid。答えは iid の配列
  *     'react'   … 相手の攻撃に迎撃呪文を使うか。options は使える呪文の iid。答えは iid の配列（空なら使わない）
+ *     'block'   … 火種を払ってブロックするか。options はブロックできるクリーチャーの uid。答えは uid の配列（空ならしない）
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./parts.js'));
@@ -26,12 +34,15 @@
   'use strict';
 
   const CONFIG = {
-    startHP: 5000,
+    startHP: 10000,
+    emberPerAttack: 1, // 攻撃されるたびに得る火種の数
+    emberCap: 5,       // 火種の上限
+    emberBlockCost: 1, // ブロックに必要な火種の数（0ならブロックなし）
     maxManaCap: 20,   // 最大マナの上限
     startHand: 5,
-    secondBonus: 1,   // 後攻が最初に多く引く枚数（先攻の有利を和らげる）
+    secondBonus: 0,   // 後攻が最初に多く引く枚数（火種の導入で先攻と後攻が釣り合ったので0）
     secondMana: 0,    // 後攻の最大マナの初期値（先攻は0から）
-    secondCoin: 1,    // 後攻の最初のターンだけ、マナがこの数だけ多い（最大マナは増えない）
+    secondCoin: 0,    // 後攻の最初のターンだけ、マナがこの数だけ多い（最大マナは増えない）
     deckSize: 40,
     maxCopies: 4,
     fieldLimit: 6,
@@ -82,7 +93,7 @@
       this._depth = 0;
       this.players = [0, 1].map((i) => ({
         index: i, name: (opts.names || [])[i] || (i ? 'CPU' : 'あなた'),
-        hp: this.cfg.startHP, maxMana: 0, mana: 0,
+        hp: this.cfg.startHP, maxMana: 0, mana: 0, ember: 0,
         deck: this._shuffle(opts.decks[i].map((spec) => this._inst(spec))),
         hand: [], field: [], grave: [],
         spellLock: false,  // 呪文を唱えられない（相手の効果）
@@ -123,7 +134,7 @@
       const s = inst.spec;
       if (this.active !== pi || this.step !== 'main') return { ok: false, reason: s.kind === 'spell' && this._isReact(s) ? '相手の攻撃時に使える' : '自分のメインステップのみ' };
       if (s.kind === 'spell' && this._isReact(s)) return { ok: false, reason: '相手の攻撃時に使える' };
-      if (s.cost > p.mana) return { ok: false, reason: 'マナ不足' };
+      if (s.cost > p.mana + p.ember) return { ok: false, reason: 'マナ不足' };
       if (s.kind === 'spell' && p.spellLock) return { ok: false, reason: '呪文を封じられている' };
       if (s.kind === 'creature' && p.field.length >= this.cfg.fieldLimit) return { ok: false, reason: '場がいっぱい' };
       return { ok: true, reason: '' };
@@ -274,7 +285,7 @@
       const idx = p.hand.findIndex((c) => c.iid === iid);
       const inst = p.hand.splice(idx, 1)[0];
       const s = inst.spec;
-      p.mana -= s.cost;
+      this._pay(p, s.cost);
       p.stats.played++;
       if (s.kind === 'creature') {
         yield* this._summon(p, inst);
@@ -311,6 +322,13 @@
       yield* this._trigger(p, 'spellCast', { card: s });
     }
 
+    /** コストを払う：まずマナから、足りない分を火種で */
+    _pay(p, cost) {
+      const fromMana = Math.min(p.mana, cost);
+      p.mana -= fromMana;
+      p.ember -= cost - fromMana;
+    }
+
     _isReact(s) { return s.kind === 'spell' && s.effects.length && s.effects[0].trig === 'react'; }
 
     // ───────────── 攻撃とバトル ─────────────
@@ -320,6 +338,15 @@
       const op = this.opp(p);
       u.attacks--;
       u.tapped = true;
+      // 攻撃された側は、攻撃が終わった後に火種を得る（攻撃のリスク）
+      yield* this._attackBody(p, u, target);
+      if (this.over) return;
+      const gain = Math.min(this.cfg.emberPerAttack, this.cfg.emberCap - op.ember);
+      if (gain > 0) { op.ember += gain; this._emit({ type: 'ember', player: op.index, amount: gain }); this._bump(); }
+    }
+
+    *_attackBody(p, u, target) {
+      const op = this.opp(p);
       let tgt = target === 'player' ? null : op.field.find((x) => x.uid === target);
       this._emit({ type: 'attackDeclare', player: p.index, unit: u, target: tgt });
       this._bump();
@@ -338,6 +365,20 @@
           g.tapped = true;
           tgt = g;
           this._emit({ type: 'guard', player: op.index, unit: g });
+        }
+      }
+      // ブロック：相手本体への攻撃を、火種を払ってアンタップのクリーチャーで受け止める（隠密は受け止められない）
+      if (!tgt && !has(u, 'stealth') && this.cfg.emberBlockCost > 0 && op.ember >= this.cfg.emberBlockCost) {
+        const blockers = op.field.filter((b) => !b.tapped);
+        if (blockers.length) {
+          const ans = yield { player: op.index, kind: 'block', prompt: `【${u.name}】（パワー${this.powerOf(u)}）があなたを攻撃！ 火種${this.cfg.emberBlockCost}つでブロックしますか？`, options: blockers.map((b) => b.uid), min: 0, max: 1, attacker: u.uid };
+          const b = ans && ans[0] && op.field.find((x) => x.uid === ans[0] && !x.tapped);
+          if (b) {
+            op.ember -= this.cfg.emberBlockCost;
+            b.tapped = true;
+            tgt = b;
+            this._emit({ type: 'block', player: op.index, unit: b, attacker: u });
+          }
         }
       }
       if (!tgt) {
@@ -379,7 +420,7 @@
     /** 攻撃された側が、迎撃呪文を使うか選ぶ */
     *_reactWindow(defender, attacker) {
       for (let guard = 0; guard < 3; guard++) {
-        const usable = defender.hand.filter((c) => this._isReact(c.spec) && c.spec.cost <= defender.mana && !defender.spellLock);
+        const usable = defender.hand.filter((c) => this._isReact(c.spec) && c.spec.cost <= defender.mana + defender.ember && !defender.spellLock);
         if (!usable.length) return;
         const ans = yield { player: defender.index, kind: 'react', prompt: `${attacker.name}が攻撃してきた！ 迎撃呪文を使いますか？`, options: usable.map((c) => c.iid), min: 0, max: 1, attacker: attacker.uid };
         const iid = ans && ans[0];
@@ -387,7 +428,7 @@
         const i = defender.hand.findIndex((c) => c.iid === iid);
         if (i < 0) return;
         const inst = defender.hand.splice(i, 1)[0];
-        defender.mana -= inst.spec.cost;
+        this._pay(defender, inst.spec.cost);
         defender.stats.played++;
         yield* this._cast(defender, inst, { attacker });
         if (this.over || !this.players[attacker.owner].field.includes(attacker)) return;

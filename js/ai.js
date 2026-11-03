@@ -154,12 +154,19 @@
         const threat = op.field.some((t) => g.powerOf(t) >= pw && !has(t, 'slow'));
         const risk = threat ? unitValue(g, u) * 0.5 * this.L.risk : 0;
         const guard = has(u, 'stealth') ? null : guards.reduce((a, b) => (!a || g.powerOf(b) > g.powerOf(a) ? b : a), null);
+        // 攻撃すると相手が火種（マナ1つ分＝容量10ほど）を得る
+        const emberCost = Math.min(g.cfg.emberPerAttack, g.cfg.emberCap - op.ember) * 10;
         for (const t of g.attackTargets(this.pi, u.uid)) {
           let v;
           const tgt = t === 'player' ? null : op.field.find((x) => x.uid === t);
           const vs = guard && guard !== tgt ? guard : tgt;
-          if (!vs) {
-            // 体力5000に対するダメージの重み：パワー40につき1（容量の物差しと同じ）
+          // 相手に火種があれば、本体への攻撃はアンタップのクリーチャーにブロックされうる
+          const canBlock = !tgt && !has(u, 'stealth') && g.cfg.emberBlockCost > 0 && op.ember >= g.cfg.emberBlockCost
+            ? op.field.filter((b) => !b.tapped && (g.powerOf(b) >= pw || has(b, 'assassin'))) : [];
+          if (!vs && canBlock.length) {
+            v = -unitValue(g, u) * 0.8;
+          } else if (!vs) {
+            // ダメージの重み：パワー40につき1（容量の物差しと同じ）
             const dmg = pw;
             v = (dmg / 40) * (op.hp <= dmg * 2 ? 1.6 : 1.0) - risk;
             if (blockable && op.hp <= 1500) v += 10;
@@ -169,6 +176,7 @@
             else if (pw === pv) v = unitValue(g, vs) - unitValue(g, u);
             else v = -unitValue(g, u);
           }
+          v -= emberCost;
           if (!best || v > best.v) best = { v, u, t };
         }
       }
@@ -202,6 +210,21 @@
         else score = (u) => (!u.tapped && !u.sick ? 5 : 0) + g.powerOf(u) / 1000;
         units.sort((a, b) => score(b) - score(a));
         return units.slice(0, req.max).map((u) => u.uid);
+      }
+      if (req.kind === 'block') {
+        const attacker = g.findUnit(req.attacker);
+        if (!attacker) return [];
+        const pa = g.powerOf(attacker);
+        const units = req.options.map((uid) => g.findUnit(uid)).filter(Boolean);
+        // 勝てる（または相打ちで済む）クリーチャーがいれば、一番安いものでブロック
+        const win = units.filter((b) => g.powerOf(b) > pa || has(b, 'assassin')).sort((a, b) => unitValue(g, a) - unitValue(g, b))[0];
+        if (win) return [win.uid];
+        const tie = units.filter((b) => g.powerOf(b) === pa && unitValue(g, b) <= unitValue(g, attacker)).sort((a, b) => unitValue(g, a) - unitValue(g, b))[0];
+        if (tie) return [tie.uid];
+        // 負けるブロック（身代わり）は、ダメージが大きい時か、止めを刺されそうな時だけ
+        const cheap = units.sort((a, b) => unitValue(g, a) - unitValue(g, b))[0];
+        if (cheap && (pa >= me.hp || pa / 40 > unitValue(g, cheap) * 1.5)) return [cheap.uid];
+        return [];
       }
       if (req.kind === 'react') {
         const attacker = g.findUnit(req.attacker);

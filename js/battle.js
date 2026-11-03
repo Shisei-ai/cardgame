@@ -30,7 +30,7 @@
     UI.closeModal();
     UI.showScreen('battle');
     g.start();
-    banner(g.first === ME ? 'あなたが先攻' : 'CPUが先攻', g.first === ME ? '先攻の1ターン目はドローしません' : '後攻は初期手札+1枚、最初のターンはマナ+2');
+    banner(g.first === ME ? 'あなたが先攻' : 'CPUが先攻', '先攻の1ターン目はドローしません');
     B.raf = requestAnimationFrame(loop);
   }
 
@@ -147,6 +147,20 @@
         { label: 'しない', onClick: () => { UI.closeModal(); B.pendingShown = null; g.answer(false); } },
         { label: 'する', primary: true, onClick: () => { UI.closeModal(); B.pendingShown = null; g.answer(true); } },
       ]);
+    } else if (pd.kind === 'block') {
+      const att = g.findUnit(pd.attacker);
+      const m = UI.modal('ブロック', `<p>${esc(pd.prompt)}</p><p class="hint">火種を払って、アンタップの自分のクリーチャーで受け止めます。受け止めたクリーチャーはタップし、攻撃してきたクリーチャーとバトルします（パワーが大きい方が勝ち）。</p><div class="m-cards"></div>`,
+        [{ label: 'ブロックしない', onClick: () => { UI.closeModal(); B.pendingShown = null; g.answer([]); } }], 'wide');
+      const box = $('.m-cards', m);
+      for (const uid of pd.options) {
+        const u = g.findUnit(uid);
+        if (!u) continue;
+        const pw = g.powerOf(u);
+        const el = UI.cardEl(u.spec, { power: pw, badge: att ? (pw > g.powerOf(att) ? '勝てる' : pw === g.powerOf(att) ? '相打ち' : '負ける') : '' });
+        el.classList.add('pickable');
+        el.onclick = () => { UI.closeModal(); B.pendingShown = null; g.answer([uid]); };
+        box.appendChild(el);
+      }
     } else if (pd.kind === 'discard' || pd.kind === 'react') {
       const me = g.players[ME];
       const att = pd.kind === 'react' ? g.findUnit(pd.attacker) : null;
@@ -207,6 +221,15 @@
           if (a && b) fx.line(UI.stagePoint(a), UI.stagePoint(b), ev.player === ME ? '#7fd6ff' : '#ff8a6a');
           UI.pulse(a, 'attacking', 450);
         });
+        break;
+      case 'ember': {
+        const pt = portrait(ev.player);
+        if (pt) { const p = UI.stagePoint(pt); fx.float(p.x + 360, p.y, '🔥+' + ev.amount, 'ember'); }
+        break;
+      }
+      case 'block':
+        log(`${nm(ev.player)}：火種を払い【${ev.unit.name}】でブロック！`, ev.player);
+        later(() => UI.pulse(unitEl(ev.unit), 'guarding', 600));
         break;
       case 'guard':
         log(`【${ev.unit.name}】が守護で攻撃を引き受けた`, ev.player);
@@ -293,6 +316,7 @@
       <div class="pb-name">${esc(p.name)}</div>
       <div class="hpbar${p.hp <= 1500 ? ' low' : ''}"><i style="width:${pct}%"></i><span>♥ ${Math.max(0, p.hp)} / ${g.cfg.startHP}</span></div>
       <div class="mana" title="マナ（今使える量 / 最大マナ）"><span class="gem">◆</span><b>${p.mana}</b><small>/ ${p.maxMana}</small><span class="mcap">上限${g.cfg.maxManaCap}</span></div>
+      <div class="ember${p.ember ? ' on' : ''}" title="火種：攻撃されるたびに1つ得る（${g.cfg.emberCap}つまで）。マナの代わりに使えるほか、${g.cfg.emberBlockCost}つ払って相手の本体への攻撃をブロックできる">🔥<b>${p.ember}</b><small>/${g.cfg.emberCap}</small></div>
       <div class="pb-info">
         <span title="手札">🂠 ${p.hand.length}</span><span title="山札（0枚で引くと負け）" class="${p.deck.length <= 5 ? 'warn' : ''}">📚 ${p.deck.length}</span><span title="${esc(graveTip)}">⚰ ${p.grave.length}</span>
         ${p.spellLock ? '<span class="lock">🔒呪文封じ</span>' : ''}
