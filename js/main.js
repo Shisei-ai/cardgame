@@ -1,99 +1,57 @@
 /*
- * main.js — 起動処理と、タイトル・対戦準備画面
+ * main.js — 起動と、対戦の準備画面
  */
 (function (root) {
   'use strict';
-  const { AI, Cards, Engine, Presets, Storage2, UI, Builder, Battle } = root;
+  const { Engine, AI, Store, Decks, UI, Battle, ForgeUI, Builder, Rules } = root;
   const { $, esc } = UI;
 
-  // data-go="画面名" を持つボタンで画面を切り替える
-  document.addEventListener('click', (e) => {
-    const go = e.target.closest('[data-go]');
-    if (go) UI.showScreen(go.dataset.go);
-  });
+  const setup = { deck: 'starter_fire', level: 'normal' };
 
-  // ───── 対戦準備画面 ─────
-  // デッキはタイルで選ぶ。選んだ値は隠した <select> に入れておき、開始時にそこから読む
-
-  /** デッキを代表するカード3枚のアイコン（枚数が多く、コストが高い順） */
-  function deckIcons(cards) {
-    return Object.entries(cards)
-      .map(([id, n]) => ({ c: Cards.get(id), n }))
-      .sort((a, b) => b.n - a.n || b.c.cost - a.c.cost)
-      .slice(0, 3).map((x) => x.c.icon).join('');
-  }
-
-  function renderTiles(boxSel, selectSel, decks, withRandom) {
-    const box = $(boxSel);
-    const sel = $(selectSel);
-    const items = (withRandom ? [{ value: 'random', name: 'ランダム', desc: 'プリセットからランダムに選ぶ', icons: '❔', preset: true }] : [])
-      .concat(decks.map((d) => ({ ...d, icons: deckIcons(d.cards) })));
-    sel.innerHTML = items.map((d) => `<option value="${esc(d.value)}"></option>`).join('');
-    box.innerHTML = '';
-    items.forEach((d) => {
-      const t = document.createElement('button');
-      t.className = 'deck-tile';
-      t.dataset.value = d.value;
-      t.innerHTML = `<div class="dt-icons">${d.icons}</div>
-        <div><div class="dt-name">${esc(d.name)}</div><div class="dt-desc">${esc(d.desc || '')}</div></div>
-        ${d.preset ? '' : '<span class="dt-badge">自作</span>'}`;
-      t.onclick = () => { sel.value = d.value; syncTiles(box, sel); };
-      box.appendChild(t);
-    });
-  }
-  function syncTiles(box, sel) {
-    box.querySelectorAll('.deck-tile').forEach((t) => t.classList.toggle('on', t.dataset.value === sel.value));
-  }
-
-  UI.onScreen('setup', () => {
-    const decks = UI.allDecks();
-    const s = Storage2.loadSettings();
-    renderTiles('#tiles-me', '#setup-my-deck', decks, false);
-    renderTiles('#tiles-cpu', '#setup-cpu-deck', decks, true);
-    // CPUの強さ
-    const lv = $('#setup-level');
-    lv.innerHTML = Object.keys(AI.LEVELS).map((k) => `<option value="${k}"></option>`).join('');
-    lv.value = s.level || 'normal';
-    const pick = $('#level-pick');
-    pick.innerHTML = '<span>CPUの強さ</span>' + Object.entries(AI.LEVELS).map(([k, v]) => `<button data-lv="${k}">${v.label}</button>`).join('');
-    const syncLv = () => pick.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.lv === lv.value));
-    pick.onclick = (e) => { const k = e.target.dataset.lv; if (k) { lv.value = k; syncLv(); } };
-    syncLv();
-    // 前回の選択を復元
-    if (s.myDeck && decks.some((d) => d.value === s.myDeck)) $('#setup-my-deck').value = s.myDeck;
-    if (s.cpuDeck) $('#setup-cpu-deck').value = s.cpuDeck;
-    if (!$('#setup-cpu-deck').value) $('#setup-cpu-deck').value = 'random';
-    syncTiles($('#tiles-me'), $('#setup-my-deck'));
-    syncTiles($('#tiles-cpu'), $('#setup-cpu-deck'));
-    $('#setup-error').textContent = '';
-  });
-
-  $('#btn-start').onclick = () => {
-    const decks = UI.allDecks();
-    const myVal = $('#setup-my-deck').value;
-    let cpuVal = $('#setup-cpu-deck').value;
-    const level = $('#setup-level').value;
-    Storage2.saveSettings({ myDeck: myVal, cpuDeck: cpuVal, level });
-
-    // CPUの「ランダム」はプリセットから選ぶ
-    if (cpuVal === 'random') {
-      const ps = Presets.DECKS;
-      cpuVal = 'preset:' + ps[Math.floor(Math.random() * ps.length)].key;
+  /** 対戦に使えるデッキの一覧 [{ key, name, desc, specs, errors }] */
+  function deckChoices() {
+    const out = [];
+    for (const d of Store.decks()) {
+      const r = Decks.toList(d.cards, UI.cardById);
+      out.push({ key: d.id, name: d.name, desc: '自分のデッキ', specs: r.list, errors: Engine.validateDeck(r.list) });
     }
-    const mine = decks.find((d) => d.value === myVal);
-    const cpu = decks.find((d) => d.value === cpuVal);
-    const myList = Presets.toList(mine.cards);
-    const cpuList = Presets.toList(cpu.cards);
-    const errors = [...Engine.validateDeck(myList), ...Engine.validateDeck(cpuList)];
-    if (errors.length) { $('#setup-error').textContent = errors.join('\n'); return; }
+    for (const d of Decks.STARTERS) {
+      const r = Decks.toList(d.cards, UI.cardById);
+      out.push({ key: d.id, name: d.name, desc: d.desc, specs: r.list, errors: Engine.validateDeck(r.list) });
+    }
+    return out;
+  }
 
-    Battle.start({ myDeck: myList, cpuDeck: cpuList, level, cpuName: 'CPU' });
-  };
+  function renderSetup() {
+    const list = deckChoices();
+    if (!list.some((d) => d.key === setup.deck && !d.errors.length)) setup.deck = (list.find((d) => !d.errors.length) || {}).key;
+    $('#setup-decks').innerHTML = list.map((d) => `
+      <button class="deck-tile${d.key === setup.deck ? ' on' : ''}${d.errors.length ? ' bad' : ''}" data-k="${d.key}" ${d.errors.length ? 'disabled' : ''}>
+        <b>${esc(d.name)}</b><span>${d.errors.length ? esc(d.errors[0]) : esc(d.desc)}</span>
+        <small>${d.specs.filter((s) => !s.base).length ? `オリジナル ${d.specs.filter((s) => !s.base).length}枚` : '基本カードのみ'}</small>
+      </button>`).join('');
+    $('#setup-level').innerHTML = Object.entries(AI.LEVELS).map(([k, v]) => `<button data-l="${k}" class="${k === setup.level ? 'on' : ''}">${v.label}</button>`).join('');
+  }
 
-  // タイトルの紋章の後ろに魔法陣を重ねる
-  $('.logo-emblem').insertAdjacentHTML('afterbegin', UI.runeCircle('title-circle'));
+  function init() {
+    UI.init();
+    Battle.init();
+    ForgeUI.init();
+    Builder.init();
+    Rules.init();
+    document.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-go]');
+      if (b) UI.showScreen(b.dataset.go);
+    });
+    $('#setup-decks').onclick = (e) => { const t = e.target.closest('.deck-tile'); if (t && !t.disabled) { setup.deck = t.dataset.k; renderSetup(); } };
+    $('#setup-level').onclick = (e) => { const l = e.target.dataset.l; if (l) { setup.level = l; renderSetup(); } };
+    $('#btn-start').onclick = () => {
+      const d = deckChoices().find((x) => x.key === setup.deck);
+      if (!d || d.errors.length) { UI.toast('使えるデッキを選んでください'); return; }
+      Battle.start({ myDeck: d.specs, cpuDeck: AI.buildDeck(), level: setup.level });
+    };
+    UI.onScreen('setup', renderSetup);
+  }
 
-  Builder.init();
-  Battle.init();
-  root.Tips.init();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })(this);

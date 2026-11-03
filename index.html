@@ -1,209 +1,147 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CHRONO DUEL</title>
-  <!-- フォント（オフラインでは読み込めないが、その場合は端末の標準フォントで表示される） -->
+  <title>ARCANA FORGE（仮題）</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&family=Shippori+Mincho+B1:wght@700;800&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&family=Shippori+Mincho+B1:wght@600;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-<div id="app">
-<!-- 1280×720 の「舞台」。ウィンドウの大きさに合わせて main.js が拡大縮小する -->
 <div id="stage">
-  <div class="bg-clock" aria-hidden="true"></div>
 
   <!-- ===== タイトル ===== -->
   <section id="screen-title" class="screen active">
-    <div class="sparks" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-    <div class="title-box">
-      <div class="logo-emblem" aria-hidden="true">
-        <div class="gear g1"></div><div class="gear g2"></div>
-        <div class="dial"><i class="hand-h"></i><i class="hand-m"></i></div>
-      </div>
-      <h1 class="logo">CHRONO DUEL</h1>
-      <p class="subtitle">同時詠唱デッキ構築カードバトル</p>
+    <div class="title-wrap">
+      <div class="logo-emblem"><div class="anvil">⚒</div></div>
+      <h1 class="logo">ARCANA FORGE</h1>
+      <p class="subtitle"><span>札を鍛え、魂を刻め</span></p>
       <div class="menu">
         <button class="btn primary big" data-go="setup">⚔ 対戦する</button>
-        <button class="btn big" data-go="builder">📜 デッキ構築</button>
-        <button class="btn big" data-go="tips">💡 TIPS</button>
+        <button class="btn big" data-go="forge">⚒ カード工房</button>
+        <button class="btn big" data-go="builder">📚 デッキ構築</button>
+        <button class="btn big" data-go="rules">📜 遊び方</button>
       </div>
-      <p class="version">prototype v0.11</p>
+      <p class="version">prototype v0.1</p>
     </div>
   </section>
 
-  <!-- ===== 対戦準備 ===== -->
+  <!-- ===== 対戦の準備 ===== -->
   <section id="screen-setup" class="screen">
-    <div class="setup">
-      <header class="screen-head">
-        <button class="btn ghost" data-go="title">◀ 戻る</button>
-        <h2>対戦準備</h2>
-        <div class="level-pick" id="level-pick"></div>
-      </header>
-      <div class="setup-cols">
-        <div class="setup-col">
-          <h3><span class="who me">あなた</span>のデッキ</h3>
-          <div class="deck-tiles" id="tiles-me"></div>
-        </div>
-        <div class="vs">VS</div>
-        <div class="setup-col">
-          <h3><span class="who op">CPU</span>のデッキ</h3>
-          <div class="deck-tiles" id="tiles-cpu"></div>
-        </div>
+    <div class="screen-head"><button class="btn ghost" data-go="title">◀ 戻る</button><h2>対戦の準備</h2></div>
+    <div class="setup panel ornate">
+      <div class="setup-row">
+        <h3>あなたのデッキ</h3>
+        <div id="setup-decks" class="deck-tiles"></div>
       </div>
-      <footer class="setup-foot">
-        <p id="setup-error" class="error"></p>
-        <button class="btn primary big" id="btn-start">対戦開始</button>
-      </footer>
-      <!-- 選択値の保持用（画面には出さない） -->
-      <select id="setup-my-deck" hidden></select>
-      <select id="setup-cpu-deck" hidden></select>
-      <select id="setup-level" hidden></select>
-    </div>
-  </section>
-
-  <!-- ===== デッキ構築 ===== -->
-  <section id="screen-builder" class="screen">
-    <div class="builder">
-      <div class="builder-pool">
-        <div class="builder-head">
-          <button class="btn ghost" data-go="title">◀</button>
-          <h2>カード一覧</h2>
-          <div id="pool-filter" class="tabs"></div>
-        </div>
-        <div class="builder-head2">
-          <span class="hint">タグ</span>
-          <div id="pool-tag" class="tabs"></div>
-        </div>
-        <div class="builder-head2">
-          <span class="hint">テーマ</span>
-          <div id="pool-arch" class="tabs"></div>
-        </div>
-        <p class="hint" id="arch-desc">クリックで追加 ／ 右クリックで削除 ／ マウスを乗せると詳しい説明</p>
-        <div id="pool" class="card-grid"></div>
+      <div class="setup-row">
+        <h3>CPUの強さ</h3>
+        <div id="setup-level" class="seg"></div>
+        <p class="hint">CPUは毎回、その場でオリジナルカードを鍛えてデッキを組みます。</p>
       </div>
-      <div class="builder-deck">
-        <div class="row">
-          <select id="deck-select"></select>
-          <button class="btn small" id="deck-new">新規</button>
-        </div>
-        <input id="deck-name" type="text" maxlength="24" placeholder="デッキ名">
-        <div id="deck-count" class="deck-count"></div>
-        <div id="deck-curve" class="curve"></div>
-        <ul id="deck-list" class="deck-list"></ul>
-        <p id="deck-error" class="error"></p>
-        <div class="row">
-          <button class="btn small" id="deck-clear">全て外す</button>
-          <button class="btn small danger" id="deck-delete">削除</button>
-          <button class="btn small primary" id="deck-save">保存</button>
-        </div>
-        <button class="btn" data-go="title">タイトルへ</button>
-      </div>
-    </div>
-  </section>
-
-  <!-- ===== TIPS（ゲームの仕組みの解説。中身は js/tips.js） ===== -->
-  <section id="screen-tips" class="screen">
-    <div class="tips">
-      <header class="screen-head">
-        <button class="btn ghost" data-go="title">◀ 戻る</button>
-        <h2>TIPS</h2>
-        <span class="tips-sub">知っておくと強くなる、ゲームの仕組み</span>
-      </header>
-      <div class="tips-body">
-        <nav class="tips-nav" id="tips-nav"></nav>
-        <article class="tips-page panel" id="tips-page"></article>
-      </div>
+      <div class="setup-foot"><button class="btn primary big" id="btn-start">対戦開始</button></div>
     </div>
   </section>
 
   <!-- ===== 対戦 ===== -->
   <section id="screen-battle" class="screen">
-    <div class="battle">
-      <div class="board" id="board">
-        <!-- 相手 -->
-        <div class="side side-op" id="side-1">
-          <div class="pbar" id="pbar-1"></div>
-          <div class="row-zone">
-            <div class="pedestal" id="cast-1"></div>
-            <div class="field" id="field-1"></div>
-          </div>
+    <div class="board" id="board">
+      <div class="pbar op" id="pbar-1"></div>
+      <div class="field op" id="field-1"></div>
+      <div class="midline">
+        <div class="turn-info" id="turn-info"></div>
+        <div class="mid-buttons">
+          <button class="btn" id="btn-attack">アタックへ ▶</button>
+          <button class="btn primary" id="btn-end">ターン終了</button>
+          <button class="btn icon" id="btn-menu" title="メニュー">☰</button>
         </div>
-        <!-- 中央：フェーズの時計 -->
-        <div class="midline">
-          <div class="mid-rule"></div>
-          <div class="phase-clock" id="phase-clock">
-            <div class="pc-ring" id="phase-ring"></div>
-            <div class="pc-num"><small>PHASE</small><b id="phase-num">1</b></div>
-          </div>
-          <div class="steps" id="steps">
-            <span class="st" data-step="play"><i>Ⅰ</i>プレイ</span>
-            <span class="st" data-step="counter"><i>Ⅱ</i>カウンター</span>
-            <span class="st" data-step="hall"><i>Ⅲ</i>クロノホール</span>
-          </div>
-          <div class="chrono-line" id="chrono-line" title="攻撃予約（クロノホールで左から順に実行）">
-            <div class="cl-gauge"><div id="phase-fill"></div></div>
-            <div class="cl-chips" id="cl-chips"></div>
-          </div>
-          <div class="match-clock" title="今のステップの残り時間">
-            <span class="mc-icon" id="clock-icon">⌛</span><span class="clock" id="clock">1:00</span>
-          </div>
-          <button class="btn primary step-btn" id="btn-step" title="Space">準備完了</button>
-          <button class="btn icon" id="btn-pause" title="一時停止（Esc）">❚❚</button>
-        </div>
-        <!-- 自分 -->
-        <div class="side side-me" id="side-0">
-          <div class="row-zone">
-            <div class="pedestal" id="cast-0"></div>
-            <div class="field" id="field-0"></div>
-          </div>
-          <div class="pbar" id="pbar-0"></div>
-        </div>
-        <div class="hand" id="hand"></div>
       </div>
+      <div class="field me" id="field-0"></div>
+      <div class="pbar me" id="pbar-0"></div>
+      <div class="hand" id="hand"></div>
+      <div class="feed" id="feed"></div>
     </div>
-    <!-- 演出用のレイヤー -->
-    <div class="fx" id="fx"></div>
-    <div class="vignette" id="vignette"></div>
-    <div class="phase-banner" id="phase-banner"></div>
-    <div class="toast" id="toast"></div>
-    <div class="target-banner hidden" id="target-banner"></div>
-    <div class="choice hidden" id="choice">
-      <div class="choice-box">
-        <div class="choice-prompt" id="choice-prompt"></div>
-        <div class="choice-timer"><div class="ct-bar"><i id="choice-bar"></i></div><span id="choice-timer"></span></div>
-        <div class="choice-cards" id="choice-cards"></div>
-        <p class="hint">選択中は時間が止まっています。カードをクリック、または数字キーで選択</p>
+    <div class="guide" id="guide"></div>
+  </section>
+
+  <!-- ===== カード工房 ===== -->
+  <section id="screen-forge" class="screen">
+    <div class="screen-head"><button class="btn ghost" data-go="title">◀ 戻る</button><h2>カード工房</h2><p class="head-hint">素質を引いて、容量の中で自由にカードを作る</p></div>
+    <div class="forge">
+      <div class="forge-left panel">
+        <div class="fl-head"><h3>作ったカード</h3><span id="forge-count"></span></div>
+        <div id="forge-list" class="mini-list"></div>
+        <div class="fl-foot">
+          <button class="btn small" id="forge-import">カードコードを読み込む</button>
+        </div>
+      </div>
+      <div class="forge-main panel ornate" id="forge-main"></div>
+      <div class="forge-right">
+        <div id="forge-preview" class="forge-preview"></div>
+        <div id="forge-meter" class="meter"></div>
+        <div id="forge-errors" class="forge-errors"></div>
+        <div class="forge-actions">
+          <button class="btn primary" id="forge-save">工房に保存</button>
+          <button class="btn" id="forge-new">新しく作る</button>
+        </div>
       </div>
     </div>
   </section>
 
-  <!-- ===== オーバーレイ（一時停止・結果） ===== -->
-  <div id="overlay" class="overlay hidden">
-    <div class="panel narrow">
-      <h2 id="overlay-title"></h2>
-      <div id="overlay-body"></div>
-      <div class="row" id="overlay-buttons"></div>
+  <!-- ===== デッキ構築 ===== -->
+  <section id="screen-builder" class="screen">
+    <div class="screen-head"><button class="btn ghost" data-go="title">◀ 戻る</button><h2>デッキ構築</h2>
+      <div class="seg" id="pool-tabs"></div>
+      <div class="seg" id="pool-kind"></div>
     </div>
-  </div>
+    <div class="builder">
+      <div class="pool-wrap panel"><div id="pool" class="card-grid"></div></div>
+      <div class="deck-side panel ornate">
+        <div class="deck-top">
+          <select id="deck-select"></select>
+          <button class="btn small" id="deck-new">新規</button>
+        </div>
+        <input id="deck-name" placeholder="デッキ名" maxlength="20">
+        <div class="deck-count" id="deck-count"></div>
+        <div class="curve" id="deck-curve"></div>
+        <ul class="deck-list" id="deck-list"></ul>
+        <div class="deck-error" id="deck-error"></div>
+        <div class="deck-buttons">
+          <button class="btn small" id="deck-clear">全て外す</button>
+          <button class="btn small danger" id="deck-delete">削除</button>
+          <button class="btn small primary" id="deck-save">保存</button>
+        </div>
+      </div>
+    </div>
+  </section>
 
-  <!-- マウスを乗せたカードの拡大表示 -->
-  <div id="card-preview" class="card-preview hidden"></div>
-</div>
+  <!-- ===== 遊び方 ===== -->
+  <section id="screen-rules" class="screen">
+    <div class="screen-head"><button class="btn ghost" data-go="title">◀ 戻る</button><h2>遊び方</h2></div>
+    <div class="rules">
+      <nav class="rules-nav panel" id="rules-nav"></nav>
+      <div class="rules-page panel ornate" id="rules-page"></div>
+    </div>
+  </section>
+
+  <div class="fx" id="fx"></div>
+  <div class="modal" id="modal"></div>
+  <div class="toast" id="toast"></div>
 </div>
 
+<script src="js/parts.js"></script>
 <script src="js/cards.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/ai.js"></script>
-<script src="js/presets.js"></script>
 <script src="js/storage.js"></script>
+<script src="js/decks.js"></script>
 <script src="js/ui-common.js"></script>
-<script src="js/builder.js"></script>
 <script src="js/battle.js"></script>
-<script src="js/tips.js"></script>
+<script src="js/forge-ui.js"></script>
+<script src="js/builder.js"></script>
+<script src="js/rules.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>

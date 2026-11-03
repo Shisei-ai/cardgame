@@ -1,641 +1,421 @@
 /*
  * battle.js — 対戦画面
  *
- * 描画の考え方:
- *   ・requestAnimationFrame で毎フレーム game.update(経過秒) を呼ぶ
- *   ・手札や体力など「構造」の描画は、状態が変わったとき（signature が変化したとき）だけ作り直す
- *   ・詠唱の進み具合や時計など「連続的に変わるもの」は毎フレーム値だけ更新する
- *   ・演出（攻撃の光・ダメージ数値など）は、エンジンが出すイベント（onEvent）をきっかけに再生する
- *
- * ステップ（v0.11）:
- *   ・プレイステップ：自由にカードを使う。右下のボタン（Space）で「準備完了」
- *   ・カウンターステップ：【カウンター】だけ使える。ボタン（Space）で「パス」
- *   ・クロノホール：攻撃予約を1つずつ実行する演出。操作なし
- *   攻撃予約は、クリーチャーの ⚔ バッジと、中央の「クロノライン」に並ぶ
- *
- * 選択の操作（どちらも選んでいる間は時間が止まる）:
- *   ・対象選択モード：対象を選ぶカードを使おうとすると入る。光っているクリーチャーをクリック
- *     （または数字キー）で決定、右クリック・Esc でキャンセル。TARGET_TIME 秒で自動キャンセル
- *   ・効果の途中での選択（捨てるカードなど）：エンジンの pending を画面に表示して選ばせる
+ * 操作：
+ *   メインステップ … 手札のカードをクリックで使う。「タップして発動」の効果を持つ自分のクリーチャーはクリックで効果を使う
+ *   アタックステップ … 攻撃できる自分のクリーチャーをクリック → 光っている攻撃先（相手の帯・タップした相手クリーチャー）をクリック
+ *   右クリック／Esc … 攻撃先選びをやめる
+ * CPUの手番は、間を空けて1手ずつ進める（何をしたかは右上の記録に出る）。
+ * 効果の対象選び・「〜してもよい」・迎撃呪文などの選択は、エンジンの pending を画面に出して答える。
  */
 (function (root) {
   'use strict';
-  const { Cards, Engine, AI, UI } = root;
-  const { $, esc, fx } = UI;
-
+  const { Parts, Engine, AI, UI } = root;
+  const { $, $$, esc, fx } = UI;
   const ME = 0, OP = 1;
-  const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
-  const TARGET_TIME = 5; // 対象選択の制限時間（秒）
-  const PORTRAITS = ['🧙', '🤖'];
+  const AI_DELAY = 800;
+  const PORTRAIT = ['🧑‍🔧', '🤖'];
 
-  const B = {
-    game: null, ai: null, raf: 0, last: 0, paused: false,
-    sig: '', logShown: 0, setup: null,
-    unitEls: [new Map(), new Map()], // 場にいるクリーチャーの要素（uid → 要素）
-    elByUid: new Map(),              // 倒れて消えていく途中の要素も含む（演出の位置を求めるため）
-    targeting: null, // { idx, card, uids, timeLeft } 対象選択モード中
-    choiceKey: null, // 表示中の選択画面（同じ選択を作り直さないため）
-    picked: [],      // 選択画面で選んだ番号
-    castKey: ['', ''], // 台座に表示中の詠唱（同じものを作り直さないため）
-  };
+  const B = { game: null, ai: null, setup: null, attackFrom: null, picks: [], pendingShown: null, sig: '', raf: 0, aiT: 0, unitEls: new Map(), feed: [] };
 
   function start(setup) {
-    // setup: { myDeck, cpuDeck, level, cpuName }
     stop();
     B.setup = setup;
-    B.game = new Engine.Game({ decks: [setup.myDeck, setup.cpuDeck], names: ['あなた', setup.cpuName || 'CPU'] });
-    B.ai = new AI.AI(B.game, OP, setup.level);
-    B.game.players[ME].human = true; // 効果の途中での選択を画面で行う
-    B.game.onEvent = onEvent;
-    B.paused = false;
-    B.sig = '';
-    B.logShown = 0;
-    B.unitEls = [new Map(), new Map()];
-    B.elByUid = new Map();
-    B.targeting = null;
-    B.choiceKey = null;
-    B.castKey = ['', ''];
-    closeChoice();
-    ['#field-0', '#field-1', '#fx', '#cast-0', '#cast-1'].forEach((s) => { $(s).innerHTML = ''; });
-    buildSlots();
-    $('#vignette').classList.remove('on');
-    UI.closeOverlay();
+    const g = new Engine.Game({ decks: [setup.myDeck, setup.cpuDeck], names: ['あなた', 'CPU'] });
+    B.game = g;
+    B.ai = new AI.AI(g, OP, setup.level);
+    g.onEvent = onEvent;
+    B.attackFrom = null; B.picks = []; B.pendingShown = null; B.sig = ''; B.unitEls = new Map(); B.feed = [];
+    $('#field-0').innerHTML = ''; $('#field-1').innerHTML = ''; $('#fx').innerHTML = ''; $('#feed').innerHTML = '';
+    UI.closeModal();
     UI.showScreen('battle');
-    showBanner('BATTLE START', `第1フェーズ　プレイステップ ${B.game.cfg.playTime}秒`);
-    B.last = performance.now();
+    g.start();
+    banner(g.first === ME ? 'あなたが先攻' : 'CPUが先攻', g.first === ME ? '先攻の1ターン目はドローしません' : '後攻は初期手札+1枚、最初のターンはマナ+2');
     B.raf = requestAnimationFrame(loop);
   }
 
-  function stop() {
-    cancelAnimationFrame(B.raf);
-    B.raf = 0;
-  }
+  function stop() { cancelAnimationFrame(B.raf); clearTimeout(B.aiT); B.aiT = 0; }
 
-  function loop(now) {
-    // タブ切り替えなどで間が空いても一気に進みすぎないよう、1フレームの最大を0.1秒に制限
-    const dt = Math.min(0.1, (now - B.last) / 1000);
-    B.last = now;
+  function loop() {
     const g = B.game;
-    if (!B.paused && !g.over) {
-      if (B.targeting) {
-        // 対象選択中は時間が止まる（制限時間だけ進む）
-        B.targeting.timeLeft -= dt;
-        if (B.targeting.timeLeft <= 0) cancelTargeting('時間切れ');
-      } else {
-        g.update(dt); // 選択待ち（g.pending）の間はエンジン側で時間が止まる
-        if (!g.pending) B.ai.update(dt);
-      }
-    }
     render();
+    // CPUの手番：間を空けて1手ずつ
+    if (!g.over && !g.pending && g.active === OP && !B.aiT) {
+      B.aiT = setTimeout(() => { B.aiT = 0; if (B.game === g && !g.over) B.ai.step(); }, AI_DELAY);
+    }
     if (g.over) { showResult(); return; }
     B.raf = requestAnimationFrame(loop);
   }
 
   // ───────────── 入力 ─────────────
-  function tryPlay(idx) {
+  function myTurn(step) { const g = B.game; return !g.over && !g.pending && g.active === ME && (!step || g.step === step); }
+
+  function clickHand(iid) {
     const g = B.game;
-    if (!g || g.over || B.paused || g.pending) return;
-    // 対象選択中に同じカードをもう一度押したらキャンセル
-    if (B.targeting) { const same = B.targeting.idx === idx; cancelTargeting(); if (same) return; }
-    const c = Cards.get(g.players[ME].hand[idx]);
-    const chk = g.canPlay(ME, idx);
-    if (!chk.ok) { if (chk.reason) UI.toast(chk.reason, 700); return; }
-    if (c.target) {
-      const valid = g.validTargets(g.players[ME], c);
-      if (valid.length) {
-        B.targeting = { idx, card: c, uids: valid.map((v) => v.unit.uid), timeLeft: TARGET_TIME };
-        B.sig = ''; // 描画を更新して対象を光らせる
-        UI.hidePreview();
-        return;
-      }
+    if (g.pending) return;
+    const chk = g.canPlay(ME, iid);
+    if (!chk.ok) { if (chk.reason) UI.toast(chk.reason); return; }
+    B.attackFrom = null;
+    g.play(ME, iid);
+  }
+
+  function clickUnit(uid) {
+    const g = B.game;
+    const pd = g.pending;
+    // 効果の対象選び
+    if (pd && pd.player === ME && pd.kind === 'targets') {
+      if (!pd.options.includes(uid)) return;
+      const i = B.picks.indexOf(uid);
+      if (i >= 0) B.picks.splice(i, 1); else B.picks.push(uid);
+      if (B.picks.length >= pd.max) submitTargets();
+      B.sig = '';
+      return;
     }
-    g.play(ME, idx);
+    if (pd) return;
+    const u = g.findUnit(uid);
+    if (!u) return;
+    // アタックステップ：攻撃するクリーチャーを選ぶ → 攻撃先を選ぶ
+    if (myTurn('attack')) {
+      if (B.attackFrom) {
+        if (B.attackFrom === uid) { B.attackFrom = null; B.sig = ''; return; }
+        if (g.attackTargets(ME, B.attackFrom).includes(uid)) { const from = B.attackFrom; B.attackFrom = null; g.attack(ME, from, uid); return; }
+      }
+      if (u.owner === ME) {
+        if (g.canAttack(ME, uid)) { B.attackFrom = uid; B.sig = ''; }
+        else UI.toast(u.tapped ? 'タップしているので攻撃できない' : u.sick ? '召喚したターンは攻撃できない（速攻を除く）' : '攻撃できない');
+      } else if (B.attackFrom) UI.toast('アンタップしている相手のクリーチャーは攻撃できない');
+      return;
+    }
+    // メインステップ：タップして発動する効果
+    if (myTurn('main') && u.owner === ME) {
+      const idx = (u.spec.effects || []).findIndex((e) => e.trig === 'tap');
+      if (idx < 0) return;
+      if (!g.canActivate(ME, uid, idx)) { UI.toast(u.tapped ? 'タップしている' : u.sick ? '召喚したターンは使えない' : 'このターンは使った'); return; }
+      UI.modal(`【${esc(u.name)}】の効果を使う`, `<p class="m-effect">${esc(Parts.effectText(u.spec, u.spec.effects[idx]))}</p><p class="hint">使うと、このクリーチャーはタップします（このターン攻撃できず、相手の攻撃対象になります）。</p>`, [
+        { label: 'やめる', onClick: UI.closeModal },
+        { label: '使う', primary: true, onClick: () => { UI.closeModal(); g.activate(ME, uid, idx); } },
+      ]);
+    }
   }
 
-  function chooseTarget(uid) {
-    const t = B.targeting;
-    if (!t || !t.uids.includes(uid)) return;
-    B.targeting = null;
-    B.sig = '';
-    const r = B.game.play(ME, t.idx, { target: uid });
-    if (!r.ok && r.reason) UI.toast(r.reason, 700);
+  function clickPlayer(pi) {
+    const g = B.game;
+    if (pi === OP && B.attackFrom && myTurn('attack')) {
+      const from = B.attackFrom;
+      B.attackFrom = null;
+      g.attack(ME, from, 'player');
+    }
   }
 
-  function cancelTargeting(msg) {
-    if (!B.targeting) return;
-    B.targeting = null;
-    B.sig = '';
-    if (msg) UI.toast(msg, 600);
+  function submitTargets() {
+    const pick = B.picks.slice();
+    B.picks = [];
+    B.pendingShown = null;
+    B.game.answer(pick);
   }
 
   function onKey(e) {
-    if (!$('#screen-battle').classList.contains('active') || !B.game || B.game.over) return;
-    const g = B.game;
-    const i = KEYS.indexOf(e.key);
-    // 効果の途中での選択中は、数字キーで候補を選ぶ
-    if (g.pending && g.pending.player === ME && !B.paused) { if (i >= 0) toggleChoice(i); return; }
-    if (B.targeting) {
-      if (e.key === 'Escape') { cancelTargeting(); return; }
-      if (i >= 0 && i < B.targeting.uids.length) chooseTarget(B.targeting.uids[i]);
-      return;
-    }
-    if (e.key === 'Escape') { togglePause(); return; }
-    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggleStep(); return; }
-    if (i >= 0) tryPlay(i);
+    if (!$('#screen-battle').classList.contains('active')) return;
+    if (e.key === 'Escape') { if (B.attackFrom) { B.attackFrom = null; B.sig = ''; } else openMenu(); }
   }
 
-  /** 「準備完了」（プレイステップ）／「パス」（カウンターステップ）の切り替え */
-  function toggleStep() {
-    const g = B.game;
-    if (!g || g.over || B.paused || g.pending || g.step === 'hall') return;
-    const on = g.step === 'play' ? !g.ready[ME] : !g.passed[ME];
-    if (B.targeting) cancelTargeting();
-    g.setReady(ME, on);
+  function openMenu() {
+    UI.modal('メニュー', '<p>対戦を続けますか？</p>', [
+      { label: '降参してタイトルへ', danger: true, onClick: () => { stop(); UI.closeModal(); UI.showScreen('title'); } },
+      { label: '続ける', primary: true, onClick: UI.closeModal },
+    ]);
   }
 
-  function togglePause() {
-    if (!B.game || B.game.over) return;
-    B.paused = !B.paused;
-    if (B.paused) {
-      UI.overlay('一時停止', '<p class="result-sub">時間は止まっています</p>', [
-        { label: '降参してタイトルへ', onClick: () => { stop(); UI.closeOverlay(); UI.showScreen('title'); } },
-        { label: '再開', primary: true, onClick: togglePause },
-      ]);
-    } else {
-      UI.closeOverlay();
-      B.last = performance.now();
-    }
-  }
-
-  // ───────────── 効果の途中での選択画面 ─────────────
-  function renderChoice() {
+  // ───────────── 人間の選択（pending）を画面に出す ─────────────
+  function renderPending() {
     const g = B.game;
     const pd = g.pending && g.pending.player === ME ? g.pending : null;
-    if (!pd) { if (B.choiceKey) closeChoice(); return; }
-    if (B.choiceKey !== pd) {
-      B.choiceKey = pd;
-      B.picked = [];
-      $('#choice-prompt').textContent = pd.prompt || '選んでください';
-      const box = $('#choice-cards');
-      box.innerHTML = '';
-      pd.options.forEach((id, i) => {
-        const el = UI.cardEl(Cards.get(id), { key: KEYS[i] });
-        el.onclick = () => toggleChoice(i);
+    const guide = $('#guide');
+    if (!pd) { if (B.pendingShown) { B.pendingShown = null; UI.closeModal(); } guide.className = 'guide'; return; }
+    if (pd.kind === 'targets') {
+      guide.className = 'guide show';
+      guide.innerHTML = `🎯 ${esc(pd.prompt)}　<b>${B.picks.length} / ${pd.max}</b>${pd.max > 1 ? ' <button class="btn small primary" id="tg-ok">決定</button>' : ''}`;
+      const ok = $('#tg-ok');
+      if (ok) ok.onclick = () => { if (B.picks.length) submitTargets(); };
+      return;
+    }
+    guide.className = 'guide';
+    if (B.pendingShown === pd) return;
+    B.pendingShown = pd;
+    if (pd.kind === 'confirm') {
+      UI.modal('確認', `<p>${esc(pd.prompt)}</p><p class="m-effect">${esc(Parts.effectText({ kind: 'creature' }, pd.effect))}</p>`, [
+        { label: 'しない', onClick: () => { UI.closeModal(); B.pendingShown = null; g.answer(false); } },
+        { label: 'する', primary: true, onClick: () => { UI.closeModal(); B.pendingShown = null; g.answer(true); } },
+      ]);
+    } else if (pd.kind === 'discard' || pd.kind === 'react') {
+      const me = g.players[ME];
+      const att = pd.kind === 'react' ? g.findUnit(pd.attacker) : null;
+      const m = UI.modal(pd.kind === 'react' ? '迎撃' : '手札を捨てる',
+        `<p>${esc(pd.prompt)}</p>${att ? `<p class="hint">攻撃してきた：${esc(att.name)}（パワー ${g.powerOf(att)}）</p>` : ''}<div class="m-cards"></div>`,
+        pd.kind === 'react' ? [{ label: '使わない', onClick: () => { UI.closeModal(); B.pendingShown = null; g.answer([]); } }] : [], 'wide');
+      const box = $('.m-cards', m);
+      for (const iid of pd.options) {
+        const c = me.hand.find((x) => x.iid === iid);
+        if (!c) continue;
+        const el = UI.cardEl(c.spec);
+        el.classList.add('pickable');
+        el.onclick = () => { UI.closeModal(); B.pendingShown = null; g.answer([iid]); };
         box.appendChild(el);
-      });
-      $('#choice').classList.remove('hidden');
-      UI.hidePreview();
+      }
     }
-    $('#choice-timer').textContent = `残り ${Math.max(0, pd.timeLeft).toFixed(1)} 秒（時間切れならランダム）　${B.picked.length} / ${pd.count}`;
-    $('#choice-bar').style.width = Math.max(0, (pd.timeLeft / g.cfg.choiceTime) * 100) + '%';
-  }
-
-  function toggleChoice(i) {
-    const pd = B.game.pending;
-    if (!pd || i >= pd.options.length) return;
-    const k = B.picked.indexOf(i);
-    if (k >= 0) B.picked.splice(k, 1); else B.picked.push(i);
-    document.querySelectorAll('#choice-cards .card').forEach((el, j) => el.classList.toggle('picked', B.picked.includes(j)));
-    if (B.picked.length >= pd.count) {
-      const pick = B.picked.slice();
-      closeChoice();
-      B.game.resolveChoice(pick);
-    }
-  }
-
-  function closeChoice() {
-    B.choiceKey = null;
-    B.picked = [];
-    $('#choice').classList.add('hidden');
   }
 
   // ───────────── 演出 ─────────────
-  /** 要素が描画された後に処理したいとき用（イベントは描画の前に届くため） */
   const later = (fn) => requestAnimationFrame(() => requestAnimationFrame(fn));
-  const portraitOf = (pi) => $(`#pbar-${pi} .portrait`);
-  const unitElOf = (unit) => B.elByUid.get(unit.uid);
+  const portrait = (pi) => $(`#pbar-${pi} .portrait`);
+  const unitEl = (u) => u && B.unitEls.get(u.uid);
+
+  function log(text, who) {
+    B.feed.unshift({ text, who });
+    B.feed = B.feed.slice(0, 6);
+    $('#feed').innerHTML = B.feed.map((f, i) => `<div class="f-row ${f.who === ME ? 'me' : f.who === OP ? 'op' : ''}" style="opacity:${1 - i * 0.13}">${esc(f.text)}</div>`).join('');
+  }
 
   function onEvent(ev) {
+    const g = B.game;
+    const nm = (pi) => (pi === ME ? 'あなた' : 'CPU');
     switch (ev.type) {
+      case 'turn':
+        B.attackFrom = null;
+        banner(ev.player === ME ? 'あなたのターン' : 'CPUのターン', `第${Math.ceil(ev.turn / 2)}巡　最大マナ ${g.players[ev.player].maxMana}`);
+        break;
+      case 'step':
+        if (ev.player === ME) UI.toast('アタックステップ：攻撃するクリーチャーを選んでください');
+        else log('CPU：アタックステップへ', OP);
+        break;
+      case 'summon':
+        log(`${nm(ev.player)}：【${ev.unit.name}】を召喚`, ev.player);
+        later(() => UI.pulse(unitEl(ev.unit), 'summoned', 600));
+        break;
+      case 'cast':
+        log(`${nm(ev.player)}：【${ev.card.name}】を唱えた`, ev.player);
+        castShow(ev.card, ev.player);
+        break;
+      case 'activate':
+        log(`${nm(ev.player)}：【${ev.unit.name}】の効果`, ev.player);
+        break;
+      case 'attackDeclare':
+        log(`${nm(ev.player)}：【${ev.unit.name}】が${ev.target ? `【${ev.target.name}】` : '相手'}に攻撃`, ev.player);
+        later(() => {
+          const a = unitEl(ev.unit);
+          const b = ev.target ? unitEl(ev.target) : portrait(1 - ev.player);
+          if (a && b) fx.line(UI.stagePoint(a), UI.stagePoint(b), ev.player === ME ? '#7fd6ff' : '#ff8a6a');
+          UI.pulse(a, 'attacking', 450);
+        });
+        break;
+      case 'guard':
+        log(`【${ev.unit.name}】が守護で攻撃を引き受けた`, ev.player);
+        later(() => UI.pulse(unitEl(ev.unit), 'guarding', 600));
+        break;
+      case 'battle':
+        later(() => { const d = unitEl(ev.d); if (d) { const p = UI.stagePoint(d); fx.slash(p.x, p.y); } });
+        log(`バトル：${ev.a.name}（${ev.pa}） vs ${ev.d.name}（${ev.pd}）`);
+        break;
       case 'damage': {
-        const pt = portraitOf(ev.player);
-        if (ev.amount > 0) {
-          UI.pulseClass($('#side-' + ev.player), 'hit', 350);
-          if (pt) { const p = UI.stagePoint(pt); fx.float(p.x + 40, p.y, '-' + ev.amount, 'dmg'); }
-          if (ev.player === ME && ev.amount >= 5) UI.pulseClass($('#board'), 'shake', 350);
-        } else if (ev.absorbed && pt) {
-          const p = UI.stagePoint(pt);
-          fx.float(p.x + 40, p.y, '🔰' + ev.absorbed, 'shield');
-        }
+        const pt = portrait(ev.player);
+        if (pt) { const p = UI.stagePoint(pt); fx.float(p.x + 60, p.y - 10, '-' + ev.amount, 'dmg'); }
+        UI.pulse($('#pbar-' + ev.player), 'hit', 400);
+        if (ev.player === ME && ev.amount >= 1500) UI.pulse($('#board'), 'shake', 400);
         break;
       }
       case 'heal': {
-        UI.pulseClass($('#side-' + ev.player), 'healed', 450);
-        const pt = portraitOf(ev.player);
-        if (pt) { const p = UI.stagePoint(pt); fx.float(p.x + 40, p.y, '+' + ev.amount, 'heal'); }
+        const pt = portrait(ev.player);
+        if (pt) { const p = UI.stagePoint(pt); fx.float(p.x + 60, p.y - 10, '+' + ev.amount, 'heal'); }
         break;
       }
-      case 'unitHit':
-        if (ev.amount <= 0) break;
-        later(() => {
-          const el = unitElOf(ev.unit);
-          if (!el) return;
-          UI.pulseClass(el, 'hitflash', 300);
-          const p = UI.stagePoint(el, 0.35);
-          fx.float(p.x, p.y, '-' + ev.amount, 'dmg small');
-        });
+      case 'destroy':
+        log(`【${ev.unit.name}】は破壊された`, ev.unit.owner);
         break;
-      case 'attack':
-        later(() => {
-          const el = unitElOf(ev.unit);
-          if (!el) return;
-          UI.pulseClass(el, 'attacking', 320);
-          const from = UI.stagePoint(el, 0.4);
-          const tgtEl = ev.target ? unitElOf(ev.target) : portraitOf(1 - ev.player);
-          if (tgtEl) fx.bolt(from, UI.stagePoint(tgtEl, 0.45), ev.player === ME ? '#8fd0ff' : '#ff9a6b');
-        });
+      case 'undying':
+        log(`【${ev.unit.name}】は不屈で踏みとどまった`, ev.unit.owner);
         break;
-      case 'play': {
-        // 使ったカードが手札（相手なら画面上）から台座へ飛んでいく
-        const ped = $('#cast-' + ev.player);
-        const to = UI.stagePoint(ped);
-        to.x -= 50;
-        const from = ev.player === ME ? UI.stagePoint($('#hand'), 0.6) : { x: to.x + 40, y: -60 };
-        fx.flyCard(ev.card, from, to);
+      case 'bounce':
+        log(`【${ev.unit.name}】は手札に戻された`, ev.unit.owner);
         break;
-      }
-      case 'counter': {
-        const p = UI.stagePoint($('#cast-' + ev.player));
-        fx.stamp(p, '打ち消し！', '#ff6b8a');
-        UI.toast(ev.player === ME ? `【${ev.card.name}】を打ち消された！` : `【${ev.card.name}】を打ち消した！`);
+      case 'discard':
+        log(`${nm(ev.player)}は【${ev.card.name}】を捨てた`, ev.player);
         break;
-      }
-      case 'phase':
-        showBanner(`PHASE ${ev.phase}`, `プレイステップ ${B.game.cfg.playTime}秒　—　守護が回復・フェーズ開始時の効果`);
+      case 'burnCard':
+        log(`${nm(ev.player)}の手札があふれ、【${ev.card.name}】は墓地へ`, ev.player);
         break;
-      case 'step':
-        if (ev.step === 'counter') {
-          const g = B.game;
-          showBanner('COUNTER STEP', g.passed[ME] ? '使えるカウンターがないため自動でパス' : `〔カウンター〕だけが使える（${g.cfg.counterLimit}枚まで）`, 'counter');
-        } else if (ev.step === 'hall') {
-          showBanner('CHRONO HALL', `攻撃予約 ${B.game.queue.length}件を実行`, 'hall');
-        }
+      case 'effect':
+        if (ev.card && ev.card.kind === 'creature') later(() => UI.pulse(unitEl(ev.source), 'effecting', 500));
         break;
-      case 'reserve':
-        if (!ev.unit) { // 本体へのダメージの予約：相手の帯を一瞬光らせる
-          UI.pulseClass($('#pbar-' + ev.reservation.target), 'doomed', 600);
-          break;
-        }
-        later(() => {
-          const el = unitElOf(ev.unit);
-          if (el) UI.pulseClass(el, 'reserved', 500);
-        });
-        break;
-      case 'burn':
-        // クロノホールで、ダメージ予約が相手の帯へ飛んでいく
-        fx.bolt(UI.stagePoint(portraitOf(ev.from), 0.5), UI.stagePoint(portraitOf(ev.to), 0.5), ev.from === ME ? '#ffd27a' : '#ff8a5a');
-        break;
-      case 'strike': {
-        // 攻撃するクリーチャーを強調（クロノラインは予約の列から作り直される）
-        const el = B.elByUid.get(ev.reservation.uid);
-        if (el) UI.pulseClass(el, 'striking', 600);
-        break;
-      }
-      case 'fizzle': {
-        const el = B.elByUid.get(ev.reservation.uid);
-        const p = el ? UI.stagePoint(el, 0.4) : UI.stagePoint($('#chrono-line'), 0.5);
-        fx.float(p.x, p.y, '不発', 'shield');
-        break;
-      }
     }
   }
 
-  function showBanner(big, small, kind = '') {
-    const el = $('#phase-banner');
-    el.className = 'phase-banner ' + kind;
+  function banner(big, small) {
+    const el = document.createElement('div');
+    el.className = 'banner';
     el.innerHTML = `<b>${esc(big)}</b><span>${esc(small)}</span>`;
-    UI.pulseClass(el, 'show', 1400);
+    $('#fx').appendChild(el);
+    setTimeout(() => el.remove(), 1500);
+  }
+
+  function castShow(spec, pi) {
+    const el = document.createElement('div');
+    el.className = 'cast-show ' + (pi === ME ? 'me' : 'op');
+    el.appendChild(UI.cardEl(spec));
+    $('#fx').appendChild(el);
+    setTimeout(() => el.remove(), 1300);
   }
 
   // ───────────── 描画 ─────────────
   function render() {
     const g = B.game;
-    // 秒単位の残り時間も signature に含め、表示の数字が変わる時だけ作り直す
-    const sig = g.version + '|' + g.step + '|' + g.overtime + '|' + g.players.map((p) => [Math.ceil(p.silence), Math.ceil(p.haste), Math.ceil(p.curse), Math.ceil(p.stun)].join(',')).join('|');
-    if (sig !== B.sig) {
-      B.sig = sig;
-      g.players.forEach((p) => { renderPbar(p); renderField(p); renderCast(p); });
-      renderHand();
-      renderSteps();
-      renderChrono();
-      $('#vignette').classList.toggle('on', g.players[ME].hp <= g.cfg.startHP * 0.3 && !g.over);
-    }
-    renderChoice();
-    // 対象選択モードの案内
-    const tb = $('#target-banner');
-    if (B.targeting) {
-      tb.classList.remove('hidden');
-      tb.textContent = `🎯【${B.targeting.card.name}】の対象（${B.targeting.card.target.label || 'クリーチャー'}）を選んでください … 残り ${Math.max(0, B.targeting.timeLeft).toFixed(1)} 秒　／　右クリック・Esc でキャンセル`;
-    } else {
-      tb.classList.add('hidden');
-    }
-    // 詠唱の進み具合
-    g.players.forEach((p) => {
-      if (!p.casting) return;
-      const ring = $(`#cast-${p.index} .pd-ring`);
-      if (ring) ring.style.setProperty('--p', (1 - p.casting.remain / p.casting.total).toFixed(3));
-      const left = $(`#cast-${p.index} .pd-left`);
-      if (left) left.innerHTML = `${(p.casting.remain / (p.haste > 0 ? 2 : 1)).toFixed(1)}<small>秒</small>`;
-    });
-    // 次に溜まるマナの満ち具合と、次のドローまでのゲージ
-    g.players.forEach((p) => {
-      const pip = $(`#pbar-${p.index} .pip.next`);
-      if (pip) pip.style.setProperty('--f', (p.mana % 1).toFixed(2));
-      const dg = $(`#pbar-${p.index} .drawgauge i`);
-      if (dg && g.cfg.drawInterval > 0) dg.style.width = (p.drawPause > 0 ? 0 : 100 * (1 - p.drawT / g.cfg.drawInterval)).toFixed(0) + '%';
-    });
-    // フェーズの時計（試合全体の進み具合）と、今のステップの残り時間
-    const total = g.step === 'play' ? g.cfg.playTime : g.step === 'counter' ? g.cfg.counterTime : 1;
-    const sp = g.step === 'hall' ? 1 : 1 - g.stepTimer / total;
-    $('#phase-ring').style.setProperty('--p', ((g.phase - 1 + (g.step === 'play' ? sp * 0.7 : g.step === 'counter' ? 0.7 + sp * 0.2 : 0.95)) / g.cfg.maxPhases).toFixed(3));
-    $('#phase-fill').style.width = (sp * 100) + '%';
-    $('#phase-num').textContent = g.phase;
-    const clock = $('#clock');
-    if (g.step === 'hall') {
-      clock.textContent = '──';
-      clock.classList.remove('low');
-    } else if (g.overtime) {
-      clock.textContent = '延長';
-      clock.classList.add('low');
-    } else {
-      const rest = Math.ceil(g.stepTimer);
-      clock.textContent = `${Math.floor(rest / 60)}:${String(rest % 60).padStart(2, '0')}`;
-      clock.classList.toggle('low', rest <= 10);
-    }
-  }
-
-  /** 中央の線：今のステップと、準備完了／パスのボタン */
-  function renderSteps() {
-    const g = B.game;
-    document.querySelectorAll('#steps .st').forEach((el) => el.classList.toggle('on', el.dataset.step === g.step));
-    $('#board').dataset.step = g.step;
-    $('#clock-icon').textContent = g.step === 'play' ? '⌛' : g.step === 'counter' ? '⟲' : '⚔';
-    const btn = $('#btn-step');
-    if (g.step === 'play') {
-      btn.textContent = g.ready[ME] ? (g.ready[OP] ? '準備完了' : '相手を待っています…') : '準備完了 ▶';
-      btn.classList.toggle('waiting', g.ready[ME]);
-      btn.disabled = false;
-      btn.title = g.ready[ME] ? 'もう一度押すと取り消し（Space）' : 'このフェーズはもうカードを使わない（Space）。両者が押すとカウンターステップへ';
-    } else if (g.step === 'counter') {
-      btn.textContent = g.passed[ME] ? '相手を待っています…' : 'パス ▶';
-      btn.classList.toggle('waiting', g.passed[ME]);
-      btn.disabled = false;
-      btn.title = 'カウンターを使わずに進む（Space）。相手がカウンターを使うと、もう一度選べる';
-    } else {
-      btn.textContent = 'クロノホール';
-      btn.classList.add('waiting');
-      btn.disabled = true;
-    }
-  }
-
-  /** クロノライン：攻撃予約を、実行される順に並べる */
-  function renderChrono() {
-    const g = B.game;
-    const box = $('#cl-chips');
-    const key = g.queue.map((r) => r.seq).join(',');
-    if (box.dataset.key === key) return;
-    box.dataset.key = key;
-    // 既に場を離れたクリーチャーの予約（クロノホールで不発になる）は数だけ示す
-    let gone = 0;
-    const chips = [];
-    for (const r of g.queue) {
-      const side = r.pi === ME ? 'me' : 'op';
-      if (r.kind === 'damage') {
-        chips.push(`<span class="cl-chip ${side} burn" title="${esc(r.name)}：本体に${r.amount}ダメージ">🔥<b>${r.amount}</b></span>`);
-        continue;
-      }
-      const u = g.players[r.pi].field.find((x) => x.uid === r.uid);
-      if (!u) { gone++; continue; }
-      chips.push(`<span class="cl-chip ${side}" title="${esc(r.name)}の攻撃（攻撃力${g.atkOf(g.players[r.pi], u)}）">${r.icon}<b>${g.atkOf(g.players[r.pi], u)}</b></span>`);
-    }
-    const MAX = 22;
-    const shown = chips.slice(0, MAX).join('') + (chips.length > MAX ? `<span class="cl-more">+${chips.length - MAX}</span>` : '');
-    box.classList.toggle('dense', chips.length > 12);
-    box.innerHTML = (shown || '<span class="cl-empty">予約なし</span>') + (gone ? `<span class="cl-more" title="場を離れたクリーチャーの予約（不発になる）">不発${gone}</span>` : '');
-  }
-
-  function statusChips(p) {
-    const st = [];
-    const add = (cls, text) => st.push(`<span class="status ${cls}">${text}</span>`);
-    if (p.stun > 0) add('silence', `⌛停止 ${Math.ceil(p.stun)}s`);
-    if (p.silence > 0) add('silence', `⛓封印 ${Math.ceil(p.silence)}s`);
-    if (p.haste > 0) add('haste', `⏩加速 ${Math.ceil(p.haste)}s`);
-    if (p.curse > 0) add('curse', `💀呪い ${Math.ceil(p.curse)}s`);
-    if (p.shield > 0) add('shield', `🔰防壁 ${p.shield}`);
-    if (p.instantNext) add('haste', '💫次は即時詠唱');
-    if (p.spellDiscount) add('haste', `📚次の呪文-${p.spellDiscount}`);
-    if (p.manaDebt) add('curse', `💸次 マナ-${p.manaDebt}`);
-    if (p.drawPause > 0) add('curse', `📓ドロー停止 ${Math.ceil(p.drawPause)}s`);
-    if (p.bonusDraw) add('haste', `📈次 ドロー+${p.bonusDraw}`);
-    if (p.bonusMana) add('haste', `🐷次 マナ+${p.bonusMana}`);
-    if (p.regen) add('haste', `🌿再生 あと${p.regen}回`);
-    if (p.phaseDiscount) add('haste', `⚙️コスト-${p.phaseDiscount}`);
-    const g = B.game;
-    const doom = g.pendingDamage(p.index);
-    if (doom) add('doom', `🔥受けるダメージ予約 ${doom}`);
-    if (g.step === 'play' && g.ready[p.index]) add('ready', '✔準備完了');
-    if (g.step === 'counter') add(g.passed[p.index] ? 'ready' : 'haste', g.passed[p.index] ? '✔パス' : `⟲カウンター ${p.countersUsed}/${g.cfg.counterLimit}`);
-    return st.join('');
+    const sig = g.version + '|' + B.attackFrom + '|' + B.picks.join(',') + '|' + (g.pending ? g.pending.kind : '');
+    if (sig === B.sig) return;
+    B.sig = sig;
+    renderPbar(g.players[ME]);
+    renderPbar(g.players[OP]);
+    renderField(g.players[ME]);
+    renderField(g.players[OP]);
+    renderHand();
+    renderMid();
+    renderPending();
   }
 
   function renderPbar(p) {
     const g = B.game;
-    const hpPct = Math.max(0, (p.hp / g.cfg.startHP) * 100);
     const el = $('#pbar-' + p.index);
-    // 初回だけ骨組みを作り、以後は中身だけ更新する（体力の「減った分の残像」を動かすため）
-    if (!el.firstChild) {
-      el.innerHTML = `
-        <div class="portrait">${PORTRAITS[p.index]}</div>
-        <span class="pname">${esc(p.name)}</span>
-        <div class="hpbox"><div class="hptrail"></div><div class="hpfill"></div><div class="hptext"></div></div>
-        <div class="mana"></div>
-        <div class="pinfo"></div>
-        <div class="statuses"></div>`;
-    }
-    el.querySelector('.hpfill').style.width = hpPct + '%';
-    el.querySelector('.hptrail').style.width = hpPct + '%';
-    el.querySelector('.hpbox').classList.toggle('low', p.hp <= g.cfg.startHP * 0.3);
-    el.querySelector('.hptext').textContent = `♥ ${Math.max(0, p.hp)} / ${g.cfg.startHP}`;
-    // マナの宝石：使える分は光り、次に溜まる1つは下から満ちていく（満ち具合は毎フレーム更新）
-    let pips = '';
-    const whole = Math.floor(p.mana);
-    for (let i = 0; i < p.maxMana; i++) pips += `<span class="pip ${i < whole ? 'on' : i === whole ? 'next' : ''}"></span>`;
-    el.querySelector('.mana').innerHTML = `${pips}<span class="mtext">${whole}<small>/${p.maxMana}</small></span>`;
-    el.querySelector('.pinfo').innerHTML = `<span class="handinfo" title="次のドローまで">🂠 手札 ${p.hand.length}<b class="drawgauge"><i></i></b></span><span>📚 山札 ${p.deck.length}</span><span class="grave" title="${esc(graveTip(p))}">⚰ 墓地 ${p.grave.length}</span>`;
-    el.querySelector('.statuses').innerHTML = statusChips(p);
-  }
-
-  function graveTip(p) {
-    if (!p.grave.length) return '墓地は空';
-    const counts = {};
-    p.grave.forEach((id) => { counts[id] = (counts[id] || 0) + 1; });
-    return `墓地 ${p.grave.length}枚（うちクリーチャー${B.game.graveCreatures(p)}体）\n` +
-      Object.entries(counts).map(([id, n]) => `${Cards.get(id).name}${n > 1 ? ' ×' + n : ''}`).join('\n');
-  }
-
-  /** 詠唱の台座：詠唱中のカードと、進み具合の枠、対象を表示する */
-  function renderCast(p) {
-    const el = $('#cast-' + p.index);
-    const c = p.casting && p.casting.card;
-    const tu = c && p.casting.target != null ? B.game.findUnit(p.casting.target) : null;
-    const key = c ? c.id + ':' + p.casting.start + ':' + (tu ? tu.unit.uid : '') : 'none';
-    if (B.castKey[p.index] === key) return;
-    B.castKey[p.index] = key;
-    el.classList.toggle('active', !!c);
-    if (!c) {
-      el.innerHTML = `<div class="pd-empty">${UI.runeCircle('pd-circle idle')}<span>詠唱なし</span></div>`;
-      return;
-    }
+    const pct = Math.max(0, (p.hp / g.cfg.startHP) * 100);
+    const targetable = p.index === OP && B.attackFrom && g.attackTargets(ME, B.attackFrom).includes('player');
+    el.classList.toggle('targetable', !!targetable);
+    el.classList.toggle('active', g.active === p.index);
+    const graveTip = p.grave.length ? p.grave.map((c) => c.spec.name).join('、') : '墓地は空';
     el.innerHTML = `
-      <div class="pd-ring">${UI.runeCircle('pd-circle')}</div>
-      <div class="pd-info">
-        <div class="pd-label">${p.index === ME ? '詠唱中' : '相手が詠唱中！'}</div>
-        <div class="pd-left"></div>
-        ${tu ? `<div class="pd-target">🎯 ${esc(tu.unit.name)}</div>` : ''}
-      </div>`;
-    el.querySelector('.pd-ring').appendChild(UI.cardEl(c));
-  }
-
-  // 場のクリーチャーは uid ごとに要素を使い回す（毎回作り直すと召喚アニメが繰り返されるため）
-  /** 場に5つの枠（空いている場所の目印）を描く。クリーチャーはその上に左から並ぶ */
-  function buildSlots() {
-    // 盤面の中央に、ゆっくり回る大きな魔法陣を敷く（飾り）
-    if (!$('#board .mat-circle')) $('#board').insertAdjacentHTML('afterbegin', UI.runeCircle('mat-circle'));
-    [0, 1].forEach((pi) => {
-      const f = $('#field-' + pi);
-      f.innerHTML = `<div class="slots">${'<div class="slot"></div>'.repeat(B.game.cfg.fieldLimit)}</div><div class="units"></div>`;
-    });
+      <div class="portrait">${PORTRAIT[p.index]}</div>
+      <div class="pb-name">${esc(p.name)}</div>
+      <div class="hpbar${p.hp <= 1500 ? ' low' : ''}"><i style="width:${pct}%"></i><span>♥ ${Math.max(0, p.hp)} / ${g.cfg.startHP}</span></div>
+      <div class="mana" title="マナ（今使える量 / 最大マナ）"><span class="gem">◆</span><b>${p.mana}</b><small>/ ${p.maxMana}</small><span class="mcap">上限${g.cfg.maxManaCap}</span></div>
+      <div class="pb-info">
+        <span title="手札">🂠 ${p.hand.length}</span><span title="山札（0枚で引くと負け）" class="${p.deck.length <= 5 ? 'warn' : ''}">📚 ${p.deck.length}</span><span title="${esc(graveTip)}">⚰ ${p.grave.length}</span>
+        ${p.spellLock ? '<span class="lock">🔒呪文封じ</span>' : ''}
+      </div>
+      ${p.index === OP ? `<div class="op-hand">${'<i></i>'.repeat(Math.min(10, p.hand.length))}</div>` : ''}`;
+    el.onclick = () => clickPlayer(p.index);
   }
 
   function renderField(p) {
     const g = B.game;
-    const box = $('#field-' + p.index + ' .units');
-    const map = B.unitEls[p.index];
+    const box = $('#field-' + p.index);
+    if (!box.firstChild) box.innerHTML = '<div class="slots">' + '<div class="slot"></div>'.repeat(g.cfg.fieldLimit) + '</div><div class="units"></div>';
+    const units = $('.units', box);
     const alive = new Set(p.field.map((u) => u.uid));
-    for (const [uid, el] of map) {
-      if (alive.has(uid)) continue;
-      // 倒れたクリーチャーは、消える演出の後で取り除く
-      map.delete(uid);
+    for (const [uid, el] of B.unitEls) {
+      if (el.dataset.owner !== String(p.index) || alive.has(uid)) continue;
+      B.unitEls.delete(uid);
       el.classList.add('dying');
-      setTimeout(() => { el.remove(); B.elByUid.delete(uid); }, 450);
+      setTimeout(() => el.remove(), 500);
     }
-    p.field.forEach((u) => {
-      let el = map.get(u.uid);
+    const pd = g.pending && g.pending.player === ME && g.pending.kind === 'targets' ? g.pending : null;
+    const attackTargets = B.attackFrom ? g.attackTargets(ME, B.attackFrom) : [];
+    p.field.forEach((u, i) => {
+      let el = B.unitEls.get(u.uid);
       if (!el) {
         el = document.createElement('div');
         el.className = 'unit';
-        const uid = u.uid;
-        el.onclick = () => chooseTarget(uid);
-        map.set(u.uid, el);
-        B.elByUid.set(u.uid, el);
-        box.appendChild(el);
+        el.dataset.owner = String(p.index);
+        el.onclick = () => clickUnit(u.uid);
+        B.unitEls.set(u.uid, el);
+        units.appendChild(el);
       }
-      const d = Cards.get(u.id);
-      const kw = [
-        u.guard && (u.spent ? '守護(済)' : '守護'), u.stealth && '潜伏', g.hasLifesteal(p, u) && '吸血',
-        u.pierce && '貫通', u.undying && !u.usedUndying && '不屈', u.armor && '堅牢',
-        u.auto && '自律', u.muted && '沈黙',
-      ].filter(Boolean).join('・');
-      const tIdx = B.targeting ? B.targeting.uids.indexOf(u.uid) : -1;
-      const aimed = g.players.some((q) => q.casting && q.casting.target === u.uid);
-      const atk = g.atkOf(p, u);
-      const res = g.reservedOf(u.uid);
-      el.classList.toggle('has-res', res > 0);
-      el.classList.toggle('guard', !!u.guard);
-      el.classList.toggle('muted', !!u.muted);
-      el.classList.toggle('targetable', tIdx >= 0);
-      el.classList.toggle('aimed', aimed);
-      el.classList.toggle('spent', !!(u.guard && u.spent));
-      el.classList.toggle('token', !!u.token);
-      el.classList.toggle('relic', !!u.relic);
-      el.dataset.cid = u.id;
-      el.dataset.now = (u.relic ? `場の状態：耐久 ${u.hp}` : `場の状態：攻撃力 ${atk} ／ 体力 ${u.hp}`) + `${kw ? '　' + kw : ''}${u.guard && u.spent ? '（このフェーズは既に受け止めた）' : ''}${res ? `　⚔攻撃予約 ${res}回` : ''}`;
+      el.style.setProperty('--i', i);
+      const pw = g.powerOf(u);
+      const kws = (u.spec.keywords || []).map((k) => Parts.KEYWORDS[k].label);
+      const canAtt = p.index === ME && g.canAttack(ME, u.uid);
+      const tapIdx = (u.spec.effects || []).findIndex((e) => e.trig === 'tap');
+      el.className = 'unit' + (u.tapped ? ' tapped' : '') + (u.sick ? ' sick' : '') + (canAtt ? ' can-attack' : '')
+        + (B.attackFrom === u.uid ? ' selected' : '') + (attackTargets.includes(u.uid) ? ' targetable' : '')
+        + (pd && pd.options.includes(u.uid) ? ' pickable' : '') + (B.picks.includes(u.uid) ? ' picked' : '')
+        + ((u.spec.keywords || []).includes('guard') ? ' guard' : '') + (p.index === ME && tapIdx >= 0 && g.canActivate(ME, u.uid, tapIdx) ? ' can-activate' : '');
+      el.style.setProperty('--cc', u.spec.color || '#5f8f4e');
+      el.dataset.pv = '1';
+      el.dataset.power = pw;
+      el.dataset.now = `今のパワー ${pw}${u.tapped ? '・タップ中（相手の攻撃対象になる）' : '・アンタップ（攻撃されない）'}${u.sick ? '・召喚したターン' : ''}`;
       el.innerHTML = `
-        <div class="u-art">${u.icon}</div>
-        <div class="u-name">${esc(u.name)}${d.text && !u.muted ? ' ✦' : ''}</div>
-        <div class="u-kw">${u.relic ? `<span class="u-relic">レリック</span>${kw ? '・' + kw : ''}` : kw}</div>
-        ${u.relic ? '' : `<div class="u-stat atk${atk > u.atk ? ' boosted' : ''}"><b>${atk}</b></div>`}
-        <div class="u-stat ${u.relic ? 'dur' : 'hp'}${u.hp < u.maxHp ? ' hurt' : ''}">${u.hp}</div>
-        ${res ? `<div class="u-res" title="攻撃予約 ${res}回（クロノホールで攻撃）">⚔${res > 1 ? '×' + res : ''}</div>` : ''}
-        ${tIdx >= 0 ? `<div class="u-tnum">${KEYS[tIdx]}</div>` : ''}
-        ${aimed ? '<div class="u-aim">🎯</div>' : ''}`;
+        <div class="u-inner">
+          <div class="u-cost">${u.spec.cost}</div>
+          <div class="u-art">${esc(u.icon || '❔')}</div>
+          <div class="u-name">${esc(u.name)}</div>
+          <div class="u-kw">${esc(kws.join('・'))}${(u.spec.effects || []).length ? '<span class="u-fx">✦</span>' : ''}</div>
+          <div class="u-power${pw > u.power ? ' up' : pw < u.power ? ' down' : ''}">${pw}</div>
+          ${u.tapped ? '<div class="u-tap">TAP</div>' : ''}
+          ${u.sick && !u.tapped ? '<div class="u-sick" title="召喚したターンは攻撃できない">💤</div>' : ''}
+        </div>`;
+      UI.bindSpec(el, u.spec); // マウスを乗せるとカードを拡大表示
     });
   }
 
-  /** 手札は扇形に並べる */
   function renderHand() {
     const g = B.game;
-    const p = g.players[ME];
+    const me = g.players[ME];
     const box = $('#hand');
     box.innerHTML = '';
-    const n = p.hand.length;
-    p.hand.forEach((id, i) => {
-      const c = Cards.get(id);
-      const chk = g.canPlay(ME, i);
-      // 場が満杯の時にクリーチャーを出すと、一番古い味方が倒れることを警告
-      const full = chk.ok && Cards.isUnit(c) && !c.sacCost && p.field.length >= g.cfg.fieldLimit;
-      // 生贄になる味方を事前に知らせる
-      const sac = chk.ok && c.sacCost ? '🔪' + g.sacrificeTargets(p, c.sacCost).map((u) => u.name).join('・') : '';
-      const el = UI.cardEl(c, {
-        key: KEYS[i], cost: g.costOf(p, id), cast: g.castOf(p, id),
-        badge: chk.ok ? (sac || (full ? `⚠${p.field[0].name}と入替` : '')) : chk.reason === 'クロノホール' ? '' : chk.reason,
-      });
+    const n = me.hand.length;
+    me.hand.forEach((c, i) => {
+      const chk = g.canPlay(ME, c.iid);
+      const el = UI.cardEl(c.spec, { badge: !chk.ok && g.active === ME && !g.pending ? chk.reason : '' });
       const off = i - (n - 1) / 2;
-      el.style.setProperty('--r', (off * 3.2).toFixed(1) + 'deg');
-      el.style.setProperty('--y', (Math.abs(off) ** 1.6 * 3).toFixed(1) + 'px');
-      el.classList.add(chk.ok ? 'playable' : 'disabled');
-      if (g.step === 'counter' && c.counter) el.classList.add('counter-ready');
-      if (B.targeting && B.targeting.idx === i) el.classList.add('selecting');
-      el.onclick = () => tryPlay(i);
+      el.style.setProperty('--r', (off * 3).toFixed(1) + 'deg');
+      el.style.setProperty('--y', (Math.abs(off) ** 1.5 * 3).toFixed(1) + 'px');
+      el.classList.add(chk.ok ? 'playable' : 'unplayable');
+      el.onclick = () => clickHand(c.iid);
       box.appendChild(el);
     });
   }
 
+  function renderMid() {
+    const g = B.game;
+    const mine = g.active === ME;
+    const stepLabel = g.step === 'main' ? 'メインステップ' : 'アタックステップ';
+    $('#turn-info').innerHTML = `<span class="ti-who ${mine ? 'me' : 'op'}">${mine ? 'あなた' : 'CPU'}のターン</span><span class="ti-steps"><i class="${g.step === 'main' ? 'on' : ''}">メイン</i><i class="${g.step === 'attack' ? 'on' : ''}">アタック</i></span>${mine && g.step === 'attack' ? `<span class="ti-hint">${B.attackFrom ? '攻撃先を選ぶ（右クリック／Escでやめる）' : '攻撃するクリーチャーを選ぶ'}</span>` : mine ? '<span class="ti-hint">カードを使う</span>' : `<span class="ti-hint">${esc(stepLabel)}…</span>`}`;
+    $('#btn-attack').disabled = !myTurn('main');
+    $('#btn-end').disabled = !myTurn();
+  }
+
   function showResult() {
     const g = B.game;
+    stop();
+    const win = g.winner === ME;
     const [me, op] = g.players;
-    const cls = g.winner === ME ? 'win' : g.winner === OP ? 'lose' : 'draw';
-    const big = { win: 'VICTORY', lose: 'DEFEAT', draw: 'DRAW' }[cls];
-    const jp = { win: '勝利！', lose: '敗北…', draw: '引き分け' }[cls];
-    const row = (label, a, b, higherIsBetter = true) => {
-      const ba = higherIsBetter ? a > b : a < b;
-      return `<tr><td>${label}</td><td class="${ba ? 'best' : ''}">${a}</td><td class="${!ba && a !== b ? 'best' : ''}">${b}</td></tr>`;
-    };
-    const body = `
-      <div class="result-sub">${jp}　${g.endReason}（第${g.phase}フェーズ・${Math.floor(g.clock / 60)}分${Math.floor(g.clock % 60)}秒）</div>
-      <table class="result-stats">
-        <tr><th></th><th>あなた</th><th>${esc(op.name)}</th></tr>
-        ${row('残り体力', Math.max(0, me.hp), Math.max(0, op.hp))}
-        ${row('与えたダメージ', me.stats.damageDealt, op.stats.damageDealt)}
-        ${row('使ったカード', me.stats.cardsPlayed, op.stats.cardsPlayed)}
-        ${row('打ち消した回数', me.stats.countered, op.stats.countered)}
-        ${row('使ったカウンター', me.stats.countersUsed, op.stats.countersUsed)}
-      </table>`;
-    $('#vignette').classList.remove('on');
     setTimeout(() => {
-      UI.overlay(`<div class="result-title ${cls}">${big}</div>`, body, [
-        { label: 'タイトルへ', onClick: () => { UI.closeOverlay(); UI.showScreen('title'); } },
-        { label: 'もう一度', primary: true, onClick: () => start(B.setup) },
-      ], true);
-    }, 700);
+      UI.modal(`<span class="result ${win ? 'win' : 'lose'}">${win ? 'VICTORY' : 'DEFEAT'}</span>`,
+        `<p class="result-sub">${win ? '勝利！' : '敗北…'}　${esc(g.endReason)}（${g.turn}ターン）</p>
+        <table class="result-table"><tr><th></th><th>あなた</th><th>CPU</th></tr>
+        <tr><td>残り体力</td><td>${Math.max(0, me.hp)}</td><td>${Math.max(0, op.hp)}</td></tr>
+        <tr><td>与えたダメージ</td><td>${me.stats.damage}</td><td>${op.stats.damage}</td></tr>
+        <tr><td>使ったカード</td><td>${me.stats.played}</td><td>${op.stats.played}</td></tr>
+        <tr><td>破壊したクリーチャー</td><td>${me.stats.destroyed}</td><td>${op.stats.destroyed}</td></tr></table>`,
+        [
+          { label: 'タイトルへ', onClick: () => { UI.closeModal(); UI.showScreen('title'); } },
+          { label: 'もう一度', primary: true, onClick: () => { UI.closeModal(); start({ ...B.setup, cpuDeck: AI.buildDeck() }); } },
+        ]);
+    }, 900);
   }
 
   function init() {
     document.addEventListener('keydown', onKey);
-    // 右クリックで対象選択をキャンセル
-    $('#screen-battle').addEventListener('contextmenu', (e) => { if (B.targeting) { e.preventDefault(); cancelTargeting(); } });
-    $('#btn-pause').onclick = togglePause;
-    $('#btn-step').onclick = toggleStep;
+    $('#screen-battle').addEventListener('contextmenu', (e) => { if (B.attackFrom) { e.preventDefault(); B.attackFrom = null; B.sig = ''; } });
+    $('#btn-attack').onclick = () => { if (myTurn('main')) B.game.toAttack(ME); };
+    $('#btn-end').onclick = () => {
+      if (!myTurn()) return;
+      const g = B.game;
+      const left = g.players[ME].field.filter((u) => g.canAttack(ME, u.uid) || (g.step === 'main' && !u.tapped && !u.sick && !(u.spec.keywords || []).includes('slow'))).length;
+      B.attackFrom = null;
+      if (left && g.step === 'main') {
+        UI.modal('ターン終了', `<p>まだ攻撃していないクリーチャーが${left}体います。攻撃せずにターンを終えますか？</p>`, [
+          { label: 'アタックへ', onClick: () => { UI.closeModal(); g.toAttack(ME); } },
+          { label: 'ターン終了', primary: true, onClick: () => { UI.closeModal(); g.endTurn(ME); } },
+        ]);
+      } else g.endTurn(ME);
+    };
+    $('#btn-menu').onclick = openMenu;
   }
 
   root.Battle = { init, start };

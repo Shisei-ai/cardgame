@@ -1,197 +1,124 @@
 /*
- * builder.js — デッキ構築画面
+ * builder.js — デッキ構築
+ *   左：カードの一覧（基本カード／オリジナル）。クリックで1枚追加、右クリックで1枚外す
+ *   右：デッキ（40枚ちょうど・同じカードは4枚まで）
  */
 (function (root) {
   'use strict';
-  const { Cards, Engine, Presets, Storage2, UI } = root;
+  const { Parts, Cards, Engine, Store, Decks, UI } = root;
   const { $, esc } = UI;
   const CFG = Engine.CONFIG;
 
-  const state = {
-    filter: 'all',  // 種類（クリーチャー／呪文／レリック）
-    tag: 'all',     // 検索タグ（'counter' はカウンターのカード）
-    arch: 'all',
-    deckId: null,   // 編集中の自作デッキID（未保存の新規なら null）
-    name: '',
-    cards: {},      // { カードID: 枚数 }
-  };
+  const S = { tab: 'all', kind: 'all', deckId: null, name: '', cards: {} };
 
-  function init() {
-    // 種類フィルター
-    const tabs = $('#pool-filter');
-    const types = [['all', 'すべて'], ...Object.entries(Cards.TYPES).map(([k, v]) => [k, v.label])];
-    tabs.innerHTML = types.map(([k, label]) => `<button data-f="${k}">${label}</button>`).join('');
-    tabs.onclick = (e) => {
-      const f = e.target.dataset.f;
-      if (!f) return;
-      state.filter = f;
-      render();
-    };
+  function pool() {
+    const forged = Store.cards();
+    let list = S.tab === 'base' ? Cards.BASE : S.tab === 'forged' ? forged : [...forged, ...Cards.BASE];
+    if (S.kind !== 'all') list = list.filter((c) => c.kind === S.kind);
+    return list.slice().sort((a, b) => a.cost - b.cost || (a.kind === b.kind ? 0 : a.kind === 'creature' ? -1 : 1));
+  }
 
-    // 検索タグの絞り込み（〔カウンター〕もここで探せる）
-    const tagTabs = $('#pool-tag');
-    tagTabs.innerHTML = [['all', 'すべて'], ...Object.entries(Cards.TAGS).map(([k, v]) => [k, v.glyph + v.label, v.desc]), ['counter', '⟲カウンター', 'カウンターステップでも使えるカード']]
-      .map(([k, label, desc]) => `<button data-t="${k}"${desc ? ` title="${esc(desc)}"` : ''}>${label}</button>`).join('');
-    tagTabs.onclick = (e) => {
-      const t = e.target.closest('button');
-      if (!t) return;
-      state.tag = t.dataset.t;
-      render();
-    };
+  const total = () => Object.values(S.cards).reduce((s, n) => s + n, 0);
 
-    // テーマの絞り込み
-    const archTabs = $('#pool-arch');
-    archTabs.innerHTML = [['all', 'すべて'], ...Object.entries(Cards.ARCHES).map(([k, v]) => [k, v.label])]
-      .map(([k, label]) => `<button data-a="${k}">${label}</button>`).join('');
-    archTabs.onclick = (e) => {
-      const a = e.target.dataset.a;
-      if (!a) return;
-      state.arch = a;
-      render();
-    };
+  function add(id, d) {
+    const n = (S.cards[id] || 0) + d;
+    if (d > 0 && n > CFG.maxCopies) { UI.toast(`同じカードは${CFG.maxCopies}枚まで`); return; }
+    if (d > 0 && total() >= CFG.deckSize) { UI.toast(`デッキは${CFG.deckSize}枚まで`); return; }
+    if (n <= 0) delete S.cards[id]; else S.cards[id] = n;
+    render();
+  }
 
-    $('#deck-select').onchange = (e) => load(e.target.value);
-    $('#deck-new').onclick = () => { state.deckId = null; state.name = ''; state.cards = {}; render(); };
-    $('#deck-clear').onclick = () => { state.cards = {}; render(); };
-    $('#deck-name').oninput = (e) => { state.name = e.target.value; };
-    $('#deck-save').onclick = save;
-    $('#deck-delete').onclick = remove;
+  function render() {
+    // タブ
+    $('#pool-tabs').innerHTML = [['all', 'すべて'], ['base', '基本カード'], ['forged', `オリジナル（${Store.cards().length}）`]]
+      .map(([k, l]) => `<button data-t="${k}" class="${S.tab === k ? 'on' : ''}">${l}</button>`).join('');
+    $('#pool-kind').innerHTML = [['all', '全種類'], ['creature', 'クリーチャー'], ['spell', '呪文']]
+      .map(([k, l]) => `<button data-k="${k}" class="${S.kind === k ? 'on' : ''}">${l}</button>`).join('');
+    // 一覧
+    const box = $('#pool');
+    box.innerHTML = '';
+    const list = pool();
+    if (!list.length) box.innerHTML = '<p class="hint pad">オリジナルカードはまだありません。カード工房で作りましょう。</p>';
+    for (const c of list) {
+      const el = UI.cardEl(c, { count: S.cards[c.id] });
+      el.onclick = () => add(c.id, 1);
+      el.oncontextmenu = (e) => { e.preventDefault(); add(c.id, -1); };
+      box.appendChild(el);
+    }
+    // デッキ選択
+    const sel = $('#deck-select');
+    const mine = Store.decks();
+    sel.innerHTML = '<option value="">― デッキを読み込む ―</option>'
+      + '<optgroup label="見本">' + Decks.STARTERS.map((d) => `<option value="s:${d.id}">${esc(d.name)}</option>`).join('') + '</optgroup>'
+      + (mine.length ? '<optgroup label="自分のデッキ">' + mine.map((d) => `<option value="m:${d.id}">${esc(d.name)}</option>`).join('') + '</optgroup>' : '');
+    sel.value = S.deckId ? 'm:' + S.deckId : '';
+    $('#deck-name').value = S.name;
+    const n = total();
+    $('#deck-count').innerHTML = `<b class="${n === CFG.deckSize ? 'ok' : ''}">${n}</b> / ${CFG.deckSize}枚`;
+    // コストの分布
+    const curve = new Array(11).fill(0);
+    for (const id in S.cards) { const c = UI.cardById(id); if (c) curve[Math.min(10, c.cost)] += S.cards[id]; }
+    const max = Math.max(4, ...curve);
+    $('#deck-curve').innerHTML = curve.map((v, i) => i === 0 ? '' : `<div class="bar" title="コスト${i}${i === 10 ? '以上' : ''}：${v}枚"><i style="height:${(v / max) * 100}%"></i><span>${i === 10 ? '10+' : i}</span></div>`).join('');
+    // デッキの中身
+    const ul = $('#deck-list');
+    ul.innerHTML = '';
+    Object.keys(S.cards).map((id) => ({ id, c: UI.cardById(id) })).sort((a, b) => (a.c ? a.c.cost : 99) - (b.c ? b.c.cost : 99)).forEach(({ id, c }) => {
+      const li = document.createElement('li');
+      if (!c) { li.className = 'missing'; li.innerHTML = `<span>（捨てたカード）</span><button data-d="-1">−</button><b>${S.cards[id]}</b>`; }
+      else {
+        li.style.setProperty('--cc', c.color || (c.kind === 'creature' ? '#5f8f4e' : '#5b6fb5'));
+        li.innerHTML = `<span class="dl-cost">${c.cost}</span><span class="dl-name">${esc(c.icon)} ${esc(c.name)}</span>${c.base ? '' : `<span class="dl-grade" style="color:${Parts.GRADES[c.grade].color}">${Parts.GRADES[c.grade].label}</span>`}<button data-d="-1">−</button><b>${S.cards[id]}</b><button data-d="1">＋</button>`;
+        UI.bindSpec(li, c);
+      }
+      li.onclick = (e) => { const d = e.target.dataset.d; if (d) add(id, Number(d)); };
+      ul.appendChild(li);
+    });
+    $('#deck-error').textContent = '';
   }
 
   function load(value) {
     if (!value) return;
-    const [kind, key] = value.split(':');
-    if (kind === 'preset') {
-      const d = Presets.DECKS.find((x) => x.key === key);
-      // プリセットは直接書き換えず、コピーとして編集を始める
-      state.deckId = null;
-      state.name = d.name + '（改）';
-      state.cards = { ...d.cards };
+    const [k, id] = value.split(':');
+    if (k === 's') {
+      const d = Decks.STARTERS.find((x) => x.id === id);
+      S.deckId = null; S.name = d.name.replace('見本：', '') + '（改）'; S.cards = { ...d.cards };
     } else {
-      const d = Storage2.loadDecks().find((x) => x.id === key);
+      const d = Store.decks().find((x) => x.id === id);
       if (!d) return;
-      state.deckId = d.id;
-      state.name = d.name;
-      state.cards = { ...d.cards };
+      S.deckId = d.id; S.name = d.name; S.cards = { ...d.cards };
     }
-    render();
-  }
-
-  function add(id, n) {
-    const cur = state.cards[id] || 0;
-    const total = UI.countOf(state.cards);
-    const next = Math.max(0, Math.min(CFG.maxCopies, cur + n));
-    if (n > 0 && total >= CFG.deckSize) { $('#deck-error').textContent = `デッキは${CFG.deckSize}枚までです`; return; }
-    if (next === 0) delete state.cards[id]; else state.cards[id] = next;
     render();
   }
 
   function save() {
-    const list = Presets.toList(state.cards);
-    const errors = Engine.validateDeck(list);
-    const name = state.name.trim() || '名称未設定デッキ';
-    if (errors.length) {
-      $('#deck-error').textContent = '保存できません:\n' + errors.join('\n');
-      return;
-    }
-    const decks = Storage2.loadDecks();
-    if (state.deckId) {
-      const d = decks.find((x) => x.id === state.deckId);
-      if (d) { d.name = name; d.cards = { ...state.cards }; }
-    } else {
-      state.deckId = 'd' + Date.now().toString(36);
-      decks.push({ id: state.deckId, name, cards: { ...state.cards } });
-    }
-    state.name = name;
-    const ok = Storage2.saveDecks(decks);
-    $('#deck-error').textContent = ok ? '' : 'このブラウザでは保存できませんでした（プライベートモード等）';
+    const name = $('#deck-name').value.trim() || '名前のないデッキ';
+    const specs = Decks.toList(S.cards, UI.cardById).list;
+    const err = Engine.validateDeck(specs);
+    const d = Store.saveDeck({ id: S.deckId, name, cards: { ...S.cards } });
+    S.deckId = d.id; S.name = name;
     render();
-    if (ok) flash('保存しました');
+    if (err.length) $('#deck-error').textContent = '保存しました（このままでは対戦に使えません：' + err.join(' / ') + '）';
+    else UI.toast('保存しました');
   }
 
-  function remove() {
-    if (!state.deckId) { state.cards = {}; state.name = ''; render(); return; }
-    if (!confirm(`「${state.name}」を削除しますか？`)) return;
-    Storage2.saveDecks(Storage2.loadDecks().filter((x) => x.id !== state.deckId));
-    state.deckId = null; state.name = ''; state.cards = {};
-    render();
+  function init() {
+    $('#pool-tabs').onclick = (e) => { const t = e.target.dataset.t; if (t) { S.tab = t; render(); } };
+    $('#pool-kind').onclick = (e) => { const k = e.target.dataset.k; if (k) { S.kind = k; render(); } };
+    $('#deck-select').onchange = (e) => load(e.target.value);
+    $('#deck-new').onclick = () => { S.deckId = null; S.name = ''; S.cards = {}; render(); };
+    $('#deck-clear').onclick = () => { S.cards = {}; render(); };
+    $('#deck-name').oninput = (e) => { S.name = e.target.value; };
+    $('#deck-save').onclick = save;
+    $('#deck-delete').onclick = () => {
+      if (!S.deckId) { S.cards = {}; S.name = ''; render(); return; }
+      UI.modal('デッキを削除', `<p>「${esc(S.name)}」を削除しますか？</p>`, [
+        { label: 'やめる', onClick: UI.closeModal },
+        { label: '削除', danger: true, onClick: () => { Store.deleteDeck(S.deckId); S.deckId = null; S.name = ''; S.cards = {}; UI.closeModal(); render(); } },
+      ]);
+    };
+    UI.onScreen('builder', render);
   }
 
-  function flash(text) {
-    const el = $('#deck-count');
-    const prev = el.textContent;
-    el.textContent = text;
-    setTimeout(() => { el.textContent = prev; }, 900);
-  }
-
-  function render() {
-    // フィルターのボタン状態
-    document.querySelectorAll('#pool-filter button').forEach((b) => b.classList.toggle('on', b.dataset.f === state.filter));
-    document.querySelectorAll('#pool-arch button').forEach((b) => b.classList.toggle('on', b.dataset.a === state.arch));
-    document.querySelectorAll('#pool-tag button').forEach((b) => b.classList.toggle('on', b.dataset.t === state.tag));
-    $('#arch-desc').textContent = state.arch === 'all'
-      ? 'クリックで追加 ／ 右クリックで削除 ／ マウスを乗せると詳しい説明'
-      : `【${Cards.ARCHES[state.arch].label}】${Cards.ARCHES[state.arch].desc}`;
-
-    // カード一覧（種類→コスト順）
-    const typeOrder = Object.keys(Cards.TYPES);
-    const pool = $('#pool');
-    pool.innerHTML = '';
-    Cards.LIST
-      .filter((c) => state.filter === 'all' || c.type === state.filter)
-      .filter((c) => state.tag === 'all' || (state.tag === 'counter' ? c.counter : c.tags.includes(state.tag)))
-      .filter((c) => state.arch === 'all' || (c.arch || []).includes(state.arch))
-      .sort((a, b) => typeOrder.indexOf(a.type) - typeOrder.indexOf(b.type) || a.cost - b.cost)
-      .forEach((c) => {
-        const el = UI.cardEl(c, { owned: state.cards[c.id] });
-        el.onclick = () => add(c.id, 1);
-        el.oncontextmenu = (e) => { e.preventDefault(); add(c.id, -1); };
-        pool.appendChild(el);
-      });
-
-    // デッキ選択
-    const sel = $('#deck-select');
-    const mine = Storage2.loadDecks();
-    sel.innerHTML = '<option value="">― デッキを読み込む ―</option>'
-      + '<optgroup label="プリセット">' + Presets.DECKS.map((d) => `<option value="preset:${d.key}">${esc(d.name)}</option>`).join('') + '</optgroup>'
-      + (mine.length ? '<optgroup label="自作デッキ">' + mine.map((d) => `<option value="mine:${d.id}">${esc(d.name)}</option>`).join('') + '</optgroup>' : '');
-    sel.value = state.deckId ? 'mine:' + state.deckId : '';
-
-    $('#deck-name').value = state.name;
-
-    // 枚数
-    const total = UI.countOf(state.cards);
-    const cnt = $('#deck-count');
-    cnt.textContent = `${total} / ${CFG.deckSize}枚`;
-    cnt.classList.toggle('ok', total === CFG.deckSize);
-
-    // マナカーブ（コスト別枚数のグラフ）
-    const curve = new Array(9).fill(0);
-    for (const id in state.cards) curve[Math.min(8, Cards.get(id).cost)] += state.cards[id];
-    const max = Math.max(4, ...curve);
-    $('#deck-curve').innerHTML = curve
-      .map((n, i) => `<div class="bar" style="height:${(n / max) * 100}%" title="コスト${i}${i === 8 ? '以上' : ''}: ${n}枚"><span>${i === 8 ? '8+' : i}</span></div>`)
-      .join('');
-
-    // デッキの中身
-    const list = $('#deck-list');
-    list.innerHTML = '';
-    Object.keys(state.cards)
-      .map(Cards.get)
-      .sort((a, b) => a.cost - b.cost || a.name.localeCompare(b.name, 'ja'))
-      .forEach((c) => {
-        const li = document.createElement('li');
-        li.style.setProperty('--tc', UI.cardColor(c));
-        li.innerHTML = `<span class="dl-cost">${c.cost}</span><span class="dl-name">${c.icon} ${esc(c.name)}</span>
-          <button data-d="-1">−</button><b>${state.cards[c.id]}</b><button data-d="1">＋</button>`;
-        li.dataset.cid = c.id; // マウスを乗せると拡大表示
-        li.onclick = (e) => { const d = e.target.dataset.d; if (d) add(c.id, Number(d)); };
-        list.appendChild(li);
-      });
-
-    if (total < CFG.deckSize) $('#deck-error').textContent = '';
-  }
-
-  UI.onScreen('builder', render);
   root.Builder = { init };
 })(this);

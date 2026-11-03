@@ -1,250 +1,313 @@
 /*
- * ai.js — CPU対戦相手
+ * ai.js — CPU
  *
- * 人間と同じ条件で戦わせるため、AIにも次の制約を設けています。
- *   think : 何秒おきに行動を考えるか（＝操作の速さ）
- *   react : 相手が詠唱を始めてから何秒後に反応できるか（＝反射神経）
- *   counterAt : この脅威度以上のカードなら打ち消しを使う
- *   reserve : 打ち消し用のマナを温存するか
- *   blunder : 判断をサボる確率（弱いAIほど大きい）
- *   patience: 高コストのカードのために、マナが溜まるのを最大何秒待つか
- *   counterBar: カウンターステップで、この価値以上のカウンターなら使う
- *   keep    : プレイステップの終盤、カウンター用のマナを残すか
+ *   ・対戦での行動（1手ずつ step() で進める。画面は間を空けて呼び、シミュレーターは続けて呼ぶ）
+ *   ・選択への答え（choose）
+ *   ・オリジナルカードの生成（forgeRandom）と、デッキ作り（buildDeck）
  *
- * カードごとの判断は cards.js の ai / aiBonus / react に書かれており、
- * このファイルはそれらを比べて一番良い手を選ぶだけです。
+ * カードの価値の見積もりには、基本的に「使った容量」をそのまま使う。
+ * 容量はカードの強さの物差しとして作ってあるので、CPUもそれで比べられる。
  */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./cards.js'));
-  else root.AI = factory(root.Cards);
-})(typeof self !== 'undefined' ? self : this, function (Cards) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./parts.js'), require('./cards.js'));
+  else root.AI = factory(root.Parts, root.Cards);
+})(typeof self !== 'undefined' ? self : this, function (Parts, Cards) {
   'use strict';
 
   const LEVELS = {
-    easy:   { label: 'やさしい', think: 1.4, react: 1.6, counterAt: 6, reserve: false, blunder: 0.35, patience: 0,  counterBar: 3,   keep: false },
-    normal: { label: 'ふつう',   think: 0.7, react: 0.9, counterAt: 4, reserve: false, blunder: 0.12, patience: 8,  counterBar: 1, keep: true },
-    hard:   { label: 'つよい',   think: 0.3, react: 0.45, counterAt: 3, reserve: true,  blunder: 0.0, patience: 14, counterBar: 0.2, keep: true },
+    easy:   { label: 'やさしい', mistake: 0.3, risk: 0.4 },
+    normal: { label: 'ふつう',   mistake: 0.08, risk: 0.8 },
+    hard:   { label: 'つよい',   mistake: 0, risk: 1.0 },
   };
 
+  const has = (u, k) => !u.muted && u.spec.keywords && u.spec.keywords.includes(k);
+  const unitValue = (g, u) => Parts.usage(u.spec).total * 0.6 + g.powerOf(u) / 100 * 0.5;
+
   class AI {
-    constructor(game, playerIndex, level = 'normal') {
+    constructor(game, pi, level = 'normal') {
       this.g = game;
-      this.pi = playerIndex;
+      this.pi = pi;
       this.L = LEVELS[level] || LEVELS.normal;
-      this.timer = game.rand() * this.L.think;
-      this.handledCast = null; // 同じ詠唱に何度も反応しないための記録
-      // 効果の途中での選択（捨てるカードなど）をAIが行う
-      game.players[playerIndex].chooser = (kind, options, count) => this.choose(kind, options, count);
+      game.players[pi].chooser = (req) => this.choose(req);
     }
 
-    /** 対象を選ぶカードの対象を決める。候補がなければ null */
-    pickTarget(card, me, op) {
+    get me() { return this.g.players[this.pi]; }
+    get op() { return this.g.opp(this.me); }
+
+    /** 1手だけ進める。何かしたら true。自分の手番でなければ false */
+    step() {
       const g = this.g;
-      const cands = g.validTargets(me, card);
-      if (!cands.length) return null;
-      if (card.aiTarget) return card.aiTarget(g, me, op, cands) || null;
-      const value = (x) => g.atkOf(x.owner, x.unit) + x.unit.hp * 0.5 + (x.unit.auto ? 3 : 0) + (x.unit.token ? -1 : 0);
-      // 敵を狙うなら価値の高い敵、味方を選ぶなら攻撃力の高い味方
-      const pool = card.target.side === 'ally' ? cands : cands.filter((x) => x.owner === op);
-      const list = pool.length ? pool : cands;
-      return list.reduce((b, x) => (value(x) > value(b) ? x : b));
+      if (g.over || g.pending || g.active !== this.pi) return false;
+      if (g.step === 'main') {
+        if (this.playBest()) return true;
+        g.toAttack(this.pi);
+        return true;
+      }
+      if (this.attackBest()) return true;
+      g.endTurn(this.pi);
+      return true;
     }
 
-    /** 効果の途中での選択。kind: discard（自分の手札を捨てる）/ pick（手札に加える）/ oppDiscard（相手に捨てさせる） */
-    choose(kind, options, count) {
-      const g = this.g;
-      const me = g.players[this.pi];
-      const op = g.opp(me);
-      const keep = (id) => {
-        const c = Cards.get(id);
-        if (kind === 'discard' && c.onDiscard) return -100; // 【狂気】は捨てると得
-        const s = Math.max(-2, Math.min(10, this.score(c, me, op) || 0));
-        return s + c.cost * 0.4 + (kind === 'pick' && g.costOf(me, id) <= me.mana + 2 ? 1.5 : 0);
-      };
-      const order = options.map((id, i) => ({ i, v: kind === 'oppDiscard' ? this.threat(Cards.get(id)) + Cards.get(id).cost : keep(id) }));
-      order.sort((a, b) => (kind === 'discard' ? a.v - b.v : b.v - a.v));
-      return order.slice(0, count).map((o) => o.i);
+    /** 自分の手番が終わるまで続ける（シミュレーター用） */
+    playTurn() {
+      let guard = 0;
+      while (this.g.active === this.pi && !this.g.over && guard++ < 200) this.step();
     }
 
-    update(dt) {
-      const g = this.g;
-      if (g.over || g.pending || g.step === 'hall') return;
-      this.timer += dt;
-      if (this.timer < this.L.think) return;
-      this.timer = 0;
-      if (g.step === 'counter') this.counterAct();
-      else this.act();
-    }
-
-    /**
-     * カウンターステップ：使える【カウンター】を比べ、一番価値の高いものを使う。何もなければパス。
-     * 相手がカウンターを使うとパスが取り消されるので、そのたびに考え直す。
-     */
-    counterAct() {
-      const g = this.g;
-      const me = g.players[this.pi];
-      const op = g.opp(me);
-      if (g.passed[this.pi]) return;
-      // 状況を見るための「間」（反射神経の分）
-      if (g.stepElapsed < this.L.react) return;
+    // ───────────── メインステップ ─────────────
+    playBest() {
+      const g = this.g, me = this.me;
       let best = null;
-      me.hand.forEach((id, i) => {
-        if (!g.canPlay(this.pi, i).ok) return;
-        const card = Cards.get(id);
-        if (!card.counterAi) return;
-        const cands = card.target ? g.validTargets(me, card) : [null];
-        for (const t of cands) {
-          const v = card.counterAi(g, me, op, t) - g.costOf(me, id) * 0.3;
-          if (!best || v > best.v) best = { i, t, v };
-        }
-      });
-      if (best && best.v >= this.L.counterBar && !(this.L.blunder && g.rand() < this.L.blunder)) {
-        g.play(this.pi, best.i, { target: best.t && best.t.unit.uid });
-        return;
+      for (const c of me.hand) {
+        if (!g.canPlay(this.pi, c.iid).ok) continue;
+        let v = this.cardValue(c.spec);
+        if (this.L.mistake && g.rand() < this.L.mistake) v *= g.rand();
+        if (v > 0 && (!best || v > best.v)) best = { v, c };
       }
-      g.setReady(this.pi, true);
+      // タップして発動する効果
+      for (const u of me.field) {
+        (u.spec.effects || []).forEach((e, i) => {
+          if (!g.canActivate(this.pi, u.uid, i)) return;
+          // 攻撃できるクリーチャーをタップするのは、効果の価値が攻撃より高い時だけ
+          const v = this.effectValue(e, u) - (!has(u, 'slow') ? g.powerOf(u) / 200 : 0);
+          if (v > 2 && (!best || v > best.v)) best = { v, act: [u.uid, i] };
+        });
+      }
+      if (!best) return false;
+      if (best.act) return g.activate(this.pi, best.act[0], best.act[1]);
+      return g.play(this.pi, best.c.iid).ok;
     }
 
-    /** プレイステップの終盤に残しておきたい、カウンター用のマナ */
-    counterReserve(me) {
-      const g = this.g;
-      if (!this.L.keep || g.stepTimer > 25) return 0;
-      const costs = me.hand.map(Cards.get).filter((c) => c.counter && c.counterAi).map((c) => g.costOf(me, c.id)).sort((a, b) => a - b);
-      return costs.length ? costs[0] + (costs[1] && g.stepTimer < 10 ? costs[1] : 0) : 0;
+    /** カードを今使う価値 */
+    cardValue(s) {
+      const g = this.g, me = this.me;
+      if (s.kind === 'creature') {
+        let v = Parts.usage(s).total;
+        // 場がいっぱいに近いなら控える
+        if (me.field.length >= g.cfg.fieldLimit - 1) v *= 0.7;
+        return v + 1;
+      }
+      let v = 0;
+      for (const e of s.effects) v += this.effectValue(e, null);
+      return v;
     }
 
-    act() {
-      const g = this.g;
-      const me = g.players[this.pi];
-      const op = g.opp(me);
-      if (me.silence > 0 || me.stun > 0) return;
-
-      const all = me.hand.map((id, i) => ({ i, card: Cards.get(id), chk: g.canPlay(this.pi, i) }));
-      const playable = all.filter((h) => h.chk.ok);
-      // マナが足りないだけのカード（時間が経てば使える）
-      const waiting = all.filter((h) => h.chk.reason === 'マナ不足');
-      // このプレイステップの残り時間では、もうマナが足りるカードがない → 準備完了
-      const keep = this.counterReserve(me);
-      const reachable = all.some((h) => {
-        const need = g.costOf(me, h.card.id) + keep - me.mana;
-        return need <= 0 ? h.chk.ok || h.chk.reason === 'マナ不足' : need / g.regenOf(me) < g.stepTimer;
-      });
-      if (!me.casting && !reachable && !g.ready[this.pi]) g.setReady(this.pi, true);
-      // 相手（人間）が準備完了で待っているなら、今すぐ使いたいカードがない時点で準備完了にする
-      const oppReady = g.ready[1 - this.pi] && !me.casting;
-      if (!playable.length) { if (oppReady) g.setReady(this.pi, true); return; }
-      if (this.L.blunder && g.rand() < this.L.blunder) return;
-
-      // ① 相手の詠唱への反応（打ち消し・遅延・防壁など）
-      if (op.casting && op.casting !== this.handledCast && g.time - op.casting.start >= this.L.react) {
-        const threat = this.threat(op.casting.card);
-        let best = null;
-        for (const h of playable) {
-          if (!h.card.react) continue;
-          const s = h.card.react(g, me, op, threat, this.L);
-          if (s > 0 && (!best || s > best.s)) best = { h, s };
-        }
-        if (best) {
-          this.handledCast = op.casting;
-          const t = best.h.card.target ? this.pickTarget(best.h.card, me, op) : null;
-          g.play(this.pi, best.h.i, { target: t && t.unit.uid });
-          return;
-        }
+    /** テキスト効果を今発動した時の価値の見積もり（対象がいない、意味がない時は0） */
+    effectValue(e, source) {
+      const g = this.g, me = this.me, op = this.op;
+      const a = Parts.ACTIONS[e.act];
+      const cond = Parts.CONDS[e.cond || 'none'];
+      if (cond.test && !cond.test(g, me)) return 0;
+      let base = Parts.effectPoints(e);
+      if (a.side === 'enemy') {
+        let pool = op.field.filter((u) => !has(u, 'ward'));
+        if (a.filter && e.amt) pool = pool.filter((u) => g.powerOf(u) <= e.amt);
+        if (!pool.length) return 0;
+        const tg = Parts.TARGETS[e.tgt];
+        const vals = pool.map((u) => unitValue(g, u)).sort((x, y) => y - x);
+        const hit = tg.how === 'all' ? vals.reduce((s, x) => s + x, 0) : vals.slice(0, tg.n).reduce((s, x) => s + x, 0);
+        if (e.act === 'tapEnemy') return pool.filter((u) => !u.tapped).length ? base * 0.8 : 0;
+        if (e.act === 'weaken') return Math.min(base * 1.5, hit * 0.5);
+        return Math.min(base * 1.5, hit);
       }
+      if (a.side === 'ally') {
+        const tg = Parts.TARGETS[e.tgt];
+        const pool = tg.how === 'self' ? (source ? [source] : []) : me.field.slice();
+        if (!pool.length) return 0;
+        if (e.act === 'untap' && !pool.some((u) => u.tapped)) return 0;
+        // このターンだけの強化は、攻撃できるクリーチャーがいる時だけ
+        if (e.act === 'buffTurn' && !pool.some((u) => !u.tapped && !u.sick)) return 0;
+        return base * Math.min(1, pool.length / (tg.how === 'all' ? 3 : 1));
+      }
+      switch (e.act) {
+        case 'draw': return me.hand.length + e.amt > g.cfg.handLimit ? 0 : base;
+        case 'rampMax': return me.maxMana >= g.cfg.maxManaCap ? 0 : base;
+        case 'manaGain': return 0; // メインで使うと無駄になりやすい
+        case 'heal': return me.hp < g.cfg.startHP - e.amt * 0.5 ? base * (me.hp < 2000 ? 2 : 1) : 0;
+        case 'burn': return op.hp <= e.amt ? 999 : base;
+        case 'discardOpp': return op.hand.length ? base : 0;
+        case 'manaBurn': return op.maxMana > 1 ? base : 0;
+        case 'spellLock': return op.hand.length >= 2 ? base : 0;
+        case 'regrow': return me.grave.some((c) => c.spec.kind === 'creature') ? base : 0;
+      }
+      return base;
+    }
 
-      // ② 自分から仕掛ける
-      const reserveCost = this.reserveCost(me);
+    // ───────────── アタックステップ ─────────────
+    attackBest() {
+      const g = this.g, me = this.me, op = this.op;
+      const attackers = me.field.filter((u) => g.canAttack(this.pi, u.uid));
+      if (!attackers.length) return false;
+      // 止めを刺せるなら本体へ
+      const guards = op.field.filter((u) => has(u, 'guard') && !u.tapped);
+      const total = attackers.reduce((s, u) => s + g.powerOf(u) * (u.attacks || 1), 0);
+      const blockable = attackers.filter((u) => !has(u, 'stealth')).length;
+      if (total >= op.hp && guards.length === 0) {
+        const u = attackers.sort((a, b) => g.powerOf(b) - g.powerOf(a))[0];
+        return g.attack(this.pi, u.uid, 'player');
+      }
       let best = null;
-      for (const h of playable) {
-        if (h.card.reactive) continue;
-        const t = h.card.target ? this.pickTarget(h.card, me, op) : null;
-        if (h.card.target && !t && !h.card.target.optional) continue;
-        let score = this.score(h.card, me, op, t);
-        // 生贄にする味方の価値を差し引く（遺言持ちやトークンは安い）
-        if (h.card.sacCost) {
-          for (const u of g.sacrificeTargets(me, h.card.sacCost)) {
-            score -= u.token ? 0.3 : (g.atkOf(me, u) + u.hp) * 0.45 - (Cards.get(u.id).onDeath ? 2 : 0);
+      for (const u of attackers) {
+        const pw = g.powerOf(u);
+        // 攻撃するとタップして、相手のターンに狙われる。相手の場に自分より強いクリーチャーがいれば危ない
+        // （相手が必ず狙うとは限らないので、危険は半分に見積もる）
+        const threat = op.field.some((t) => g.powerOf(t) >= pw && !has(t, 'slow'));
+        const risk = threat ? unitValue(g, u) * 0.5 * this.L.risk : 0;
+        const guard = has(u, 'stealth') ? null : guards.reduce((a, b) => (!a || g.powerOf(b) > g.powerOf(a) ? b : a), null);
+        for (const t of g.attackTargets(this.pi, u.uid)) {
+          let v;
+          const tgt = t === 'player' ? null : op.field.find((x) => x.uid === t);
+          const vs = guard && guard !== tgt ? guard : tgt;
+          if (!vs) {
+            // 体力5000に対するダメージの重み：パワー40につき1（容量の物差しと同じ）
+            const dmg = pw;
+            v = (dmg / 40) * (op.hp <= dmg * 2 ? 1.6 : 1.0) - risk;
+            if (blockable && op.hp <= 1500) v += 10;
+          } else {
+            const pv = g.powerOf(vs);
+            if (pw > pv || has(u, 'assassin')) v = unitValue(g, vs) * 1.2 - (pw > pv ? risk * 0.5 : unitValue(g, u)) + (has(u, 'pierce') && pw > pv ? (pw - pv) / 100 : 0);
+            else if (pw === pv) v = unitValue(g, vs) - unitValue(g, u);
+            else v = -unitValue(g, u);
           }
+          if (!best || v > best.v) best = { v, u, t };
         }
-        if (score <= 0) continue;
-        const cost = g.costOf(me, h.card.id);
-        // 打ち消し用マナを残せなくなる場合は、よほど価値が高くない限り見送る
-        if (reserveCost && me.mana - cost < reserveCost && score < 6) score *= 0.4;
-        // プレイステップの終盤は、カウンター用のマナを残す（カウンター自身を使う場合は除く）
-        if (keep && me.mana - cost < keep && score < 9) continue;
-        // 体力を払うカードは、体力が少ないほど慎重に
-        if (h.card.hpCost) score -= h.card.hpCost * (me.hp <= g.cfg.startHP / 3 ? 1.2 : 0.25);
-        // 少しだけ揺らぎを入れて単調さを防ぐ
-        score += g.rand() * 0.5;
-        if (!best || score > best.score) best = { h, score, t };
       }
-      if (!best || best.score <= 1) { if (oppReady) g.setReady(this.pi, true); return; }
-      // 数秒待てば使える、ずっと価値の高いカードがあるなら、マナを温存して待つ
-      for (const h of waiting) {
-        if (h.card.reactive) continue;
-        const t = h.card.target ? this.pickTarget(h.card, me, op) : null;
-        if (h.card.target && !t && !h.card.target.optional) continue;
-        const wait = (g.costOf(me, h.card.id) - me.mana) / Math.max(0.01, g.regenOf(me));
-        const v = this.score(h.card, me, op, t);
-        if (wait <= Math.min(this.L.patience, g.stepTimer) && v >= best.score * 1.4 + 1) return;
-      }
-      g.play(this.pi, best.h.i, { target: best.t && best.t.unit.uid });
+      if (!best || best.v <= 0) return false;
+      return g.attack(this.pi, best.u.uid, best.t);
     }
 
-    /** 手札にある一番安い「打ち消し系」カードのコスト（温存用） */
-    reserveCost(me) {
-      if (!this.L.reserve) return 0;
-      const costs = me.hand.map(Cards.get).filter((c) => c.react && c.id !== 'barrier').map((c) => this.g.costOf(me, c.id));
-      return costs.length ? Math.min(...costs) : 0;
-    }
-
-    score(card, me, op, t) {
-      const g = this.g;
-      if (Cards.isUnit(card)) {
-        const relic = card.type === 'relic';
-        // 鈍重（召喚時に攻撃しない）とレリックは、場に残る価値だけで評価する
-        let v = relic ? card.hp * 0.35 : card.noAttack ? card.atk * 0.5 + card.hp * 0.5 : card.atk * (card.double ? 2 : 1) + card.hp * 0.5;
-        // 敵に守護がいる場合、召喚時の攻撃は守護に受け止められる（潜伏は除く）
-        const guards = card.stealth || card.noAttack || relic ? [] : g.readyGuards(op);
-        if (guards.length) {
-          const t = guards.reduce((a, b) => (b.hp > a.hp ? b : a));
-          const kills = card.atk - (t.armor || 0) >= t.hp;
-          const dies = g.cfg.guardRetaliate && g.atkOf(op, t) - (card.armor || 0) >= card.hp;
-          if (dies && !kills) {
-            // 一方的に倒されるだけ…だが、守護を疲労させる「おとり」にはなる。
-            // 後続（他のクリーチャーや全体攻撃）が手札にあり、安いカードならおとりとして出す
-            const followers = me.hand.filter((id) => id !== card.id && (Cards.get(id).type === 'creature' || id === 'charge' || id === 'allout')).length;
-            v = followers && g.costOf(me, card.id) <= 2 ? 1.6 + Math.min(followers, 3) * 0.3 : 0.3;
-          }
-          else if (dies) v = (t.atk + t.hp) * 0.5;                  // 相討ち
-          else {
-            // 生き残る：場に残って後で攻撃でき、守護の「1フェーズ1回」も使わせられる
-            v = card.atk * 0.7 + card.hp * 0.4 + 0.8 + (kills ? (t.atk + t.hp) * 0.5 : 0);
-          }
-          if (card.pierce) v += Math.max(0, card.atk - t.hp);
-        }
-        if (card.guard) v += 1.5 + op.field.length * 0.5;
-        if (card.lifesteal) v += card.atk * 0.5;
-        if (card.autoAttack) v += card.atk * Math.min(3, g.phasesLeft()) * 0.7; // 残りのフェーズで何回攻撃できるかの目安
-        if (card.aiBonus) v += card.aiBonus(g, me, op);
-        // 場が満杯なら一番古い味方を失う（遺言持ちならむしろ得）
-        if (me.field.length >= g.cfg.fieldLimit) {
-          const old = me.field[0];
-          v -= (g.atkOf(me, old) + old.hp) * 0.5 - (Cards.get(old.id).onDeath ? 2.5 : 0);
-        }
-        return v;
+    // ───────────── 選択への答え ─────────────
+    choose(req) {
+      const g = this.g, me = this.me;
+      if (req.kind === 'confirm') {
+        const pay = req.effect.pay;
+        if (pay === 'life500' || pay === 'life1000') return me.hp > 2500;
+        if (pay === 'discard1') return me.hand.length >= 3;
+        if (pay === 'tapSelf') { const u = me.field.find((x) => x.uid === req.source); return !u || u.sick || g.step !== 'main' || has(u, 'slow') || this.effectValue({ ...req.effect, pay: 'none' }, u) > g.powerOf(u) / 150; }
+        return true;
       }
-      if (card.ai) return card.ai(g, me, op, t);
-      return card.cost;
-    }
-
-    threat(card) {
-      if (card.threat != null) return card.threat;
-      if (card.type === 'relic') return 2 + card.hp * 0.2;
-      if (card.type === 'creature') return card.atk * 0.7 * (card.double ? 2 : 1) + card.hp * 0.3 + (card.onSummon ? 1 : 0);
-      return card.cost;
+      if (req.kind === 'discard') {
+        // 一番安いカードを捨てる
+        const opts = req.options.map((iid) => me.hand.find((c) => c.iid === iid)).filter(Boolean);
+        opts.sort((a, b) => a.spec.cost - b.spec.cost);
+        return opts.slice(0, req.min || 1).map((c) => c.iid);
+      }
+      if (req.kind === 'targets') {
+        const units = req.options.map((uid) => g.findUnit(uid)).filter(Boolean);
+        const act = req.effect && req.effect.act;
+        const mine = units.length && units[0].owner === this.pi;
+        let score;
+        if (!mine) score = (u) => unitValue(g, u);
+        else if (act === 'untap') score = (u) => (u.tapped ? 10 : 0) + g.powerOf(u) / 1000;
+        else score = (u) => (!u.tapped && !u.sick ? 5 : 0) + g.powerOf(u) / 1000;
+        units.sort((a, b) => score(b) - score(a));
+        return units.slice(0, req.max).map((u) => u.uid);
+      }
+      if (req.kind === 'react') {
+        const attacker = g.findUnit(req.attacker);
+        if (!attacker) return [];
+        const pw = g.powerOf(attacker);
+        // 体力への脅威が大きい、または強いクリーチャーの攻撃なら迎撃する
+        const worth = pw >= 2500 || pw >= me.hp || unitValue(g, attacker) >= 30;
+        if (!worth) return [];
+        const c = req.options.map((iid) => me.hand.find((x) => x.iid === iid)).filter(Boolean)
+          .sort((a, b) => Parts.usage(b.spec).total - Parts.usage(a.spec).total)[0];
+        return c ? [c.iid] : [];
+      }
+      return req.options.slice(0, req.min || 1);
     }
   }
 
-  return { AI, LEVELS };
+  // ───────────── オリジナルカードの生成 ─────────────
+  const ICONS = ['🦊', '🦉', '🐍', '🦂', '🐙', '🦇', '🐲', '🦄', '🐺', '🦅', '🐢', '🦈', '👻', '🤖', '🧞', '🧜', '🌋', '🌊', '🌪️', '🔥', '❄️', '⚡', '🌙', '☀️', '🍄', '🌵', '💎', '🗝️', '📜', '🔮'];
+  const NAME_A = ['紅蓮の', '蒼き', '黒鉄の', '月影の', '嵐の', '古の', '囁く', '燃える', '凍てつく', '星降る', '眠れる', '狂える', '白銀の', '翠の', '深淵の'];
+  const NAME_C = ['狼', '騎士', '魔女', '番人', '大蛇', '巨人', '亡霊', '獅子', '射手', '僧兵', '竜', '人形', '魔像', '道化', '鷲'];
+  const NAME_S = ['の嵐', 'の契約', 'の囁き', 'の楔', 'の祝福', 'の呪い', 'の雷', 'の鏡', 'の門', 'の炎'];
+
+  /**
+   * ランダムにオリジナルカードを作る（CPUのデッキ用・お試し用）。
+   * opts.grade を省略すると素質も引く。容量に収まるように部品を足していく。
+   */
+  function forgeRandom(rand = Math.random, opts = {}) {
+    const pick = (a) => a[Math.floor(rand() * a.length)];
+    const grade = opts.grade || Parts.rollGrade(rand);
+    const kind = opts.kind || (rand() < 0.7 ? 'creature' : 'spell');
+    const cost = opts.cost || pick(kind === 'creature' ? [1, 2, 2, 3, 3, 3, 4, 4, 5, 5, 6, 7, 8] : [1, 2, 2, 3, 3, 4, 5, 6]);
+    const cap = Parts.capacity(cost, grade);
+    const spec = { name: '', icon: pick(ICONS), kind, cost, grade, keywords: [], effects: [] };
+    if (kind === 'creature') {
+      spec.name = pick(NAME_A) + pick(NAME_C);
+      // 容量の5〜8割をパワーに
+      const share = 0.5 + rand() * 0.3;
+      let p = Math.floor((cap * share * 100) / Parts.POWER_STEP) * Parts.POWER_STEP;
+      while (Parts.powerPoints(p) > cap * share && p > Parts.POWER_MIN) p -= Parts.POWER_STEP;
+      spec.power = Math.max(Parts.POWER_MIN, Math.min(Parts.POWER_MAX, p));
+    } else {
+      spec.name = pick(NAME_A).replace(/の$/, '') + pick(NAME_S);
+    }
+    const opt = Parts.optionsFor(kind);
+    const left = () => cap - Parts.usage(spec).total;
+    // キーワードとテキスト効果を、入る限り試しに足す
+    for (let tries = 0; tries < 40 && left() > 3; tries++) {
+      if (kind === 'creature' && spec.keywords.length < Parts.MAX_KEYWORDS && rand() < 0.45) {
+        const k = pick(opt.keywords.filter((x) => x.pts > 0)).id;
+        if (spec.keywords.includes(k)) continue;
+        spec.keywords.push(k);
+        if (Parts.validate(spec).length) spec.keywords.pop();
+        continue;
+      }
+      if (spec.effects.length >= Parts.MAX_EFFECTS) {
+        if (kind === 'creature' && spec.keywords.length < Parts.MAX_KEYWORDS) continue;
+        break;
+      }
+      // 呪文の効果は発動の場面をそろえる
+      const trig = kind === 'spell' && spec.effects.length ? spec.effects[0].trig : pick(opt.triggers).id;
+      const a = pick(opt.actions);
+      const e = { trig, act: a.id, amt: pick(a.amounts), tgt: null, cond: rand() < 0.2 ? pick(opt.conds).id : 'none', pay: rand() < 0.15 ? pick(opt.pays).id : 'none' };
+      const tgs = Parts.targetsFor(spec, e);
+      if (a.side !== 'none') { if (!tgs.length) continue; e.tgt = pick(tgs).id; }
+      spec.effects.push(e);
+      if (Parts.validate(spec).length) spec.effects.pop();
+    }
+    if (kind === 'spell' && !spec.effects.length) {
+      spec.effects.push({ trig: 'cast', act: 'draw', amt: 1, tgt: null, cond: 'none', pay: 'none' });
+    }
+    // 余った容量でパワーを上げる
+    if (kind === 'creature') {
+      while (spec.power + Parts.POWER_STEP <= Parts.POWER_MAX) {
+        spec.power += Parts.POWER_STEP;
+        if (Parts.validate(spec).length) { spec.power -= Parts.POWER_STEP; break; }
+      }
+    }
+    return spec;
+  }
+
+  /**
+   * CPUのデッキを作る：オリジナルカードを数種類（各2〜3枚）＋基本カード
+   * 返り値は spec の配列（40枚）
+   */
+  function buildDeck(rand = Math.random, opts = {}) {
+    const forgedKinds = opts.forged != null ? opts.forged : 6;
+    const deck = [];
+    for (let i = 0; i < forgedKinds; i++) {
+      const s = forgeRandom(rand);
+      s.id = 'cpu_' + i + '_' + Math.floor(rand() * 1e6);
+      const n = 2 + Math.floor(rand() * 2);
+      for (let k = 0; k < n; k++) deck.push(s);
+    }
+    // 基本カードはコストの低いものを多めに（マナカーブ）
+    const pool = Cards.BASE.slice();
+    const counts = {};
+    let guard = 0;
+    while (deck.length < 40 && guard++ < 2000) {
+      const c = pool[Math.floor(rand() * pool.length)];
+      const w = c.cost <= 3 ? 1 : c.cost <= 6 ? 0.6 : c.cost <= 10 ? 0.25 : 0.1;
+      if (rand() > w || (counts[c.id] || 0) >= 3) continue;
+      counts[c.id] = (counts[c.id] || 0) + 1;
+      deck.push(c);
+    }
+    return deck;
+  }
+
+  return { AI, LEVELS, forgeRandom, buildDeck };
 });

@@ -1,302 +1,199 @@
 /*
- * ui-common.js — 画面切り替えやカード表示など、複数の画面で使う部品
- *
- *  ・舞台の拡大縮小：1280×720 の #stage をウィンドウに収まる大きさに拡大縮小する
- *  ・カードの描画：cardEl()
- *  ・カードの拡大表示：data-cid（カードID）を持つ要素にマウスを乗せると、大きなカードと説明を出す
- *  ・演出：fx.float（浮かぶ数字）、fx.bolt（攻撃の光）、fx.stamp（大きな文字）など
+ * ui-common.js — 画面共通の部品
+ *   画面の拡大縮小（1280×720の舞台）・画面の切り替え・カードの描画・拡大表示・お知らせ・確認ダイアログ・演出
  */
 (function (root) {
   'use strict';
-  const { Cards, Presets, Storage2 } = root;
+  const { Parts, Cards, Store } = root;
 
-  const $ = (sel) => document.querySelector(sel);
-  const STAGE_W = 1280, STAGE_H = 720;
+  const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-  // HTMLに埋め込む文字列のエスケープ（デッキ名などユーザー入力を安全に表示するため）
-  const esc = (s) => String(s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-
-  // ───────────── 舞台の拡大縮小 ─────────────
+  // ───────────── 舞台（1280×720）をウィンドウに合わせて拡大縮小 ─────────────
   let scale = 1;
   function fitStage() {
-    scale = Math.min(window.innerWidth / STAGE_W, window.innerHeight / STAGE_H);
-    $('#stage').style.setProperty('--scale', scale);
+    const st = $('#stage');
+    scale = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+    st.style.transform = `translate(-50%, -50%) scale(${scale})`;
   }
-  window.addEventListener('resize', fitStage);
-
-  /** 画面上の要素の中心を、舞台の座標（1280×720 基準）で返す */
+  /** 要素の中心（舞台の座標） */
   function stagePoint(el, fy = 0.5) {
-    const s = $('#stage').getBoundingClientRect();
     const r = el.getBoundingClientRect();
+    const s = $('#stage').getBoundingClientRect();
     return { x: (r.left + r.width / 2 - s.left) / scale, y: (r.top + r.height * fy - s.top) / scale };
   }
 
+  // ───────────── 画面の切り替え ─────────────
   const screenHooks = {};
+  function onScreen(name, fn) { (screenHooks[name] = screenHooks[name] || []).push(fn); }
   function showScreen(name) {
-    document.querySelectorAll('.screen').forEach((el) => el.classList.remove('active'));
-    $('#screen-' + name).classList.add('active');
+    $$('.screen').forEach((el) => el.classList.toggle('active', el.id === 'screen-' + name));
     hidePreview();
-    if (screenHooks[name]) screenHooks[name]();
+    (screenHooks[name] || []).forEach((fn) => fn());
   }
-  function onScreen(name, fn) { screenHooks[name] = fn; }
 
-  // ───────────── カードの描画 ─────────────
-  // 種類の帯に付ける記号
-  /** カードの枠の色。呪文は主なタグ（先頭のタグ）の色、それ以外は種類の色 */
-  function cardColor(card) {
-    const t = card.type === 'spell' && card.tags && card.tags[0] && Cards.TAGS[card.tags[0]];
-    return t ? t.color : Cards.TYPES[card.type].color;
+  // ───────────── カード ─────────────
+  /** IDからカードを探す（基本カード → オリジナルカード） */
+  function cardById(id) {
+    return Cards.get(id) || Store.cards().find((c) => c.id === id) || null;
   }
-  /** 種類の帯の左に付ける記号。呪文は主なタグの記号 */
-  function cardGlyph(card) {
-    const t = card.type === 'spell' && card.tags && card.tags[0] && Cards.TAGS[card.tags[0]];
-    return t ? t.glyph : Cards.TYPES[card.type].glyph;
-  }
-  const tagLabels = (card) => (card.tags || []).map((k) => Cards.TAGS[k].label);
+
+  const KIND_LABEL = { creature: 'クリーチャー', spell: '呪文' };
+  const KIND_COLOR = { creature: '#5f8f4e', spell: '#5b6fb5' };
+  const specOf = new WeakMap(); // 要素 → カード（拡大表示用）
+
   /**
-   * カード1枚分のDOM要素を作る
-   *   opts.cost / opts.cast : 補正後の実際のコスト・詠唱時間（手札表示用）。元の値と違えば色を変える
-   *   opts.key   : 下に出す操作キー
-   *   opts.badge : 中央に出す帯（使えない理由など）
-   *   opts.owned : デッキに入っている枚数
+   * カード1枚の要素を作る
+   *   opts.key   : 下に出す数字（手札のキー操作用）
+   *   opts.badge : 中央に出す短い注意書き
+   *   opts.count : 右上に出す枚数（デッキ構築用）
+   *   opts.power : 今のパワー（場の補正込み）
    */
-  function cardEl(card, opts = {}) {
+  function cardEl(spec, opts = {}) {
     const el = document.createElement('div');
-    el.className = 'card';
-    el.dataset.cid = card.id;
-    el.style.setProperty('--tc', cardColor(card));
-    const cost = opts.cost != null ? opts.cost : card.cost;
-    const cast = opts.cast != null ? opts.cast : card.cast;
-    const castLabel = cast > 0 ? `⏱${cast}` : card.cast > 0 ? '⚡即時' : '⚡瞬間';
-    const castCls = cast <= 0 ? ' instant' : cast < card.cast ? ' down' : '';
-    const costCls = cost < card.cost ? ' down' : cost > card.cost ? ' up' : '';
-    const kw = Cards.keywords(card);
-    // 種類の帯の右側：クリーチャーとレリックはキーワード、呪文はタグ
-    const right = card.type === 'spell' ? tagLabels(card).join('・') : kw.join('・');
-    const nameLen = [...card.name].length;
-    const nameCls = nameLen >= 8 ? ' xxlong' : nameLen >= 7 ? ' xlong' : nameLen >= 6 ? ' long' : '';
-    const stats = card.type === 'creature'
-      ? `<div class="c-stat atk"><b>${card.atk}</b></div><div class="c-stat hp"><b>${card.hp}</b></div>`
-      : card.type === 'relic' ? `<div class="c-stat dur" title="耐久"><b>${card.hp}</b></div>` : '';
-    const side = [
-      card.hpCost ? `<span class="c-hpcost">♥${card.hpCost}</span>` : '',
-      card.sacCost ? `<span class="c-saccost">🔪${card.sacCost}</span>` : '',
-    ].join('');
+    const g = Parts.GRADES[spec.grade] || Parts.GRADES.silver;
+    el.className = `card kind-${spec.kind} grade-${spec.grade}${spec.base ? ' is-base' : ' is-forged'}`;
+    el.style.setProperty('--cc', spec.color || KIND_COLOR[spec.kind]);
+    el.style.setProperty('--gc', g.color);
+    const lines = Parts.cardLines(spec);
+    const len = lines.join('').length;
+    const textCls = len > 120 ? ' tiny' : len > 70 ? ' small' : '';
+    const react = spec.kind === 'spell' && (spec.effects || []).some((e) => e.trig === 'react');
     el.innerHTML = `
       <div class="c-frame">
-        <div class="c-head"><span class="c-name${nameCls}">${esc(card.name)}</span></div>
-        <div class="c-art"><span class="c-icon">${card.icon}</span></div>
-        <div class="c-typeline"><span><i class="c-glyph">${cardGlyph(card)}</i>${Cards.TYPES[card.type].label}</span>${right ? `<span class="c-kw">${esc(right)}</span>` : ''}</div>
-        <div class="c-text">${esc(card.text || '')}</div>
+        <div class="c-head"><span class="c-name${[...spec.name].length > 7 ? ' long' : ''}">${esc(spec.name)}</span></div>
+        <div class="c-art"><span class="c-icon">${esc(spec.icon || '❔')}</span>${spec.base ? '' : `<span class="c-grade" title="素質：${g.label}（容量×${g.mult}）">${g.label}</span>`}</div>
+        <div class="c-type"><span>${KIND_LABEL[spec.kind]}</span>${react ? '<span class="c-react">迎撃</span>' : ''}</div>
+        <div class="c-text${textCls}">${lines.map((l) => `<p${l.startsWith('【') ? ' class="kw"' : ''}>${esc(l)}</p>`).join('') || '<p class="vanilla">（効果なし）</p>'}</div>
       </div>
-      <div class="c-cost${costCls}">${cost}</div>
-      <div class="c-cast${castCls}">${castLabel}</div>
-      ${side ? `<div class="c-side">${side}</div>` : ''}
-      ${card.target ? '<div class="c-target">🎯</div>' : ''}
-      ${card.counter ? '<div class="c-counter" title="カウンターステップでも使える"><span>COUNTER</span></div>' : ''}
-      ${stats}
+      <div class="c-cost">${spec.cost}</div>
+      ${spec.kind === 'creature' ? `<div class="c-power${opts.power != null && opts.power !== spec.power ? (opts.power > spec.power ? ' up' : ' down') : ''}">${opts.power != null ? opts.power : spec.power}</div>` : ''}
       ${opts.key != null ? `<div class="c-key">${opts.key}</div>` : ''}
       ${opts.badge ? `<div class="c-badge">${esc(opts.badge)}</div>` : ''}
-      ${opts.owned ? `<div class="c-owned">×${opts.owned}</div>` : ''}
-    `;
+      ${opts.count ? `<div class="c-count">×${opts.count}</div>` : ''}`;
+    specOf.set(el, spec);
+    el.dataset.pv = '1';
     return el;
   }
 
-  /** カードの詳しい説明（キーワードの意味やテーマ）を行の配列で返す */
-  function cardHelp(card) {
-    const castLabel = card.cast > 0 ? `詠唱 ${card.cast}秒` : '瞬間（詠唱なし）';
-    const extra = (card.hpCost ? ` ＋ 体力${card.hpCost}` : '') + (card.sacCost ? ` ＋ 生贄${card.sacCost}体` : '');
-    const lines = [`<b>${esc(card.name)}</b>（${Cards.TYPES[card.type].label}）`, `コスト ${card.cost}${extra}　/　${castLabel}`];
-    if (card.tags && card.tags.length) lines.push(`タグ：${tagLabels(card).join('・')}`);
-    if (card.counter) lines.push(`<b>カウンター</b>：${Cards.KEYWORD_HELP['カウンター']}`);
-    if (card.type === 'creature') lines.push(card.noAttack ? '召喚時に攻撃しない' : card.double ? '召喚時に2回攻撃を予約する' : '召喚時に1回攻撃を予約する（クロノホールで攻撃）');
-    if (card.type === 'relic') lines.push(`耐久 ${card.hp}`, `<b>レリック</b>：${Cards.KEYWORD_HELP['レリック']}`);
-    const kws = Cards.keywords(card).map((k) => k.replace(/\d+$/, ''));
-    if (card.target) kws.push('対象');
-    if (card.hpCost) kws.push('代償');
-    if (card.sacCost) kws.push('生贄');
-    kws.forEach((k) => { if (Cards.KEYWORD_HELP[k]) lines.push(`<b>${k}</b>：${Cards.KEYWORD_HELP[k]}`); });
+  /** 任意の要素に、マウスを乗せた時に拡大表示するカードを結び付ける */
+  function bindSpec(el, spec) { specOf.set(el, spec); el.dataset.pv = '1'; }
+
+  /** カードの詳しい説明（キーワードの意味など）の行 */
+  function cardHelp(spec) {
+    const g = Parts.GRADES[spec.grade] || Parts.GRADES.silver;
+    const u = Parts.usage(spec);
+    const lines = [
+      `<b>${esc(spec.name)}</b>（${KIND_LABEL[spec.kind]}）`,
+      `コスト ${spec.cost}${spec.kind === 'creature' ? `　／　パワー ${spec.power}` : ''}`,
+      spec.base ? '基本カード' : `素質：<b style="color:${g.color}">${g.label}</b>（容量 ×${g.mult}）`,
+      `容量 ${u.total} / ${Parts.capacity(spec.cost, spec.grade)}`,
+    ];
+    for (const k of spec.keywords || []) lines.push(`<b>${Parts.KEYWORDS[k].label}</b>：${esc(Parts.KEYWORDS[k].desc)}`);
     return lines;
   }
 
-  /** 文字だけの説明（title 属性など、HTMLを使えない場所用） */
-  function cardTip(card) {
-    return cardHelp(card).map((l) => l.replace(/<[^>]+>/g, '')).join('\n');
-  }
-
-  // ───────────── カードの拡大表示 ─────────────
-  // 表示中の対象に「今の状態」（場のクリーチャーの現在値など）を足したい場合は、
-  // 要素に data-now を付ける
-  let pvTarget = null;
-  function showPreview(el) {
-    const card = Cards.find(el.dataset.cid);
-    if (!card) return;
-    pvTarget = el;
-    const pv = $('#card-preview');
-    pv.innerHTML = '';
-    const big = cardEl(card);
-    big.querySelector('.c-text').textContent = Cards.fullText(card, false);
-    pv.appendChild(big);
+  // ───────────── 拡大表示（マウスを乗せる） ─────────────
+  let pvEl = null, pvFor = null;
+  function showPreview(target) {
+    const spec = specOf.get(target);
+    if (!spec) return;
+    if (pvFor === target) return;
+    pvFor = target;
+    if (!pvEl) { pvEl = document.createElement('div'); pvEl.className = 'preview'; $('#stage').appendChild(pvEl); }
+    pvEl.innerHTML = '';
+    const big = cardEl(spec, { power: target.dataset.power != null ? Number(target.dataset.power) : undefined });
+    big.removeAttribute('data-pv');
+    pvEl.appendChild(big);
     const help = document.createElement('div');
     help.className = 'pv-help';
-    const rows = cardHelp(card).map((l) => `<div class="pv-row">${l}</div>`);
-    if (el.dataset.now) rows.splice(1, 0, `<div class="pv-row pv-now">${esc(el.dataset.now)}</div>`);
-    if (card.arch) rows.push(`<div class="pv-arch">テーマ：${card.arch.map((a) => Cards.ARCHES[a].label).join('・')}</div>`);
-    help.innerHTML = rows.join('');
-    pv.appendChild(help);
-    pv.classList.remove('hidden');
-    // 要素の左右、空いている側に出す
-    const p = stagePoint(el);
-    const w = 217 + 10 + 230, h = 304;
-    const r = el.getBoundingClientRect();
-    const halfW = r.width / scale / 2;
-    let x = p.x + halfW + 14;
-    if (x + w > STAGE_W - 8) x = p.x - halfW - 14 - w;
-    let y = Math.max(8, Math.min(STAGE_H - h - 8, p.y - h / 2));
-    pv.style.left = Math.max(8, x) + 'px';
-    pv.style.top = y + 'px';
+    help.innerHTML = cardHelp(spec).map((l) => `<div>${l}</div>`).join('') + (target.dataset.now ? `<div class="now">${esc(target.dataset.now)}</div>` : '');
+    pvEl.appendChild(help);
+    const p = stagePoint(target);
+    const right = p.x < 640;
+    pvEl.style.left = (right ? Math.min(p.x + 90, 1280 - 520) : Math.max(10, p.x - 90 - 510)) + 'px';
+    pvEl.style.top = Math.max(10, Math.min(720 - 400, p.y - 190)) + 'px';
+    pvEl.classList.add('show');
   }
-  function hidePreview() {
-    pvTarget = null;
-    const pv = $('#card-preview');
-    if (pv) pv.classList.add('hidden');
-  }
-  document.addEventListener('mouseover', (e) => {
-    const el = e.target.closest && e.target.closest('[data-cid]');
-    if (!el || el.closest('#card-preview')) { if (!el) hidePreview(); return; }
-    if (el !== pvTarget) showPreview(el);
-  });
-  document.addEventListener('mousedown', hidePreview);
+  function hidePreview() { pvFor = null; if (pvEl) pvEl.classList.remove('show'); }
 
-  // ───────────── 魔法陣（詠唱の台座や盤面の飾り） ─────────────
-  /** 時計の目盛りと六芒星を組み合わせた魔法陣の SVG（色は currentColor） */
-  function runeCircle(cls = '') {
-    return `<svg class="rune-circle ${cls}" viewBox="0 0 200 200" aria-hidden="true">
-      <g fill="none" stroke="currentColor">
-        <circle cx="100" cy="100" r="96" stroke-width="1.4"/>
-        <circle cx="100" cy="100" r="90" stroke-width=".7"/>
-        <circle cx="100" cy="100" r="82" stroke-width="5" stroke-dasharray="1.4 20.07" opacity=".8"/>
-        <circle cx="100" cy="100" r="70" stroke-width="1"/>
-        <polygon points="100,30 160.6,135 39.4,135" stroke-width="1"/>
-        <polygon points="100,170 39.4,65 160.6,65" stroke-width="1"/>
-        <circle cx="100" cy="100" r="38" stroke-width=".8" stroke-dasharray="3 3"/>
-      </g>
-      <g fill="currentColor">
-        <circle cx="100" cy="30" r="3"/><circle cx="160.6" cy="135" r="3"/><circle cx="39.4" cy="135" r="3"/>
-        <circle cx="100" cy="170" r="3"/><circle cx="39.4" cy="65" r="3"/><circle cx="160.6" cy="65" r="3"/>
-      </g>
-    </svg>`;
+  // ───────────── お知らせ・ダイアログ ─────────────
+  let toastT = 0;
+  function toast(msg, ms = 1600) {
+    const el = $('#toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastT);
+    toastT = setTimeout(() => el.classList.remove('show'), ms);
   }
+
+  /** ダイアログ。buttons: [{ label, primary, onClick }]。閉じる時は closeModal() */
+  function modal(title, bodyHtml, buttons = [], cls = '') {
+    const m = $('#modal');
+    m.className = 'modal show ' + cls;
+    m.innerHTML = `<div class="panel ornate"><h3>${title}</h3><div class="m-body">${bodyHtml}</div><div class="m-buttons"></div></div>`;
+    const box = $('.m-buttons', m);
+    for (const b of buttons) {
+      const btn = document.createElement('button');
+      btn.className = 'btn' + (b.primary ? ' primary' : '') + (b.danger ? ' danger' : '');
+      btn.textContent = b.label;
+      btn.onclick = b.onClick;
+      box.appendChild(btn);
+    }
+    return m;
+  }
+  function closeModal() { $('#modal').className = 'modal'; $('#modal').innerHTML = ''; }
 
   // ───────────── 演出 ─────────────
   const fx = {
-    layer: () => $('#fx'),
-    /** 浮かび上がる文字（ダメージ数値など） */
-    float(x, y, text, cls = 'dmg') {
+    float(x, y, text, cls = '') {
       const el = document.createElement('div');
-      el.className = 'float ' + cls;
+      el.className = 'fx-float ' + cls;
       el.textContent = text;
-      el.style.left = x + (Math.random() * 16 - 8) + 'px';
+      el.style.left = x + 'px';
       el.style.top = y + 'px';
-      fx.layer().appendChild(el);
-      setTimeout(() => el.remove(), 1000);
+      $('#fx').appendChild(el);
+      setTimeout(() => el.remove(), 1300);
     },
-    /** 光の弾を from から to へ飛ばし、着弾したら弾ける */
-    bolt(from, to, color = '#ffd36b', ms = 260) {
-      const b = document.createElement('div');
-      b.className = 'bolt';
-      b.style.setProperty('--bc', color);
-      fx.layer().appendChild(b);
-      const anim = b.animate([
-        { left: from.x + 'px', top: from.y + 'px', transform: 'scale(.6)' },
-        { left: to.x + 'px', top: to.y + 'px', transform: 'scale(1.2)' },
-      ], { duration: ms, easing: 'cubic-bezier(.5,0,.9,.5)' });
-      anim.onfinish = () => { b.remove(); fx.burst(to, color); };
-    },
-    burst(p, color = '#ffd36b') {
+    slash(x, y) {
       const el = document.createElement('div');
-      el.className = 'burst';
-      el.style.setProperty('--bc', color);
-      el.style.left = p.x + 'px';
-      el.style.top = p.y + 'px';
-      fx.layer().appendChild(el);
-      setTimeout(() => el.remove(), 420);
+      el.className = 'fx-slash';
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+      $('#fx').appendChild(el);
+      setTimeout(() => el.remove(), 500);
     },
-    /** 大きなはんこ風の文字（打ち消しなど） */
-    stamp(p, text, color) {
+    line(a, b, color) {
       const el = document.createElement('div');
-      el.className = 'stamp';
-      el.textContent = text;
-      if (color) el.style.color = color;
-      el.style.left = p.x + 'px';
-      el.style.top = p.y + 'px';
-      fx.layer().appendChild(el);
-      setTimeout(() => el.remove(), 950);
-    },
-    /** カードが from から to へ飛んでいく */
-    flyCard(card, from, to) {
-      const wrap = document.createElement('div');
-      wrap.className = 'flycard';
-      wrap.appendChild(cardEl(card));
-      fx.layer().appendChild(wrap);
-      const w = 103, h = 144; // --cs:9px のカードの大きさ
-      const anim = wrap.animate([
-        { left: from.x - w / 2 + 'px', top: from.y - h / 2 + 'px', transform: 'scale(1.1) rotate(-4deg)', opacity: 1 },
-        { left: to.x - w / 2 + 'px', top: to.y - h / 2 + 'px', transform: 'scale(.6) rotate(0)', opacity: 0.2 },
-      ], { duration: 320, easing: 'cubic-bezier(.3,.7,.4,1)' });
-      anim.onfinish = () => wrap.remove();
+      el.className = 'fx-line';
+      const dx = b.x - a.x, dy = b.y - a.y;
+      el.style.left = a.x + 'px';
+      el.style.top = a.y + 'px';
+      el.style.width = Math.hypot(dx, dy) + 'px';
+      el.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
+      el.style.setProperty('--lc', color);
+      $('#fx').appendChild(el);
+      setTimeout(() => el.remove(), 450);
     },
   };
-
-  /** 要素に一瞬だけ class を付けて、アニメーションをやり直す */
-  function pulseClass(el, cls, ms) {
+  function pulse(el, cls, ms = 400) {
     if (!el) return;
     el.classList.remove(cls);
-    void el.offsetWidth; // アニメーションを最初から再生させるための定番の書き方
+    void el.offsetWidth;
     el.classList.add(cls);
     setTimeout(() => el.classList.remove(cls), ms);
   }
 
-  // ───────────── デッキ一覧・小物 ─────────────
-  /** プリセット＋自作デッキの一覧。対戦準備画面の選択肢に使う */
-  function allDecks() {
-    const presets = Presets.DECKS.map((d) => ({ value: 'preset:' + d.key, name: d.name, desc: d.desc, cards: d.cards, preset: true }));
-    const mine = Storage2.loadDecks().map((d) => ({ value: 'mine:' + d.id, name: d.name, desc: '自作デッキ', cards: d.cards, preset: false }));
-    return [...presets, ...mine];
-  }
-
-  function countOf(cards) { return Object.values(cards).reduce((a, b) => a + b, 0); }
-
-  let toastTimer = null;
-  function toast(text, ms = 1200) {
-    const el = $('#toast');
-    el.textContent = text;
-    el.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove('show'), ms);
-  }
-
-  /** 一時停止や結果表示に使う汎用ダイアログ。title に HTML を使う場合は titleHtml を true に */
-  function overlay(title, bodyHtml, buttons, titleHtml) {
-    const t = $('#overlay-title');
-    if (titleHtml) t.innerHTML = title; else t.textContent = title;
-    $('#overlay-body').innerHTML = bodyHtml;
-    const box = $('#overlay-buttons');
-    box.innerHTML = '';
-    buttons.forEach((b) => {
-      const btn = document.createElement('button');
-      btn.className = 'btn' + (b.primary ? ' primary' : '');
-      btn.textContent = b.label;
-      btn.onclick = b.onClick;
-      box.appendChild(btn);
+  function init() {
+    fitStage();
+    window.addEventListener('resize', fitStage);
+    document.addEventListener('mouseover', (e) => {
+      const t = e.target.closest('[data-pv]');
+      if (t) showPreview(t); else hidePreview();
     });
-    $('#overlay').classList.remove('hidden');
+    document.addEventListener('mousedown', hidePreview);
   }
-  function closeOverlay() { $('#overlay').classList.add('hidden'); }
 
-  fitStage();
-  root.UI = {
-    $, esc, showScreen, onScreen, cardEl, cardTip, cardHelp, allDecks, countOf, toast, overlay, closeOverlay,
-    stagePoint, fx, pulseClass, hidePreview, getScale: () => scale, runeCircle, cardColor,
-  };
+  root.UI = { $, $$, esc, init, bindSpec, fitStage, stagePoint, onScreen, showScreen, cardById, cardEl, cardHelp, hidePreview, toast, modal, closeModal, fx, pulse, KIND_LABEL };
 })(this);
