@@ -21,6 +21,8 @@
  *   容量 ＝ 効果の基本値 × 対象の倍率 × 発動の場面 × 回数 × 条件 × 代償 × 倍化（効果の種類ごとに必要なものだけ）
  *
  * ■ 歯止め（容量とは別の上限）
+ *   ・メタ効果（相手のカードの使用を制限する効果：呪文封じ・召喚封じ・攻撃封じ・打ち消し・相手のコスト増）は
+ *     容量を多く使ううえ、カードのコストに下限がある（minCost）。素質が高くても、軽いカードには付けられない
  *   ・テキスト効果は3つ、キーワード効果は3つまで。条件は1つの効果に2つまで
  *   ・デメリット（容量が戻る効果やキーワード）で戻る容量は、容量の1/4まで
  *   ・「何度でも」は自分を強くし続ける効果（アンタップ・追加攻撃）には付けられない
@@ -257,10 +259,10 @@
     freeze:     A({ cat: '妨害・封じ', label: '凍結する（次のターンにアンタップしない）', side: 'enemy', whos: ['enemy', 'attacker'], pts: () => 14, style: 'obj', verb: () => 'タップし、次の持ち主のターンの始めにアンタップさせない' }),
     silence:    A({ cat: '妨害・封じ', label: '能力を消す', side: 'enemy', whos: ['enemy', 'any', 'attacker'], pts: () => 16, style: 'poss', attr: '能力', verb: () => '全て消す' }),
     steal:      A({ cat: '妨害・封じ', label: 'コントロールを奪う', side: 'enemy', whos: ['enemy'], dur: true, durs: ['turn', 'perm'], counts: ['1'], pts: (e) => (e.dur === 'perm' ? 55 : 24), style: 'obj', verb: (e) => (e.dur === 'perm' ? '自分のものにする' : 'このターンの間、自分のものにする（アンタップし、攻撃もできる）') }),
-    spellLock:  A({ cat: '妨害・封じ', label: '相手の呪文を封じる', side: 'none', ns: [0], pts: () => 14, text: () => '相手は、次の自分のターンの始めまで呪文を唱えられない' }),
-    summonLock: A({ cat: '妨害・封じ', label: '相手の召喚を封じる', side: 'none', ns: [0], pts: () => 18, text: () => '相手は、次の自分のターンの始めまでクリーチャーを召喚できない' }),
-    attackLock: A({ cat: '妨害・封じ', label: '相手の攻撃を封じる', side: 'none', ns: [0], pts: () => 24, text: () => '相手のクリーチャーは、次の自分のターンの始めまで攻撃できない' }),
-    negate:     A({ cat: '妨害・封じ', label: '呪文を打ち消す（〔対抗〕専用）', side: 'none', ns: [0], trig: 'counter', pts: () => 30, text: () => 'その呪文を打ち消す' }),
+    spellLock:  A({ cat: '妨害・封じ', label: '相手の呪文を封じる', side: 'none', ns: [0], meta: true, minCost: 6, pts: () => 40, text: () => '相手は、次の自分のターンの始めまで呪文を唱えられない' }),
+    summonLock: A({ cat: '妨害・封じ', label: '相手の召喚を封じる', side: 'none', ns: [0], meta: true, minCost: 6, pts: () => 45, text: () => '相手は、次の自分のターンの始めまでクリーチャーを召喚できない' }),
+    attackLock: A({ cat: '妨害・封じ', label: '相手の攻撃を封じる', side: 'none', ns: [0], meta: true, minCost: 7, pts: () => 55, text: () => '相手のクリーチャーは、次の自分のターンの始めまで攻撃できない' }),
+    negate:     A({ cat: '妨害・封じ', label: '呪文を打ち消す（〔対抗〕専用）', side: 'none', ns: [0], trig: 'counter', meta: true, minCost: 5, pts: () => 45, text: () => 'その呪文を打ち消す' }),
     // ── 強化 ──
     buff:       A({ cat: '強化', label: 'パワーを上げる', side: 'ally', whos: ['self', 'ally', 'allyOther'], ns: AMT_P, dur: true, per: true, statik: true, pts: (e) => e.n / 150 * DURATIONS[e.dur || 'turn'].mult, style: 'poss', attr: 'パワー', verb: (e) => `${durText(e)}+${e.n}する` }),
     grantKw:    A({ cat: '強化', label: 'キーワード効果を与える', side: 'ally', whos: ['self', 'ally', 'allyOther'], kw: true, dur: true, statik: true, pts: (e) => (KEYWORDS[e.kw] ? Math.max(0, KEYWORDS[e.kw].pts) : 8) * ({ turn: 0.4, untilNext: 0.55, perm: 1.0 })[e.dur || 'turn'] + 2, style: 'grant', verb: (e) => `${durText(e, true)}【${KEYWORDS[e.kw] ? KEYWORDS[e.kw].label : '？'}】を与える` }),
@@ -275,7 +277,7 @@
     returnSelf: A({ cat: '召喚', label: 'このクリーチャーを手札に戻す', side: 'none', ns: [0], kind: 'creature', pts: () => 14, text: () => 'このカードを自分の手札に戻す' }),
     // ── 常在専用 ──
     auraCost:   A({ cat: '常在（場にいる限り）', label: '自分のカードのコストを下げる', side: 'none', ns: [1, 2], statikOnly: true, pts: (e) => 20 * e.n, text: (e) => `自分のカードのコストを${e.n}少なくする（最低1）` }),
-    auraOppCost: A({ cat: '常在（場にいる限り）', label: '相手のカードのコストを上げる', side: 'none', ns: [1], statikOnly: true, pts: () => 28, text: () => '相手のカードのコストを1多くする' }),
+    auraOppCost: A({ cat: '常在（場にいる限り）', label: '相手のカードのコストを上げる', side: 'none', ns: [1], statikOnly: true, meta: true, minCost: 6, pts: () => 50, text: () => '相手のカードのコストを1多くする' }),
   };
   function durText(e, grant) {
     const d = DURATIONS[e.dur || 'turn'];
@@ -371,6 +373,7 @@
     if (t.static && !(a.statik || a.statikOnly)) err.push(`「${a.label}」は常在効果にできない`);
     if (a.statikOnly && !t.static) err.push(`「${a.label}」は常在効果専用`);
     if (a.ns && !a.ns.includes(e.n)) err.push('量が正しくない');
+    if (a.minCost && spec.cost < a.minCost) err.push(`「${a.label}」はメタ効果なので、コスト${a.minCost}以上のカードにしか付けられない`);
     // 回数
     if (t.rep && !t.static) {
       if (!LIMITS[e.lim || 'turn1']) err.push('回数の制限が正しくない');

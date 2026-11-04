@@ -225,7 +225,7 @@
       }
     }
     // ③ 効果
-    const acts = Parts.actionsFor(d, e.trig).map((k) => ({ id: k, label: Parts.ACTIONS[k].label, grp: Parts.ACTIONS[k].cat }));
+    const acts = Parts.actionsFor(d, e.trig).map((k) => ({ id: k, label: Parts.ACTIONS[k].label + (Parts.ACTIONS[k].minCost ? `【メタ・コスト${Parts.ACTIONS[k].minCost}以上】` : ''), grp: Parts.ACTIONS[k].cat }));
     let row3 = field('効果', sel('act', acts, e.act), 'wide');
     if (a.ns && a.ns.length > 1) row3 += field('量', sel('n', a.ns.map((n) => ({ id: n, label: amountLabel(e.act, n) })), e.n));
     if (e.act === 'token') {
