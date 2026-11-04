@@ -352,7 +352,7 @@
       <div class="ember${p.ember ? ' on' : ''}" title="火種：攻撃されるたびに1つ得る（${g.cfg.emberCap}つまで）。マナの代わりに使えるほか、${g.cfg.emberBlockCost}つ払って相手の本体への攻撃をブロックできる">🔥<b>${p.ember}</b><small>/${g.cfg.emberCap}</small></div>
       <div class="pb-info">
         <span title="手札">🂠 ${p.hand.length}</span><span title="山札（0枚で引くと負け）" class="${p.deck.length <= 5 ? 'warn' : ''}">📚 ${p.deck.length}</span><span title="${esc(graveTip)}">⚰ ${p.grave.length}</span>
-        ${p.locks.spell != null ? '<span class="lock">🔒呪文封じ</span>' : ''}${p.locks.summon != null ? '<span class="lock">🔒召喚封じ</span>' : ''}${p.locks.attack != null ? '<span class="lock">🔒攻撃封じ</span>' : ''}${p.nextDiscount ? `<span class="buffchip">次のカード-${p.nextDiscount}</span>` : ''}
+        ${g.metaOn(p).map((r) => (Parts.META[r.k] ? `<span class="lock" title="${r.statik ? '相手の場の常在効果' : '相手の次のターンの始めまで'}">🔒${esc(Parts.META[r.k].short(r.n))}${r.statik ? '（常在）' : ''}</span>` : '')).join('')}${p.nextDiscount ? `<span class="buffchip">次のカード-${p.nextDiscount}</span>` : ''}
       </div>
       ${p.index === OP ? `<div class="op-hand">${'<i></i>'.repeat(Math.min(10, p.hand.length))}</div>` : ''}`;
     el.onclick = () => clickPlayer(p.index);

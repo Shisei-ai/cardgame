@@ -142,8 +142,15 @@
         if (e.act === 'extraAttack' && g.step !== 'main') return base * 0.5;
         return base;
       }
+      // メタ効果：相手に使えるものがある時だけ（効き目は相手次第なので、少し低めに見積もる）
+      if (Parts.META[e.act]) {
+        const attackish = ['attackLock', 'attackLimit'].includes(e.act);
+        const relevant = attackish ? op.field.length : op.hand.length;
+        if (g.metaOn(op).some((r) => r.k === e.act && r.n === e.n)) return 0; // もう掛かっている
+        return relevant >= 2 ? base * 0.7 : relevant ? base * 0.3 : 0;
+      }
       switch (e.act) {
-        case 'draw': case 'loot': return me.hand.length + e.n > g.cfg.handLimit ? 0 : base;
+        case 'draw': case 'loot': return me.hand.length + e.n > g.cfg.handLimit || g.metaOn(me).some((r) => r.k === 'drawLock') ? 0 : base;
         case 'discardSelf': return -6 * e.n;
         case 'selfDamage': return -e.n / 100;
         case 'rampMax': return me.maxMana >= g.cfg.maxManaCap ? 0 : base;
@@ -156,8 +163,7 @@
         case 'manaBurn': return op.maxMana > 1 ? base : 0;
         case 'emberGain': return me.ember < g.cfg.emberCap ? base : 0;
         case 'emberBurn': return op.ember ? base : 0;
-        case 'spellLock': case 'summonLock': return op.hand.length >= 2 ? base : 0;
-        case 'attackLock': return op.field.length ? base : 0;
+        case 'negate': case 'negateLE': return 0;
         case 'regrow': return me.grave.some((c) => c.spec.kind === 'creature') ? base : 0;
         case 'regrowAny': return me.grave.length ? base : 0;
         case 'searchCreature': return me.deck.some((c) => c.spec.kind === 'creature' && c.spec.cost <= e.n) ? base : 0;
@@ -271,9 +277,9 @@
         const v = Parts.usage(sp).total;
         const lethal = (sp.effects || []).some((e) => (e.act === 'burn' || e.act === 'drainLife') && e.n >= me.hp);
         const opts = req.options.map((iid) => me.hand.find((x) => x.iid === iid)).filter(Boolean);
-        const negater = opts.find((c) => c.spec.effects.some((e) => e.act === 'negate'));
+        const negater = opts.find((c) => c.spec.effects.some((e) => e.act === 'negate' || (e.act === 'negateLE' && sp.cost <= e.n)));
         if (negater && (v >= 22 || lethal)) return [negater.iid];
-        const other = opts.find((c) => !c.spec.effects.some((e) => e.act === 'negate'));
+        const other = opts.find((c) => !c.spec.effects.some((e) => e.act === 'negate' || e.act === 'negateLE'));
         return other && Parts.usage(other.spec).total > 10 ? [other.iid] : [];
       }
       if (req.kind === 'block') {

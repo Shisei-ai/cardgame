@@ -68,6 +68,7 @@
     C('b_sage', '森の賢者', '🧙', 6, 0, ['guard'], [X('summon', 'draw', { n: 2 })]),
     C('b_executioner', '処刑人', '🪓', 6, 0, [], [X('summon', 'destroy', { tgt: T('enemy', 1, 'choose', 'powerLE', 2000) })]),
     C('b_warden', '牢番', '🔐', 7, 0, ['guard'], [X('static', 'auraOppCost', { n: 1 })]),
+    C('b_gatekeeper', '小門の門番', '🚪', 7, 0, [], [X('static', 'summonLockLE', { n: 2 })]),
     C('b_bonelord', '骸骨の王', '💀', 6, 0, [], [X('allyDestroyed', 'token', { n: 1, tp: 1000, lim: 'turn1' })]),
     C('b_titan', '鋼の巨人', '🤖', 7, 0),
     C('b_commander', '軍団長', '🎖️', 7, 0, ['guard'], [X('summon', 'buff', { n: 500, tgt: T('ally', 'all'), dur: 'perm' })]),
@@ -96,6 +97,10 @@
     S('b_pitfall', '落とし穴', '🕳️', 4, [X('react', 'destroy', { tgt: T('attacker') })]),
     S('b_seal', '封印の呪', '🔒', 6, [X('cast', 'spellLock'), X('cast', 'oppDiscard', { n: 1 }), X('cast', 'draw', { n: 1 })]),
     S('b_shock', '衝撃波', '💥', 5, [X('cast', 'weaken', { n: 2000, tgt: T('enemy', 'all'), dur: 'turn' }), X('cast', 'tap', { tgt: T('enemy', 'all') })]),
+    S('b_hush', '静寂の鐘', '🔕', 4, [X('cast', 'spellLockLE', { n: 3 }), X('cast', 'draw', { n: 1 })]),
+    S('b_tombseal', '墓所の封印', '🪦', 3, [X('cast', 'graveLock'), X('cast', 'draw', { n: 1 })]),
+    S('b_drought', '魔力の枯渇', '🏜️', 4, [X('cast', 'manaCap', { n: 5 }), X('cast', 'draw', { n: 1 })]),
+    S('b_snare', '足止めの罠', '🪤', 4, [X('react', 'attackLimit', { n: 1 })]),
     S('b_charm', '魅了の歌', '💘', 5, [X('cast', 'steal', { tgt: T('enemy', 1, 'choose', 'powerLE', 4000), dur: 'perm' })]),
     S('b_tempest', '大嵐', '🌪️', 9, [X('cast', 'destroy', { tgt: T('enemy', 'all') })]),
   ];

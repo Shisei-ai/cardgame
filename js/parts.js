@@ -21,8 +21,8 @@
  *   容量 ＝ 効果の基本値 × 対象の倍率 × 発動の場面 × 回数 × 条件 × 代償 × 倍化（効果の種類ごとに必要なものだけ）
  *
  * ■ 歯止め（容量とは別の上限）
- *   ・メタ効果（相手のカードの使用を制限する効果：呪文封じ・召喚封じ・攻撃封じ・打ち消し・相手のコスト増）は
- *     容量を多く使ううえ、カードのコストに下限がある（minCost）。素質が高くても、軽いカードには付けられない
+ *   ・メタ効果（相手のカードの使用を制限する効果。META の表）は「最低限の重さ15＋効き目×0.75」の容量を使い、
+ *     条件や代償を付けても基本値の85%より安くならない（META_FLOOR）。軽いカードには、強い素質の原石でようやく付けられる
  *   ・テキスト効果は3つ、キーワード効果は3つまで。条件は1つの効果に2つまで
  *   ・デメリット（容量が戻る効果やキーワード）で戻る容量は、容量の1/4まで
  *   ・「何度でも」は自分を強くし続ける効果（アンタップ・追加攻撃）には付けられない
@@ -259,10 +259,6 @@
     freeze:     A({ cat: '妨害・封じ', label: '凍結する（次のターンにアンタップしない）', side: 'enemy', whos: ['enemy', 'attacker'], pts: () => 14, style: 'obj', verb: () => 'タップし、次の持ち主のターンの始めにアンタップさせない' }),
     silence:    A({ cat: '妨害・封じ', label: '能力を消す', side: 'enemy', whos: ['enemy', 'any', 'attacker'], pts: () => 16, style: 'poss', attr: '能力', verb: () => '全て消す' }),
     steal:      A({ cat: '妨害・封じ', label: 'コントロールを奪う', side: 'enemy', whos: ['enemy'], dur: true, durs: ['turn', 'perm'], counts: ['1'], pts: (e) => (e.dur === 'perm' ? 55 : 24), style: 'obj', verb: (e) => (e.dur === 'perm' ? '自分のものにする' : 'このターンの間、自分のものにする（アンタップし、攻撃もできる）') }),
-    spellLock:  A({ cat: '妨害・封じ', label: '相手の呪文を封じる', side: 'none', ns: [0], meta: true, minCost: 6, pts: () => 40, text: () => '相手は、次の自分のターンの始めまで呪文を唱えられない' }),
-    summonLock: A({ cat: '妨害・封じ', label: '相手の召喚を封じる', side: 'none', ns: [0], meta: true, minCost: 6, pts: () => 45, text: () => '相手は、次の自分のターンの始めまでクリーチャーを召喚できない' }),
-    attackLock: A({ cat: '妨害・封じ', label: '相手の攻撃を封じる', side: 'none', ns: [0], meta: true, minCost: 7, pts: () => 55, text: () => '相手のクリーチャーは、次の自分のターンの始めまで攻撃できない' }),
-    negate:     A({ cat: '妨害・封じ', label: '呪文を打ち消す（〔対抗〕専用）', side: 'none', ns: [0], trig: 'counter', meta: true, minCost: 5, pts: () => 45, text: () => 'その呪文を打ち消す' }),
     // ── 強化 ──
     buff:       A({ cat: '強化', label: 'パワーを上げる', side: 'ally', whos: ['self', 'ally', 'allyOther'], ns: AMT_P, dur: true, per: true, statik: true, pts: (e) => e.n / 150 * DURATIONS[e.dur || 'turn'].mult, style: 'poss', attr: 'パワー', verb: (e) => `${durText(e)}+${e.n}する` }),
     grantKw:    A({ cat: '強化', label: 'キーワード効果を与える', side: 'ally', whos: ['self', 'ally', 'allyOther'], kw: true, dur: true, statik: true, pts: (e) => (KEYWORDS[e.kw] ? Math.max(0, KEYWORDS[e.kw].pts) : 8) * ({ turn: 0.4, untilNext: 0.55, perm: 1.0 })[e.dur || 'turn'] + 2, style: 'grant', verb: (e) => `${durText(e, true)}【${KEYWORDS[e.kw] ? KEYWORDS[e.kw].label : '？'}】を与える` }),
@@ -277,8 +273,50 @@
     returnSelf: A({ cat: '召喚', label: 'このクリーチャーを手札に戻す', side: 'none', ns: [0], kind: 'creature', pts: () => 14, text: () => 'このカードを自分の手札に戻す' }),
     // ── 常在専用 ──
     auraCost:   A({ cat: '常在（場にいる限り）', label: '自分のカードのコストを下げる', side: 'none', ns: [1, 2], statikOnly: true, pts: (e) => 20 * e.n, text: (e) => `自分のカードのコストを${e.n}少なくする（最低1）` }),
-    auraOppCost: A({ cat: '常在（場にいる限り）', label: '相手のカードのコストを上げる', side: 'none', ns: [1], statikOnly: true, meta: true, minCost: 6, pts: () => 50, text: () => '相手のカードのコストを1多くする' }),
   };
+  // ───────────── メタ効果（相手のカードの使用を制限する効果） ─────────────
+  // base(n)：効き目の大きさ（相手の1ターンの動き＝マナ6〜10・カード2〜3枚のうち、どれだけを封じるか）
+  // 容量 ＝ META_BASE（どんなメタ効果にもかかる最低限の重さ）＋ 効き目 × META_RATE
+  //       【常在】（場にいる限り掛け続ける）なら、さらに ×META_STATIC
+  // 最低限の重さがあるので、範囲の狭いメタ効果でも、コスト1に付けるには白金以上の素質が必要になる
+  // perTurn：「1ターンに◯まで」型（文章の言い回しが変わる） / short：対戦画面の状態表示
+  const META_STATIC = 2.2, META_FLOOR = 0.85, META_BASE = 15, META_RATE = 0.75;
+  const metaPts = (magnitude) => META_BASE + magnitude * META_RATE;
+  const M = (label, ns, base, txt, short, o = {}) => ({ label, ns, base, txt, short, ...o });
+  const META = {
+    spellLock:    M('呪文を封じる（全て）', [0], () => 45, () => '呪文を唱えられない', () => '呪文'),
+    spellLockLE:  M('コスト○以下の呪文を封じる', [2, 3, 5], (n) => ({ 2: 18, 3: 26, 5: 36 })[n], (n) => `コスト${n}以下の呪文を唱えられない`, (n) => `コスト${n}以下の呪文`),
+    spellLockGE:  M('コスト○以上の呪文を封じる', [4, 6], (n) => ({ 4: 22, 6: 14 })[n], (n) => `コスト${n}以上の呪文を唱えられない`, (n) => `コスト${n}以上の呪文`),
+    summonLock:   M('クリーチャーの召喚を封じる（全て）', [0], () => 50, () => 'クリーチャーを手札から召喚できない', () => '召喚'),
+    summonLockLE: M('コスト○以下のクリーチャーの召喚を封じる', [2, 3, 5], (n) => ({ 2: 18, 3: 28, 5: 40 })[n], (n) => `コスト${n}以下のクリーチャーを手札から召喚できない`, (n) => `コスト${n}以下の召喚`),
+    summonLockGE: M('コスト○以上のクリーチャーの召喚を封じる', [4, 6, 8], (n) => ({ 4: 30, 6: 20, 8: 12 })[n], (n) => `コスト${n}以上のクリーチャーを手札から召喚できない`, (n) => `コスト${n}以上の召喚`),
+    noFreeSummon: M('効果でクリーチャーを出すのを封じる', [0], () => 16, () => '効果でクリーチャーを場に出せない（トークン・蘇生・コストを払わない召喚）', () => '効果で出す'),
+    graveLock:    M('墓地のカードを使うのを封じる', [0], () => 14, () => '墓地のカードを手札に戻したり、場に出したりできない', () => '墓地'),
+    manaCap:      M('使えるマナを○までにする', [3, 5, 7], (n) => ({ 3: 42, 5: 30, 7: 18 })[n], (n) => `マナと火種を合わせて${n}までしか使えない`, (n) => `マナ${n}まで`, { perTurn: true }),
+    playLimit:    M('使えるカードを○枚までにする', [1, 2, 3], (n) => ({ 1: 45, 2: 30, 3: 18 })[n], (n) => `カードを${n}枚までしか使えない`, (n) => `カード${n}枚まで`, { perTurn: true }),
+    drawLock:     M('効果でカードを引くのを封じる', [0], () => 14, () => '効果でカードを引けない', () => 'ドロー'),
+    activateLock: M('【起動】効果を封じる', [0], () => 16, () => '【起動】効果を使えない', () => '起動'),
+    attackLock:   M('攻撃を封じる（全て）', [0], () => 55, () => 'クリーチャーで攻撃できない', () => '攻撃'),
+    attackLimit:  M('攻撃を○回までにする', [1, 2], (n) => ({ 1: 35, 2: 22 })[n], (n) => `クリーチャーで${n}回までしか攻撃できない`, (n) => `攻撃${n}回まで`, { perTurn: true }),
+    reactLock:    M('〔迎撃〕〔対抗〕を封じる', [0], () => 18, () => '〔迎撃〕〔対抗〕の呪文を唱えられない', () => '迎撃・対抗'),
+    emberLock:    M('火種を封じる', [0], () => 14, () => '火種を使えない（マナの代わりにも、ブロックにも）', () => '火種'),
+    healLock:     M('回復を封じる', [0], () => 12, () => '体力を回復できない', () => '回復'),
+  };
+  function metaText(e) {
+    const m = META[e.act];
+    if (e.trig === 'static') return `相手は${m.perTurn ? '1ターンに' : ''}${m.txt(e.n)}`;
+    return m.perTurn ? `相手は次のターン、${m.txt(e.n)}` : `相手は、次の自分のターンの始めまで、${m.txt(e.n)}`;
+  }
+  const META_CAT = 'メタ（相手の使用を制限）';
+  for (const [id, m] of Object.entries(META)) {
+    ACTIONS[id] = A({ cat: META_CAT, label: m.label, side: 'none', ns: m.ns, meta: true, statik: true,
+      pts: (e) => metaPts(m.base(e.n)) * (e.trig === 'static' ? META_STATIC : 1), text: metaText });
+  }
+  // 打ち消し（〔対抗〕専用）と、常在で相手のコストを上げる効果もメタ効果
+  ACTIONS.negate = A({ cat: META_CAT, label: '呪文を打ち消す（〔対抗〕専用）', side: 'none', ns: [0], trig: 'counter', meta: true, pts: () => metaPts(45), text: () => 'その呪文を打ち消す' });
+  ACTIONS.negateLE = A({ cat: META_CAT, label: 'コスト○以下の呪文を打ち消す（〔対抗〕専用）', side: 'none', ns: [3, 5], trig: 'counter', meta: true, pts: (e) => metaPts(({ 3: 24, 5: 34 })[e.n]), text: (e) => `その呪文がコスト${e.n}以下なら、打ち消す` });
+  ACTIONS.auraOppCost = A({ cat: META_CAT, label: '相手のカードのコストを上げる（常在専用）', side: 'none', ns: [1], statikOnly: true, meta: true, pts: () => metaPts(50), text: () => '相手のカードのコストを1多くする' });
+
   function durText(e, grant) {
     const d = DURATIONS[e.dur || 'turn'];
     if (e.trig === 'static') return grant ? '' : '';
@@ -316,6 +354,8 @@
     if (pay && e.pay.k !== 'none') v *= pay.mult(e.pay.n);
     if (tr && tr.activated && e.tapToo && (!e.pay || e.pay.k !== 'tapSelf')) v *= 0.8;
     if (v < 0) return Math.round(v); // デメリット
+    // メタ効果は、条件や代償・回数で安くしても、基本値の85%より下がらない
+    if (a.meta) v = Math.max(v, a.pts(e) * META_FLOOR);
     return Math.max(1, Math.round(v));
   }
 
@@ -373,7 +413,6 @@
     if (t.static && !(a.statik || a.statikOnly)) err.push(`「${a.label}」は常在効果にできない`);
     if (a.statikOnly && !t.static) err.push(`「${a.label}」は常在効果専用`);
     if (a.ns && !a.ns.includes(e.n)) err.push('量が正しくない');
-    if (a.minCost && spec.cost < a.minCost) err.push(`「${a.label}」はメタ効果なので、コスト${a.minCost}以上のカードにしか付けられない`);
     // 回数
     if (t.rep && !t.static) {
       if (!LIMITS[e.lim || 'turn1']) err.push('回数の制限が正しくない');
@@ -624,6 +663,7 @@
   return {
     CAP, COST_MIN, COST_MAX, POWER_MIN, POWER_MAX, POWER_STEP, MAX_KEYWORDS, MAX_EFFECTS, MAX_CONDS, AMT_P,
     GRADES, KEYWORDS, TRIGGERS, LIMITS, CONDS, COSTS, WHO, COUNTS, HOWS, FILTERS, DURATIONS, PERS, ACTIONS,
+    META, META_STATIC, META_FLOOR, META_BASE, META_RATE,
     rollGrade, capacity, powerPoints, effectPoints, usage, validate, effectErrors, effectText, cardLines,
     optionsFor, whosFor, trigKind, unitAction, toCode, fromCode, ATTACKER_TRIGS, actionsFor, normalizeEffect, migrate,
   };

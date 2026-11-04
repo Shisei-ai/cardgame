@@ -84,7 +84,7 @@
         <tr><td>〜につき（倍化）</td><td>${esc(list(Parts.PERS).replace('なし、', ''))}（最大${Parts.CAP.PER_MAX}倍）</td></tr>
       </table>
       <p class="point">【起動】は自分のメインステップに、コストを払っていつでも使える効果。【常在】は場にいる限りずっと働く効果。〔迎撃〕〔対抗〕は相手のターンに割り込む呪文です。</p>
-      <p class="hint"><b>メタ効果</b>（相手のカードの使用を制限する効果）は、容量を多く使ううえ、カード自体のコストにも下限があります：${Object.values(Parts.ACTIONS).filter((a) => a.minCost).map((a) => `${esc(a.label.replace('（〔対抗〕専用）', ''))}＝コスト${a.minCost}以上`).join('、')}。</p>
+      <p class="hint"><b>メタ効果</b>（相手のカードの使用を制限する効果）は容量を多く使い、条件・代償・回数で安くしても基本値の${Math.round(Parts.META_FLOOR * 100)}%より安くなりません。【常在】で掛け続けるなら容量は×${Parts.META_STATIC}。軽いカードに付けるには、強い素質の原石が必要です。</p>
       <p class="hint">暴走を防ぐ決まり：テキスト効果は3つまで／デメリットで戻る容量は容量の1/4まで／効果の連鎖は12段まで／1つの効果は1ターン10回まで／1ターンに使えるカードは${CFG.playsPerTurn}枚まで。</p>`;
     } },
     { id: 'keys', icon: '🖱', title: '操作', body: () => `

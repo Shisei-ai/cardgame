@@ -105,7 +105,9 @@
         hp: this.cfg.startHP, maxMana: 0, mana: 0, ember: 0,
         deck: this._shuffle(opts.decks[i].map((spec) => this._inst(spec, i))),
         hand: [], field: [], grave: [], exile: [],
-        locks: {},          // { spell, summon, attack: 解除するプレイヤー番号 }（相手の効果で封じられている）
+        restrict: [],       // 相手のメタ効果による制限 [{ k, n, by }]（by のプレイヤーのターンの始めに解ける）
+        spentThisTurn: 0,   // このターンに使ったマナと火種（「マナを◯までしか使えない」用）
+        attacksThisTurn: 0, // このターンに攻撃した回数
         nextDiscount: 0,    // 次に使うカードのコスト軽減（このターン）
         spellsThisTurn: 0,
         playsThisTurn: 0,
@@ -188,6 +190,43 @@
       return false;
     }
 
+    // ───────────── メタ効果（相手のカードの使用の制限） ─────────────
+    /** p にかかっている制限の一覧 [{ k, n, statik }]（相手の効果で掛けられたもの＋相手の場の常在効果） */
+    metaOn(p) {
+      const out = p.restrict.map((r) => ({ k: r.k, n: r.n }));
+      for (const st of this._statics()) if (st.owner !== p && P.META[st.e.act]) out.push({ k: st.e.act, n: st.e.n, statik: true });
+      return out;
+    }
+    _metaN(p, k) { return this.metaOn(p).filter((r) => r.k === k).map((r) => r.n); }
+    _has(p, k) { return this._metaN(p, k).length > 0; }
+
+    /** このカードを、制限のせいで使えないなら理由を返す */
+    metaBlocks(p, s) {
+      const L = this.metaOn(p);
+      for (const r of L) {
+        if (s.kind === 'spell') {
+          if (r.k === 'spellLock') return '呪文を封じられている';
+          if (r.k === 'spellLockLE' && s.cost <= r.n) return `コスト${r.n}以下の呪文を封じられている`;
+          if (r.k === 'spellLockGE' && s.cost >= r.n) return `コスト${r.n}以上の呪文を封じられている`;
+          if (r.k === 'reactLock' && this._spellTiming(s) !== 'main') return '迎撃・対抗を封じられている';
+        } else {
+          if (r.k === 'summonLock') return '召喚を封じられている';
+          if (r.k === 'summonLockLE' && s.cost <= r.n) return `コスト${r.n}以下の召喚を封じられている`;
+          if (r.k === 'summonLockGE' && s.cost >= r.n) return `コスト${r.n}以上の召喚を封じられている`;
+        }
+        if (r.k === 'playLimit' && p.playsThisTurn >= r.n) return `このターンはカードを${r.n}枚まで`;
+      }
+      return '';
+    }
+
+    /** 今使えるマナの量（火種を含む。「マナを◯まで」の制限を反映） */
+    budget(p) {
+      let b = p.mana + (this._has(p, 'emberLock') ? 0 : p.ember);
+      const caps = this._metaN(p, 'manaCap');
+      if (caps.length) b = Math.min(b, Math.max(0, Math.min(...caps) - p.spentThisTurn));
+      return b;
+    }
+
     /** 実際のコスト（常在効果・次のカードの軽減を含む） */
     costOf(p, spec) {
       let c = spec.cost;
@@ -223,9 +262,9 @@
       if (timed === 'counter') return { ok: false, reason: '相手が呪文を唱えた時に使える' };
       if (this.active !== pi || this.step !== 'main') return { ok: false, reason: '自分のメインステップのみ' };
       if (p.playsThisTurn >= this.cfg.playsPerTurn) return { ok: false, reason: `1ターンに${this.cfg.playsPerTurn}枚まで` };
-      if (this.costOf(p, s) > p.mana + p.ember) return { ok: false, reason: 'マナ不足' };
-      if (s.kind === 'spell' && p.locks.spell != null) return { ok: false, reason: '呪文を封じられている' };
-      if (s.kind === 'creature' && p.locks.summon != null) return { ok: false, reason: '召喚を封じられている' };
+      const blocked = this.metaBlocks(p, s);
+      if (blocked) return { ok: false, reason: blocked };
+      if (this.costOf(p, s) > this.budget(p)) return { ok: false, reason: this.costOf(p, s) <= p.mana + p.ember ? 'マナの使用を制限されている' : 'マナ不足' };
       if (s.kind === 'creature' && p.field.length >= this.cfg.fieldLimit) return { ok: false, reason: '場がいっぱい' };
       return { ok: true, reason: '' };
     }
@@ -244,6 +283,7 @@
       if (!u || this._busy() || this.active !== pi || this.step !== 'main' || u.silenced) return false;
       const e = (u.spec.effects || [])[idx];
       if (!e || e.trig !== 'activate') return false;
+      if (this._has(p, 'activateLock')) return false;
       if (!this._limitOk(u, idx, e)) return false;
       const needTap = e.tapToo || (e.pay && e.pay.k === 'tapSelf');
       if (needTap && (u.tapped || u.sick)) return false;
@@ -279,7 +319,9 @@
       const p = this.players[pi];
       const u = p.field.find((x) => x.uid === uid);
       if (!u || this._busy() || this.active !== pi || this.step !== 'attack') return false;
-      if (p.locks.attack != null) return false;
+      if (this._has(p, 'attackLock')) return false;
+      const lim = this._metaN(p, 'attackLimit');
+      if (lim.length && p.attacksThisTurn >= Math.min(...lim)) return false;
       return !u.tapped && !u.sick && u.attacks > 0 && !this.hasKw(u, 'slow');
     }
 
@@ -346,7 +388,9 @@
       const op = this.opp(p);
       // 「次の自分のターンの始めまで」の効果が切れる
       for (const q of this.players) {
-        for (const k of Object.keys(q.locks)) if (q.locks[k] === p.index) delete q.locks[k];
+        q.restrict = q.restrict.filter((r) => r.by !== p.index);
+        q.spentThisTurn = 0;
+        q.attacksThisTurn = 0;
         for (const u of q.field) {
           u.mods = u.mods.filter((m) => !(m.exp === 'next' && m.pi === p.index));
           if (u.protectedBy === p.index) u.protectedBy = null;
@@ -463,7 +507,7 @@
     /** 呪文 spellCtx が唱えられた時、相手（responder）が対抗呪文を使うか */
     *_counterWindow(responder, caster, spellCtx) {
       if (this._windows >= 3) return;
-      const usable = responder.hand.filter((c) => this._spellTiming(c.spec) === 'counter' && this.costOf(responder, c.spec) <= responder.mana + responder.ember && responder.locks.spell == null);
+      const usable = responder.hand.filter((c) => this._spellTiming(c.spec) === 'counter' && this.costOf(responder, c.spec) <= this.budget(responder) && !this.metaBlocks(responder, c.spec));
       if (!usable.length) return;
       const ans = yield { player: responder.index, kind: 'counter', prompt: `相手が【${spellCtx.spell.name}】を唱えた！ 対抗呪文を使いますか？`, options: usable.map((c) => c.iid), min: 0, max: 1, spell: spellCtx.spell };
       const iid = ans && ans[0];
@@ -471,6 +515,7 @@
       if (i < 0) return;
       const inst = responder.hand.splice(i, 1)[0];
       this._pay(responder, this.costOf(responder, inst.spec));
+      responder.playsThisTurn++;
       responder.stats.played++;
       this._windows++;
       try { yield* this._cast(responder, inst, { countering: spellCtx }); } finally { this._windows--; }
@@ -480,6 +525,7 @@
       const fromMana = Math.min(p.mana, cost);
       p.mana -= fromMana;
       p.ember = Math.max(0, p.ember - (cost - fromMana));
+      p.spentThisTurn += cost;
     }
 
     // ───────────── 攻撃とバトル ─────────────
@@ -487,6 +533,7 @@
       const op = this.opp(p);
       u.attacks--;
       u.tapped = true;
+      p.attacksThisTurn++;
       yield* this._attackBody(p, u, target);
       if (this.over) return;
       yield* this._gainEmber(op, this.cfg.emberPerAttack);
@@ -515,7 +562,7 @@
           this._emit({ type: 'guard', player: op.index, unit: g });
         }
       }
-      if (!tgt && !this.hasKw(u, 'stealth') && this.cfg.emberBlockCost > 0 && op.ember >= this.cfg.emberBlockCost) {
+      if (!tgt && !this.hasKw(u, 'stealth') && this.cfg.emberBlockCost > 0 && op.ember >= this.cfg.emberBlockCost && !this._has(op, 'emberLock')) {
         const blockers = op.field.filter((b) => !b.tapped);
         if (blockers.length) {
           const ans = yield { player: op.index, kind: 'block', prompt: `【${u.name}】（パワー${this.powerOf(u)}）があなたを攻撃！ 火種${this.cfg.emberBlockCost}つでブロックしますか？`, options: blockers.map((b) => b.uid), min: 0, max: 1, attacker: u.uid };
@@ -579,7 +626,7 @@
 
     *_reactWindow(defender, attacker) {
       for (let k = 0; k < 3; k++) {
-        const usable = defender.hand.filter((c) => this._spellTiming(c.spec) === 'react' && this.costOf(defender, c.spec) <= defender.mana + defender.ember && defender.locks.spell == null);
+        const usable = defender.hand.filter((c) => this._spellTiming(c.spec) === 'react' && this.costOf(defender, c.spec) <= this.budget(defender) && !this.metaBlocks(defender, c.spec));
         if (!usable.length) return;
         const ans = yield { player: defender.index, kind: 'react', prompt: `${attacker.name}が攻撃してきた！ 迎撃呪文を使いますか？`, options: usable.map((c) => c.iid), min: 0, max: 1, attacker: attacker.uid };
         const iid = ans && ans[0];
@@ -588,6 +635,7 @@
         if (i < 0) return;
         const inst = defender.hand.splice(i, 1)[0];
         this._pay(defender, this.costOf(defender, inst.spec));
+        defender.playsThisTurn++;
         defender.stats.played++;
         yield* this._cast(defender, inst, { attacker });
         if (this.over || !this.players[attacker.owner].field.includes(attacker)) return;
@@ -647,8 +695,8 @@
         case 'tapSelf': return !!source && !source.tapped;
         case 'discard': return p.hand.length >= n;
         case 'life': return p.hp > n;
-        case 'mana': return p.mana + p.ember >= n;
-        case 'ember': return p.ember >= n;
+        case 'mana': return this.budget(p) >= n;
+        case 'ember': return p.ember >= n && !this._has(p, 'emberLock');
         case 'sacSelf': return !!source && p.field.includes(source);
         case 'sacAlly': return p.field.some((u) => u !== source);
         case 'exileGrave': return p.grave.length >= n;
@@ -669,7 +717,7 @@
         }
         case 'life': this._loseLife(p, n); break;
         case 'mana': this._pay(p, n); break;
-        case 'ember': p.ember -= n; break;
+        case 'ember': p.ember -= n; p.spentThisTurn += n; break;
         case 'sacSelf': yield* this._destroy(source, '代償'); break;
         case 'sacAlly': {
           const pool = p.field.filter((u) => u !== source);
@@ -773,9 +821,9 @@
       const k = mult;
       switch (e.act) {
         // カード・手札
-        case 'draw': for (let i = 0; i < n * k && !this.over; i++) this._drawOne(p); break;
+        case 'draw': if (this._has(p, 'drawLock')) break; for (let i = 0; i < n * k && !this.over; i++) this._drawOne(p); break;
         case 'loot': {
-          for (let i = 0; i < n && !this.over; i++) this._drawOne(p);
+          if (!this._has(p, 'drawLock')) for (let i = 0; i < n && !this.over; i++) this._drawOne(p);
           if (this.over || !p.hand.length) break;
           const ans = yield { player: p.index, kind: 'discard', prompt: '捨てるカードを1枚選んでください', options: p.hand.map((c) => c.iid), min: 1, max: 1 };
           yield* this._discard(p, (ans && ans[0]) || p.hand[0].iid);
@@ -817,6 +865,7 @@
           break;
         }
         case 'regrow': case 'regrowAny': {
+          if (this._has(p, 'graveLock')) break;
           const list = p.grave.filter((c) => e.act === 'regrowAny' || c.spec.kind === 'creature');
           const picked = yield* this._pickCards(p, 'grave', list, n, `墓地から手札に戻すカードを${n}枚選んでください`);
           for (const c of picked) { p.grave.splice(p.grave.indexOf(c), 1); this._toHand(p, c); }
@@ -862,10 +911,8 @@
             this._emit({ type: 'steal', player: p.index, unit: u });
           }
           break;
-        case 'spellLock': op.locks.spell = p.index; break;
-        case 'summonLock': op.locks.summon = p.index; break;
-        case 'attackLock': op.locks.attack = p.index; break;
         case 'negate': if (ctx.countering) ctx.countering.negated = true; break;
+        case 'negateLE': if (ctx.countering && ctx.countering.spell.cost <= n) ctx.countering.negated = true; break;
         // 強化
         case 'buff': for (const u of targets) this._mod(u, n * k, null, e.dur || 'turn', p.index); break;
         case 'grantKw':
@@ -880,6 +927,7 @@
         case 'protect': for (const u of targets) u.protectedBy = p.index; break;
         // 召喚
         case 'token':
+          if (this._has(p, 'noFreeSummon')) break;
           for (let i = 0; i < n && p.field.length < this.cfg.fieldLimit; i++) {
             const tspec = { id: `tk_${e.tp || 1000}_${e.kw || ''}`, name: 'トークン', icon: '✨', kind: 'creature', cost: 0, power: e.tp || 1000, keywords: e.kw ? [e.kw] : [], effects: [], token: true, grade: 'silver', base: true };
             yield* this._summon(p, this._inst(tspec, p.index));
@@ -887,6 +935,7 @@
           }
           break;
         case 'reanimate': case 'cheatHand': {
+          if (this._has(p, 'noFreeSummon') || (e.act === 'reanimate' && this._has(p, 'graveLock'))) break;
           const zone = e.act === 'reanimate' ? p.grave : p.hand;
           const list = zone.filter((c) => c.spec.kind === 'creature' && c.spec.cost <= n);
           if (!list.length || p.field.length >= this.cfg.fieldLimit) break;
@@ -898,7 +947,7 @@
           const c = p.deck.pop();
           if (!c) break;
           this._emit({ type: 'reveal', player: p.index, card: c.spec });
-          if (c.spec.kind === 'creature' && p.field.length < this.cfg.fieldLimit) yield* this._summon(p, c);
+          if (c.spec.kind === 'creature' && p.field.length < this.cfg.fieldLimit && !this._has(p, 'noFreeSummon')) yield* this._summon(p, c);
           else this._toHand(p, c);
           break;
         }
@@ -906,10 +955,12 @@
           if (!source) break;
           if (p.field.includes(source)) { yield* this._leave(source, 'hand'); break; }
           const i = p.grave.indexOf(source.inst);
-          if (i >= 0) { p.grave.splice(i, 1); this._toHand(p, source.inst); }
+          if (i >= 0 && !this._has(p, 'graveLock')) { p.grave.splice(i, 1); this._toHand(p, source.inst); }
           break;
         }
       }
+      // メタ効果：相手に制限を掛ける（自分の次のターンの始めまで）
+      if (P.META[e.act] && e.trig !== 'static') op.restrict.push({ k: e.act, n, by: p.index });
       this._bump();
     }
 
@@ -1021,7 +1072,7 @@
     }
 
     *_healGen(p, amount) {
-      if (amount <= 0) return;
+      if (amount <= 0 || this._has(p, 'healLock')) return;
       const before = p.hp;
       p.hp = Math.min(this.cfg.startHP, p.hp + amount);
       if (p.hp === before) return;
