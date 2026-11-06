@@ -24,7 +24,7 @@
         <button class="btn big" data-go="builder">📚 デッキ構築</button>
         <button class="btn big" data-go="rules">📜 遊び方</button>
       </div>
-      <p class="version">prototype v0.4</p>
+      <p class="version">prototype v0.5</p>
     </div>
   </section>
 
@@ -45,23 +45,33 @@
     </div>
   </section>
 
-  <!-- ===== 対戦 ===== -->
+  <!-- ===== 対戦 =====
+       配置：上が相手、下が自分。中央の闘技場に場（クリーチャー6体まで）が向かい合う。
+       左下＝自分のマナ（周りの5つの穴が火種）、右下＝手札、右＝ターン終了・山札・墓地。 -->
   <section id="screen-battle" class="screen">
     <div class="board" id="board">
-      <div class="pbar op" id="pbar-1"></div>
-      <div class="field op" id="field-1"></div>
-      <div class="midline">
-        <div class="turn-info" id="turn-info"></div>
-        <div class="mid-buttons">
-          <button class="btn" id="btn-attack">アタックへ ▶</button>
-          <button class="btn primary" id="btn-end">ターン終了</button>
-          <button class="btn icon" id="btn-menu" title="メニュー">☰</button>
-        </div>
-      </div>
-      <div class="field me" id="field-0"></div>
-      <div class="pbar me" id="pbar-0"></div>
-      <div class="hand" id="hand"></div>
+      <div class="arena"><div class="arena-ring"></div><div class="arena-line"></div></div>
+      <button class="hexbtn" id="btn-menu" title="メニュー">☰</button>
+      <div class="op-hand" id="op-hand"></div>
       <div class="feed" id="feed"></div>
+
+      <div class="avatar op" id="pbar-1"></div>
+      <div class="counts op" id="counts-1"></div>
+      <div class="dial op" id="dial-1"></div>
+      <div class="piles op" id="piles-1"></div>
+      <div class="field op" id="field-1"></div>
+
+      <div class="turn-info" id="turn-info"></div>
+
+      <div class="field me" id="field-0"></div>
+      <div class="piles me" id="piles-0"></div>
+      <button class="turn-end" id="btn-end"></button>
+      <div class="dial me" id="dial-0"></div>
+      <div class="avatar me" id="pbar-0"></div>
+      <div class="counts me" id="counts-0"></div>
+      <div class="hand" id="hand"></div>
+      <svg class="aim" id="aim"><defs><marker id="aim-head" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" /></marker></defs><line x1="0" y1="0" x2="0" y2="0" marker-end="url(#aim-head)" /></svg>
+      <div class="detail" id="detail"></div>
     </div>
     <div class="guide" id="guide"></div>
   </section>

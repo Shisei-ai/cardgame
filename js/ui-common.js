@@ -97,12 +97,15 @@
   }
 
   // ───────────── 拡大表示（マウスを乗せる） ─────────────
-  let pvEl = null, pvFor = null;
+  let pvEl = null, pvFor = null, detailFn = null;
+  /** 対戦画面など、拡大表示の代わりに独自の情報パネルを出したい画面が登録する（fn(spec, target) / fn(null) で隠す） */
+  function setDetail(fn) { detailFn = fn; }
   function showPreview(target) {
     const spec = specOf.get(target);
     if (!spec) return;
     if (pvFor === target) return;
     pvFor = target;
+    if (detailFn && target.closest('#screen-battle')) { if (pvEl) pvEl.classList.remove('show'); detailFn(spec, target); return; }
     if (!pvEl) { pvEl = document.createElement('div'); pvEl.className = 'preview'; $('#stage').appendChild(pvEl); }
     pvEl.innerHTML = '';
     const big = cardEl(spec, { power: target.dataset.power != null ? Number(target.dataset.power) : undefined });
@@ -118,7 +121,7 @@
     pvEl.style.top = Math.max(10, Math.min(720 - 400, p.y - 190)) + 'px';
     pvEl.classList.add('show');
   }
-  function hidePreview() { pvFor = null; if (pvEl) pvEl.classList.remove('show'); }
+  function hidePreview() { pvFor = null; if (pvEl) pvEl.classList.remove('show'); if (detailFn) detailFn(null); }
 
   // ───────────── お知らせ・ダイアログ ─────────────
   let toastT = 0;
@@ -197,5 +200,5 @@
     document.addEventListener('mousedown', hidePreview);
   }
 
-  root.UI = { $, $$, esc, init, bindSpec, fitStage, stagePoint, onScreen, showScreen, cardById, cardEl, cardHelp, hidePreview, toast, modal, closeModal, fx, pulse, KIND_LABEL };
+  root.UI = { $, $$, esc, init, bindSpec, fitStage, stagePoint, onScreen, showScreen, cardById, cardEl, cardHelp, hidePreview, setDetail, toast, modal, closeModal, fx, pulse, KIND_LABEL };
 })(this);

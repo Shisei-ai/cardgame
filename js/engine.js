@@ -315,18 +315,20 @@
       return true;
     }
 
-    canAttack(pi, uid) {
+    /** anyStep：メインステップ中でも「アタックステップへ移れば攻撃できるか」を調べる（画面の操作用） */
+    canAttack(pi, uid, anyStep = false) {
       const p = this.players[pi];
       const u = p.field.find((x) => x.uid === uid);
-      if (!u || this._busy() || this.active !== pi || this.step !== 'attack') return false;
+      if (!u || this._busy() || this.active !== pi) return false;
+      if (this.step !== 'attack' && !(anyStep && this.step === 'main')) return false;
       if (this._has(p, 'attackLock')) return false;
       const lim = this._metaN(p, 'attackLimit');
       if (lim.length && p.attacksThisTurn >= Math.min(...lim)) return false;
       return !u.tapped && !u.sick && u.attacks > 0 && !this.hasKw(u, 'slow');
     }
 
-    attackTargets(pi, uid) {
-      if (!this.canAttack(pi, uid)) return [];
+    attackTargets(pi, uid, anyStep = false) {
+      if (!this.canAttack(pi, uid, anyStep)) return [];
       const p = this.players[pi];
       const u = p.field.find((x) => x.uid === uid);
       const op = this.opp(p);
