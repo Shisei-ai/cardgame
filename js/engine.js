@@ -754,7 +754,7 @@
           targets = yield* this._pickTargets(p, source, e, a, ctx, name);
           if (!targets.length) return;
         }
-        this._emit({ type: 'effect', player: p.index, source, effect: e, card: spellSpec || (source && source.spec) });
+        this._emit({ type: 'effect', player: p.index, source, effect: e, card: spellSpec || (source && source.spec), targets });
         yield* this._apply(p, source, e, targets, mult, ctx, spellSpec);
         if (this.over) return;
         yield* this._sweep();
