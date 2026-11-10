@@ -20,15 +20,56 @@
 
   const total = () => Object.values(S.cards).reduce((s, n) => s + n, 0);
 
+  const poolCard = (id) => [...$('#pool').children].find((el) => el.dataset && el.dataset.id === id);
+
   function add(id, d) {
     const n = (S.cards[id] || 0) + d;
-    if (d > 0 && n > CFG.maxCopies) { UI.toast(`同じカードは${CFG.maxCopies}枚まで`); return; }
-    if (d > 0 && total() >= CFG.deckSize) { UI.toast(`デッキは${CFG.deckSize}枚まで`); return; }
+    const src = poolCard(id);
+    if (d > 0 && (n > CFG.maxCopies || total() >= CFG.deckSize)) {
+      UI.toast(n > CFG.maxCopies ? `同じカードは${CFG.maxCopies}枚まで` : `デッキは${CFG.deckSize}枚まで`);
+      if (src) src.animate([{ translate: '0 0' }, { translate: '-5px 0' }, { translate: '5px 0' }, { translate: '-3px 0' }, { translate: '0 0' }], { duration: 260 }); // 入れられない時は首を振る
+      return;
+    }
+    if (d < 0 && !S.cards[id]) return;
     if (n <= 0) delete S.cards[id]; else S.cards[id] = n;
-    render();
+    S.change = { id, d };
+    // 一覧は作り直さず、枚数の札だけ書き換える（マウスを乗せたカードがちらつかないように）
+    if (src) setBadge(src, S.cards[id]);
+    renderDeck();
+    if (src && d > 0) flyToDeck(src, id);
+    if (d > 0 && total() === CFG.deckSize && root.Ambient) root.Ambient.burstAt($('#deck-count'), '#7fd88a', 30, 1.1); // 40枚そろった
   }
 
-  function render() {
+  /** 一覧のカードの右上の「×枚数」を書き換える */
+  function setBadge(el, n) {
+    let b = el.querySelector('.c-count');
+    if (!n) { if (b) b.remove(); return; }
+    if (!b) { b = document.createElement('div'); b.className = 'c-count'; el.appendChild(b); }
+    b.textContent = '×' + n;
+    UI.pulse(b, 'pop', 300);
+  }
+
+  /** デッキに入れる演出：一覧のカードが弾み、小さなカードがデッキの行へ飛ぶ */
+  function flyToDeck(src, id) {
+    src.animate([{ scale: '1' }, { scale: '.93' }, { scale: '1.05' }, { scale: '1' }], { duration: 260, easing: 'ease-out' });
+    const c = UI.cardById(id);
+    const row = [...$('#deck-list').children].find((li) => li.dataset.id === id) || $('#deck-count');
+    if (!c || !row) return;
+    const a = UI.stagePoint(src), b = UI.stagePoint(row);
+    const ghost = UI.cardEl(c);
+    ghost.removeAttribute('data-pv');
+    ghost.classList.add('deck-ghost');
+    $('#fx').appendChild(ghost);
+    ghost.animate([
+      { transform: `translate(${a.x}px, ${a.y}px) translate(-50%, -50%) scale(.9)`, opacity: 0.95 },
+      { transform: `translate(${(a.x + b.x) / 2}px, ${Math.min(a.y, b.y) - 40}px) translate(-50%, -50%) scale(.5) rotate(8deg)`, opacity: 0.95, offset: 0.55 },
+      { transform: `translate(${b.x}px, ${b.y}px) translate(-50%, -50%) scale(.12) rotate(14deg)`, opacity: 0.3 },
+    ], { duration: 420, easing: 'cubic-bezier(.3,.6,.3,1)', fill: 'forwards' }).onfinish = () => ghost.remove();
+  }
+
+  function render() { renderPool(); renderDeck(); }
+
+  function renderPool() {
     // タブ
     $('#pool-tabs').innerHTML = [['all', 'すべて'], ['base', '基本カード'], ['forged', `オリジナル（${Store.cards().length}）`]]
       .map(([k, l]) => `<button data-t="${k}" class="${S.tab === k ? 'on' : ''}">${l}</button>`).join('');
@@ -41,10 +82,16 @@
     if (!list.length) box.innerHTML = '<p class="hint pad">オリジナルカードはまだありません。カード工房で作りましょう。</p>';
     for (const c of list) {
       const el = UI.cardEl(c, { count: S.cards[c.id] });
+      el.dataset.id = c.id;
       el.onclick = () => add(c.id, 1);
       el.oncontextmenu = (e) => { e.preventDefault(); add(c.id, -1); };
       box.appendChild(el);
     }
+  }
+
+  function renderDeck() {
+    const change = S.change;
+    S.change = null;
     // デッキ選択
     const sel = $('#deck-select');
     const mine = Store.decks();
@@ -54,17 +101,26 @@
     sel.value = S.deckId ? 'm:' + S.deckId : '';
     $('#deck-name').value = S.name;
     const n = total();
-    $('#deck-count').innerHTML = `<b class="${n === CFG.deckSize ? 'ok' : ''}">${n}</b> / ${CFG.deckSize}枚`;
+    $('#deck-count').innerHTML = `<b class="${n === CFG.deckSize ? 'ok' : ''}${change ? ' pop' : ''}">${n}</b> / ${CFG.deckSize}枚`;
     // コストの分布
     const curve = new Array(11).fill(0);
     for (const id in S.cards) { const c = UI.cardById(id); if (c) curve[Math.min(10, c.cost)] += S.cards[id]; }
     const max = Math.max(4, ...curve);
     $('#deck-curve').innerHTML = curve.map((v, i) => i === 0 ? '' : `<div class="bar" title="コスト${i}${i === 10 ? '以上' : ''}：${v}枚"><i style="height:${(v / max) * 100}%"></i><span>${i === 10 ? '10+' : i}</span></div>`).join('');
+    // 棒は作り直しているので、直前の高さから今の高さへ動かす
+    const heights = [...$('#deck-curve').querySelectorAll('.bar i')].map((el, k) => {
+      const from = (S.curve && S.curve[k]) || '0%';
+      if (from !== el.style.height) el.animate([{ height: from }, { height: el.style.height }], { duration: 300, easing: 'cubic-bezier(.2,.8,.3,1.3)' });
+      return el.style.height;
+    });
+    S.curve = heights;
     // デッキの中身
     const ul = $('#deck-list');
     ul.innerHTML = '';
     Object.keys(S.cards).map((id) => ({ id, c: UI.cardById(id) })).sort((a, b) => (a.c ? a.c.cost : 99) - (b.c ? b.c.cost : 99)).forEach(({ id, c }) => {
       const li = document.createElement('li');
+      li.dataset.id = id;
+      if (change && change.id === id) li.classList.add(change.d > 0 ? 'bump' : 'drop'); // 変わった行が光る
       if (!c) { li.className = 'missing'; li.innerHTML = `<span>（捨てたカード）</span><button data-d="-1">−</button><b>${S.cards[id]}</b>`; }
       else {
         li.style.setProperty('--cc', c.color || (c.kind === 'creature' ? '#5f8f4e' : '#5b6fb5'));

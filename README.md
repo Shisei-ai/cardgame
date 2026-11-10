@@ -40,7 +40,8 @@
 
 ```
 index.html          画面のHTML（全画面をここに記述し、表示を切り替える）
-css/style.css       見た目
+css/style.css       見た目（配置・色・形）
+css/motion.css      動きと仕上げ（背景・画面の切り替え・ボタン・各画面のアニメーション）
 js/parts.js         ★カードを作る規則：容量・素質・キーワード効果・テキスト効果の部品・文章の自動生成・カードコード
 js/cards.js         基本カード（parts.js の規則で作っている）
 js/engine.js        ★対戦のルール処理（ターン・攻撃・バトル・効果）
@@ -48,6 +49,7 @@ js/ai.js            CPU（対戦での行動、カードの生成、デッキ作
 js/storage.js       作ったカードとデッキの保存（ブラウザ内）
 js/decks.js         見本のデッキ
 js/ui-common.js     画面共通の部品（カードの描画など）
+js/ambient.js       画面全体の空気を作る演出（背景の火の粉・火花・カードの傾き）
 js/battle.js        対戦画面
 js/forge-ui.js      カード工房
 js/builder.js       デッキ構築

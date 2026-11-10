@@ -1,0 +1,293 @@
+/* ═══════════════════════════════════════════════════════════════
+   ARCANA FORGE — 動きと仕上げ（v0.6）
+   配置や色の基本は style.css。ここには「動き」と、全画面に共通の仕上げをまとめる。
+     1. 背景（火の粉・炉の明かり・周りの暗がり）
+     2. 画面の切り替え
+     3. ボタン・入力欄・スクロールバー
+     4. ダイアログ・お知らせ
+     5. カード（箔の光・傾き）
+     6. 対戦
+     7. カード工房
+     8. デッキ構築・遊び方
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ───────── 1. 背景 ───────── */
+#embers { position: absolute; inset: 0; z-index: 0; pointer-events: none; }          /* 奥：火の粉（ambient.js） */
+#sparks { position: absolute; inset: 0; z-index: 97; pointer-events: none; }         /* 手前：火花（ambient.js） */
+.screen { z-index: 1; }
+#stage::before { content: ''; position: absolute; left: -10%; right: -10%; bottom: -34%; height: 70%; z-index: 0; pointer-events: none;
+  background: radial-gradient(ellipse at 50% 100%, #ff7a2a55 0%, #c8491a22 35%, transparent 65%); animation: furnace 5s ease-in-out infinite; }
+@keyframes furnace { 0%, 100% { opacity: .75; transform: scaleY(1); } 40% { opacity: 1; transform: scaleY(1.08); } 70% { opacity: .6; transform: scaleY(.96); } }
+#stage::after { content: ''; position: absolute; inset: 0; z-index: 96; pointer-events: none; background: radial-gradient(ellipse at 50% 50%, transparent 58%, #00000066 100%); }
+
+/* ───────── 2. 画面の切り替え ───────── */
+.wipe { position: absolute; inset: 0; z-index: 99; pointer-events: none; opacity: 0;
+  background: linear-gradient(105deg, transparent 38%, #ff8a3d22 45%, #ffe2a855 50%, #ff8a3d22 55%, transparent 62%); background-size: 260% 100%; }
+.wipe.go { animation: wipeGo .62s cubic-bezier(.3,.6,.3,1); }
+@keyframes wipeGo { 0% { opacity: 1; background-position: 120% 0; } 80% { opacity: 1; } 100% { opacity: 0; background-position: -30% 0; } }
+@keyframes riseIn { from { opacity: 0; transform: translateY(20px); } }
+@keyframes slideDown { from { opacity: 0; transform: translateY(-14px); } }
+.screen.active .screen-head { animation: slideDown .4s cubic-bezier(.2,.8,.25,1) backwards; }
+.screen.active .panel { animation: riseIn .5s cubic-bezier(.2,.8,.25,1) backwards; }
+.screen.active .panel:nth-of-type(2), .screen.active .forge-main { animation-delay: .07s; }
+.screen.active .setup-side.op, .screen.active .forge-right, .screen.active .deck-side { animation: riseIn .5s cubic-bezier(.2,.8,.25,1) .14s backwards; }
+.screen.active .setup-vs { animation: popIn .5s cubic-bezier(.2,.8,.3,1.5) .3s backwards; }
+.screen.active .setup-foot { animation: riseIn .5s cubic-bezier(.2,.8,.25,1) .26s backwards; }
+.screen-head h2 { position: relative; padding-bottom: 2px; }
+.screen-head h2::after { content: ''; position: absolute; left: 0; right: -30px; bottom: -4px; height: 2px; background: linear-gradient(90deg, var(--copper), transparent); }
+
+/* 対戦の準備：「新しいデッキを組む」の札 */
+.deck-tile.add { align-items: center; justify-content: center; text-align: center; min-height: 128px; border-style: dashed; background: transparent; color: var(--muted); }
+.deck-tile.add i { font-style: normal; font-size: 30px; line-height: 1; color: var(--copper); transition: transform .2s cubic-bezier(.2,.8,.3,1.5); }
+.deck-tile.add b { font-size: 14px; } .deck-tile.add span { min-height: 0; }
+.deck-tile.add:hover { color: var(--text); border-color: var(--brass); background: #ffffff06; } .deck-tile.add:hover i { transform: rotate(90deg) scale(1.2); }
+
+/* ───────── 3. ボタン・入力欄・スクロールバー ───────── */
+.btn { overflow: hidden; transition: filter .12s, transform .12s cubic-bezier(.2,.8,.3,1.5), box-shadow .15s, border-color .15s; }
+.btn:hover:not(:disabled) { border-color: #b78350; }
+.btn:active:not(:disabled) { transform: translateY(1px) scale(.97); }
+.btn.primary::after, .turn-end::after { content: ''; position: absolute; top: 0; bottom: 0; left: -70%; width: 45%; transform: skewX(-20deg); background: linear-gradient(90deg, transparent, #ffffff66, transparent); pointer-events: none; }
+.btn.primary:hover:not(:disabled)::after, .turn-end:hover:not(:disabled)::after { left: 130%; transition: left .55s; }
+.btn.primary:hover:not(:disabled) { box-shadow: inset 0 1px 0 #ffffff55, 0 0 0 1px #fff2c8, 0 0 18px #ff8a3d88; }
+.btn.ghost:hover { color: var(--brass2); transform: translateX(-3px); }
+.seg button { transition: background .15s, color .15s; }
+.seg button:hover:not(.on) { color: var(--text); background: #2a1e15; }
+:focus-visible { outline: 2px solid var(--brass2); outline-offset: 2px; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--brass) !important; box-shadow: 0 0 0 2px #e2b96a33; }
+::selection { background: #e2b96a55; }
+* { scrollbar-width: thin; scrollbar-color: #7a5536 #140e0a; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #140e0a; border-radius: 5px; }
+::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #9a6a3e, #5a3a22); border-radius: 5px; border: 2px solid #140e0a; }
+::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, #c8893e, #7a5536); }
+
+/* ───────── 4. ダイアログ・お知らせ ───────── */
+.modal.show { animation: fadeIn .18s ease-out; }
+@keyframes popIn { 0% { transform: scale(.86) translateY(16px); opacity: 0; } 65% { transform: scale(1.02); opacity: 1; } 100% { transform: none; } }
+.modal .panel { animation: popIn .3s cubic-bezier(.2,.8,.3,1); }
+.modal h3 { position: relative; }
+.toast { display: flex; align-items: center; gap: 8px; border-color: #b8863a; box-shadow: 0 6px 20px #000c, 0 0 18px #ff8a3d33; transform: translateX(-50%) translateY(12px) scale(.96); transition: opacity .2s, transform .28s cubic-bezier(.2,.8,.3,1.5); }
+.toast::before { content: '⚒'; color: var(--brass); }
+.toast { bottom: 34px; } #stage[data-screen="battle"] .toast { bottom: 236px; } /* 対戦中は、場と手札の間に出す */
+.toast.show { transform: translateX(-50%); }
+
+/* ───────── 5. カード ───────── */
+/* 箔の光：金・白金・星輝のオリジナルカードは、表面を光が流れる */
+.card.is-forged.grade-gold .c-frame::after, .card.is-forged.grade-platinum .c-frame::after, .card.is-forged.grade-star .c-frame::after {
+  content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none; mix-blend-mode: screen; opacity: .55;
+  background: linear-gradient(115deg, transparent 38%, color-mix(in srgb, var(--gc) 45%, transparent) 46%, #ffffff66 50%, color-mix(in srgb, var(--gc) 45%, transparent) 54%, transparent 62%); background-size: 320% 100%; animation: foil 5.5s linear infinite; }
+.card.is-forged.grade-platinum .c-frame::after { animation-duration: 4.2s; opacity: .7; }
+.card.is-forged.grade-star .c-frame::after { animation: foil 3.4s linear infinite, hue 6s linear infinite; opacity: .85;
+  background: linear-gradient(115deg, transparent 30%, #ff9be688 42%, #9be6ff88 47%, #ffffffaa 50%, #fff2a088 53%, #ff9be688 58%, transparent 70%); background-size: 320% 100%; }
+@keyframes foil { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+@keyframes hue { to { filter: hue-rotate(360deg); } }
+.card-grid .card, .m-cards .card { transition: transform .18s cubic-bezier(.2,.8,.3,1.4), filter .18s; }
+.card-grid .card:hover, .m-cards .card.pickable:hover { transform: translateY(-7px) scale(1.04); z-index: 3; filter: brightness(1.12); }
+.m-cards .card.pickable { animation: riseIn .35s cubic-bezier(.2,.8,.25,1) backwards; }
+.m-cards .card.pickable:nth-child(2) { animation-delay: .04s; } .m-cards .card.pickable:nth-child(3) { animation-delay: .08s; } .m-cards .card.pickable:nth-child(4) { animation-delay: .12s; } .m-cards .card.pickable:nth-child(n+5) { animation-delay: .16s; }
+/* 傾き：工房の見本カードは、マウスに合わせて立体的に傾き、光が走る（ambient.js の tilt） */
+.forge-preview { perspective: 900px; }
+.forge-preview .card { transform: rotateY(var(--tx, 0deg)) rotateX(var(--ty, 0deg)); transition: transform .35s cubic-bezier(.2,.8,.3,1); }
+.forge-preview .card.tilting { transition: transform .08s linear; }
+.forge-preview .card::after { content: ''; position: absolute; inset: 0; z-index: 6; border-radius: 0.9em; pointer-events: none; opacity: 0; transition: opacity .25s; mix-blend-mode: screen;
+  background: radial-gradient(circle at var(--gx, 50%) var(--gy, 50%), #ffffff55, transparent 55%); }
+.forge-preview .card.tilting::after { opacity: 1; }
+
+/* ───────── 6. 対戦 ───────── */
+/* 数値を動かせるように登録する（マナの輪の割合、闘技場の文様の角度） */
+@property --p { syntax: '<number>'; inherits: false; initial-value: 0; }
+@property --ar { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+
+/* 闘技場：文様がゆっくり回り、中央の線が脈打つ */
+.arena-ring::before { background: repeating-conic-gradient(from var(--ar), #e2b96a10 0 2deg, transparent 2deg 15deg); animation: arenaTurn 120s linear infinite; }
+@keyframes arenaTurn { to { --ar: 360deg; } }
+.arena-line { animation: linePulse 3.6s ease-in-out infinite; }
+@keyframes linePulse { 50% { opacity: .55; } }
+
+/* 対戦開始（VS） */
+.intro { position: absolute; inset: 0; z-index: 75; overflow: hidden; background: #0a0705; animation: introOut .4s ease-in 2.1s forwards; }
+@keyframes introOut { to { opacity: 0; transform: scale(1.1); } }
+.in-side { position: absolute; top: 0; bottom: 0; width: 58%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+.in-side.me { left: 0; padding-right: 10%; background: var(--noise), linear-gradient(100deg, #081e2c, #103a52 60%, #1a5a7a); clip-path: polygon(0 0, 100% 0, 80% 100%, 0 100%); animation: inL .55s cubic-bezier(.2,.8,.2,1) backwards; }
+.in-side.op { right: 0; padding-left: 10%; background: var(--noise), linear-gradient(260deg, #2c0e08, #521c12 60%, #7a2c1a); clip-path: polygon(20% 0, 100% 0, 100% 100%, 0 100%); animation: inR .55s cubic-bezier(.2,.8,.2,1) backwards; }
+@keyframes inL { from { transform: translateX(-100%); } }
+@keyframes inR { from { transform: translateX(100%); } }
+.in-face { width: 176px; height: 176px; border-radius: 50%; display: grid; place-items: center; font-size: 100px; background: radial-gradient(circle at 35% 30%, #4a3a2c, #1a120c); border: 5px solid #7ad0ea; box-shadow: 0 0 40px #5ec8e8aa, inset 0 0 24px #000; animation: popIn .5s cubic-bezier(.2,.8,.3,1.4) .25s backwards; }
+.in-side.op .in-face { border-color: #e07a6a; box-shadow: 0 0 40px #ff6b5aaa, inset 0 0 24px #000; }
+.in-side b { font-family: var(--font-h); font-size: 40px; letter-spacing: .25em; color: #d8f3ff; text-shadow: 0 0 20px #5ec8e8, 0 3px 0 #000; }
+.in-side.op b { color: #ffd8c8; text-shadow: 0 0 20px #ff6b5a, 0 3px 0 #000; }
+.in-vs { position: absolute; left: 50%; top: 330px; transform: translate(-50%, -50%); font-family: var(--font-logo); font-weight: 800; font-style: italic; font-size: 170px; line-height: 1;
+  background: linear-gradient(180deg, #fff6dc, #ffcf6a 50%, #c8691e); -webkit-background-clip: text; background-clip: text; color: transparent; filter: drop-shadow(0 6px 0 #3a1608) drop-shadow(0 0 40px #ff8a3d);
+  animation: vsSlam .42s cubic-bezier(.3,.9,.3,1.25) .3s backwards; }
+@keyframes vsSlam { from { transform: translate(-50%, -50%) scale(6) rotate(-18deg); opacity: 0; } }
+.in-first { position: absolute; left: 0; right: 0; bottom: 96px; text-align: center; animation: riseIn .4s cubic-bezier(.2,.8,.25,1) 1.05s backwards; }
+.in-first b { display: inline-block; padding: 6px 40px; font-family: var(--font-h); font-size: 28px; letter-spacing: .3em; color: var(--brass2); background: linear-gradient(90deg, transparent, #120b07f0 20%, #120b07f0 80%, transparent); text-shadow: 0 0 16px #ff8a3d; }
+.in-first small { display: block; margin-top: 6px; font-size: 13px; color: var(--parch2); letter-spacing: .1em; }
+
+/* ターンの始まり：その人の色の帯が走る */
+.turn-banner { --tc: #0c3148; --tl: #7fd6ff; --dir: 1; position: absolute; left: 0; right: 0; top: 232px; height: 100px; z-index: 68; pointer-events: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+.turn-banner.op { --tc: #4a160e; --tl: #ff9a6a; --dir: -1; }
+.turn-banner i { position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--tc) 22%, var(--tc) 78%, transparent); border-top: 2px solid var(--tl); border-bottom: 2px solid var(--tl); box-shadow: 0 0 30px color-mix(in srgb, var(--tl) 50%, transparent);
+  -webkit-mask: linear-gradient(90deg, transparent, #000 15%, #000 85%, transparent); mask: linear-gradient(90deg, transparent, #000 15%, #000 85%, transparent); animation: tbBar 1.5s cubic-bezier(.2,.8,.2,1) forwards; }
+@keyframes tbBar { 0% { transform: scaleY(0); opacity: 0; } 14% { transform: scaleY(1); opacity: .95; } 78% { transform: scaleY(1); opacity: .95; } 100% { transform: scaleY(0); opacity: 0; } }
+.turn-banner b { position: relative; font-family: var(--font-h); font-size: 40px; letter-spacing: .3em; color: #fff; text-shadow: 0 0 22px var(--tl), 0 3px 0 #000; animation: tbText 1.5s cubic-bezier(.2,.8,.2,1) forwards; }
+.turn-banner span { position: relative; font-size: 13px; letter-spacing: .2em; color: var(--tl); animation: tbText 1.5s cubic-bezier(.2,.8,.2,1) .05s forwards; opacity: 0; }
+.turn-banner span em { font-style: normal; margin: 0 10px; opacity: .7; }
+@keyframes tbText { 0% { opacity: 0; transform: translateX(calc(var(--dir) * -160px)) skewX(calc(var(--dir) * -14deg)); } 18% { opacity: 1; transform: translateX(calc(var(--dir) * 10px)); } 76% { opacity: 1; transform: translateX(calc(var(--dir) * -10px)); } 100% { opacity: 0; transform: translateX(calc(var(--dir) * 160px)) skewX(calc(var(--dir) * 14deg)); } }
+
+/* 顔と体力 */
+.av-turn { display: none; } .avatar.active .av-turn { display: inline-block; animation: popIn .3s cubic-bezier(.2,.8,.3,1.5); }
+.av-think { display: none; gap: 3px; align-items: center; } .avatar.op.active .av-think { display: inline-flex; }
+.av-think i { width: 5px; height: 5px; border-radius: 50%; background: #ffb1a5; animation: think 1s ease-in-out infinite; }
+.av-think i:nth-child(2) { animation-delay: .15s; } .av-think i:nth-child(3) { animation-delay: .3s; }
+@keyframes think { 0%, 60%, 100% { transform: none; opacity: .4; } 30% { transform: translateY(-4px); opacity: 1; } }
+.avatar.active .portrait { animation: portraitGlow 2s ease-in-out infinite; }
+@keyframes portraitGlow { 50% { box-shadow: 0 0 26px #ffcf6acc, inset 0 0 10px #000; } }
+.portrait { transition: filter .4s, transform .4s cubic-bezier(.3,.8,.3,1.3); }
+.portrait.ko { filter: grayscale(1) brightness(.45); transform: rotate(-18deg) scale(.88); animation: none; }
+.hpbar em { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(180deg, #fff6dc, #ffd88a); transition: width .7s cubic-bezier(.5,0,.2,1) .5s; }
+.hpbar i { transition: width .25s ease-out; }
+
+/* マナの円と火種 */
+.dial-ring { transition: --p .6s cubic-bezier(.3,.7,.3,1); }
+.dial-core b, .dial-core small { display: inline-block; }
+.dial-core .pop { animation: numPop .35s cubic-bezier(.2,.8,.3,1.5); }
+@keyframes numPop { 35% { transform: scale(1.55); color: #fff; text-shadow: 0 0 12px #fff; } }
+.dial.refill .dial-ring { animation: refill .7s ease-out; }
+.dial.refill .dial-core { animation: corePulse .7s ease-out; }
+@keyframes refill { 30% { filter: brightness(2.2) drop-shadow(0 0 16px #7fe0ff); transform: scale(1.1); } }
+@keyframes corePulse { 30% { transform: scale(1.08); filter: brightness(1.3); } }
+.sock.on.ignite { animation: ignite .6s cubic-bezier(.2,.8,.3,1.4); }
+@keyframes ignite { 0% { scale: .2; filter: brightness(4); } 50% { scale: 1.9; filter: brightness(2); } 100% { scale: 1; filter: none; } }
+
+/* クリーチャー：ゆっくり上下に揺れ、攻撃できる時は縁が脈打つ */
+.u-art { animation: bob 3.4s ease-in-out infinite; animation-delay: calc(var(--i, 0) * -0.55s); }
+@keyframes bob { 50% { translate: 0 -3px; } }
+.unit.tapped .u-art { animation: none; }
+.unit.can-attack .u-inner { animation: readyGlow 1.6s ease-in-out infinite; }
+@keyframes readyGlow { 50% { box-shadow: inset 0 0 0 2px #000a, 0 0 0 2px #fff2b0, 0 0 28px #ffb04a, 0 6px 14px #000c; } }
+.unit.selected .u-inner, .unit.targetable .u-inner { animation-name: none; }
+.unit.targetable .u-inner { animation: tgPulse 1s infinite; }
+.unit.frozen .u-inner { border-color: #9fe6ff; }
+.unit.frozen .u-inner::before { content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none; background: linear-gradient(150deg, #cdf3ff66 0%, #6ab8e044 40%, #cdf3ff55 60%, #3a8ac055 100%); box-shadow: inset 0 0 16px #cdf3ff; }
+.unit.frozen .u-art { animation: none; filter: saturate(.5) drop-shadow(0 4px 6px #000b); }
+.unit.silenced .u-art { filter: grayscale(1) brightness(.8); }
+.unit.pickable .u-inner { animation: pickGlow 1.1s ease-in-out infinite; }
+@keyframes pickGlow { 50% { box-shadow: 0 0 0 3px #fff4a0, 0 0 34px #ffe14a; } }
+.fx-pw { position: absolute; z-index: 66; pointer-events: none; white-space: nowrap; font-family: var(--font-logo); font-weight: 800; font-size: 26px; -webkit-text-stroke: 1.5px #0a0705; }
+.fx-pw.up { color: #9fffb0; text-shadow: 0 0 12px #3ad06a, 0 2px 0 #000; } .fx-pw.down { color: #ff8a7a; text-shadow: 0 0 12px #ff2a1a, 0 2px 0 #000; }
+
+/* 手札・ボタン・記録 */
+.hand .card.playable .c-frame { animation: handGlow 2s ease-in-out infinite; }
+@keyframes handGlow { 50% { box-shadow: inset 0 0 0 0.12em #00000099, 0 0 0 0.2em #fff2b0, 0 0 2em #ffb04acc; } }
+.turn-end.wake { animation: wake .8s cubic-bezier(.2,.8,.3,1.3); }
+@keyframes wake { 30% { transform: scale(1.2); filter: brightness(1.5) drop-shadow(0 0 22px #ffb04a); } }
+.f-row:first-child { animation: feedIn .3s cubic-bezier(.2,.8,.25,1); }
+@keyframes feedIn { from { opacity: 0; transform: translateX(-16px); } }
+.guide.show { animation: popIn .3s cubic-bezier(.2,.8,.3,1.3); }
+.guide.show { transform-origin: 0 50%; }
+.detail.show { box-shadow: 0 10px 30px #000d, inset 0 0 0 1px #000, 0 0 24px #ff8a3d33; }
+
+/* 体力が少ない：画面のふちが赤く脈打つ */
+.board.danger::after { content: ''; position: absolute; inset: 0; z-index: 30; pointer-events: none; box-shadow: inset 0 0 130px 12px #ff1a0a77; animation: danger 1.15s ease-in-out infinite; }
+@keyframes danger { 50% { opacity: .3; } }
+
+/* 決着 */
+.finish { position: absolute; inset: 0; z-index: 78; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: radial-gradient(ellipse at 50% 50%, #000000b0, #000000ee); animation: fadeIn .35s ease-out; }
+.fin-rays { position: absolute; left: 50%; top: 50%; width: 1500px; height: 1500px; margin: -750px; border-radius: 50%; background: repeating-conic-gradient(from 0deg, #ffd86a30 0 5deg, transparent 5deg 15deg);
+  -webkit-mask: radial-gradient(circle, #000 10%, transparent 62%); mask: radial-gradient(circle, #000 10%, transparent 62%); animation: spin 40s linear infinite, fadeIn 1.2s ease-out; }
+.finish.lose .fin-rays { background: radial-gradient(circle, #5a0a0444, transparent 55%); animation: fadeIn 1.2s ease-out; }
+.finish b { position: relative; font-family: var(--font-logo); font-weight: 800; font-size: 128px; letter-spacing: .12em; line-height: 1; animation: finSlam .6s cubic-bezier(.3,.9,.3,1.2) .15s backwards; }
+.finish.win b { background: linear-gradient(180deg, #fff6dc, #ffcf6a 50%, #c8691e); -webkit-background-clip: text; background-clip: text; color: transparent; filter: drop-shadow(0 6px 0 #3a1608) drop-shadow(0 0 50px #ff8a3d); }
+.finish.lose b { color: #8a8494; text-shadow: 0 6px 0 #000, 0 0 40px #5a0a04; }
+.finish span { position: relative; font-family: var(--font-h); font-size: 26px; letter-spacing: .6em; text-indent: .6em; color: var(--parch2); animation: riseIn .5s ease-out .75s backwards; }
+@keyframes finSlam { from { transform: scale(4.5); opacity: 0; filter: blur(12px); } }
+.result-modal .result { display: inline-block; animation: finSlam .5s cubic-bezier(.3,.9,.3,1.2) backwards; }
+.result-modal .result-table tr { animation: riseIn .35s ease-out backwards; }
+.result-modal .result-table tr:nth-child(2) { animation-delay: .15s; } .result-modal .result-table tr:nth-child(3) { animation-delay: .22s; } .result-modal .result-table tr:nth-child(4) { animation-delay: .29s; } .result-modal .result-table tr:nth-child(5) { animation-delay: .36s; }
+
+/* ───────── 7. カード工房 ───────── */
+@keyframes jolt { 20% { transform: translate(-6px, 3px) rotate(-.6deg); } 50% { transform: translate(5px, -3px) rotate(.5deg); } 80% { transform: translate(-2px, 1px); } }
+.jolt { animation: jolt .26s ease-out; }
+.pop { animation: numPop .35s cubic-bezier(.2,.8,.3,1.5); }
+@keyframes oreFloat { 50% { translate: 0 -8px; } }
+@keyframes fadeOut { to { opacity: 0; } }
+
+/* 原石（岩）。割れ目から、中の宝石の色が漏れる */
+.st-rock { position: relative; width: 112px; height: 96px; border-radius: 42% 58% 55% 45% / 52% 44% 56% 48%;
+  background: radial-gradient(circle at 34% 28%, #9a8a78, #5a4c40 55%, #241c16); box-shadow: inset -10px -12px 20px #000a, inset 6px 6px 10px #ffffff22, 0 12px 22px #000b; }
+.st-rock::before { content: ''; position: absolute; inset: 0; border-radius: inherit; opacity: 0; filter: drop-shadow(0 0 5px var(--gc, #7fe0ff));
+  background: linear-gradient(64deg, transparent 46%, var(--gc, #7fe0ff) 47.5%, transparent 49.5%), linear-gradient(-38deg, transparent 52%, var(--gc, #7fe0ff) 53.5%, transparent 55.5%), linear-gradient(12deg, transparent 60%, var(--gc, #7fe0ff) 61.2%, transparent 62.8%); }
+/* 「原石を引く」の画面：岩が浮かび、割れ目がかすかに光る */
+.ore { position: relative; width: 150px; height: 124px; margin: 0 auto 4px; display: grid; place-items: center; font-size: 0; filter: drop-shadow(0 0 24px #5ec8e855); animation: oreFloat 3.2s ease-in-out infinite; }
+.ore .st-rock::before { animation: vein 2.6s ease-in-out infinite; }
+@keyframes vein { 0%, 100% { opacity: .25; } 50% { opacity: .85; } }
+.ore > i { position: absolute; width: 12px; height: 12px; background: #fff; clip-path: polygon(50% 0, 60% 40%, 100% 50%, 60% 60%, 50% 100%, 40% 60%, 0 50%, 40% 40%); animation: twinkle 2.2s ease-in-out infinite; }
+.ore > i:nth-of-type(1) { left: 14px; top: 20px; } .ore > i:nth-of-type(2) { right: 10px; top: 46px; animation-delay: .7s; } .ore > i:nth-of-type(3) { left: 44px; bottom: 4px; animation-delay: 1.3s; scale: .7; }
+@keyframes twinkle { 0%, 100% { opacity: 0; transform: scale(.3) rotate(0deg); } 50% { opacity: 1; transform: scale(1) rotate(45deg); } }
+.grade-table tr { transition: background .15s; } .grade-table tr:hover td { background: #ffffff0a; }
+
+/* 原石を打つ：金槌が3回当たり（0.35秒・0.8秒・1.25秒）、岩が割れて宝石と素質が現れる */
+.reveal-modal .panel { overflow: hidden; min-width: 480px; }
+.strike { --ro: .35; position: relative; width: 430px; height: 320px; margin: 0 auto; }
+.strike.grade-iron { --ro: .1; } .strike.grade-bronze { --ro: .2; } .strike.grade-gold { --ro: .6; } .strike.grade-platinum { --ro: .8; } .strike.grade-star { --ro: 1; }
+.st-rays { position: absolute; left: 50%; top: 116px; width: 640px; height: 640px; margin: -320px; border-radius: 50%; opacity: 0;
+  background: repeating-conic-gradient(from 0deg, color-mix(in srgb, var(--gc) 50%, transparent) 0 5deg, transparent 5deg 16deg);
+  -webkit-mask: radial-gradient(circle, #000 12%, transparent 60%); mask: radial-gradient(circle, #000 12%, transparent 60%); animation: raysIn .6s ease-out 1.3s forwards, spin 26s linear infinite; }
+.strike.grade-star .st-rays { animation: raysIn .6s ease-out 1.3s forwards, spin 14s linear infinite, hue 4s linear infinite; }
+@keyframes raysIn { to { opacity: var(--ro); } }
+.strike::after { content: ''; position: absolute; left: 50%; top: 116px; width: 520px; height: 520px; margin: -260px; border-radius: 50%; pointer-events: none; opacity: 0;
+  background: radial-gradient(circle, #fff, color-mix(in srgb, var(--gc) 70%, transparent) 30%, transparent 62%); animation: strikeFlash .7s ease-out 1.27s; }
+@keyframes strikeFlash { 0% { opacity: 0; transform: scale(.2); } 15% { opacity: 1; } 100% { opacity: 0; transform: scale(1.2); } }
+.st-ore { position: absolute; left: 50%; top: 116px; width: 0; height: 0; }
+.st-ore .st-rock { position: absolute; left: -56px; top: -48px; animation: rockHit .45s ease-out .1s 3, rockBreak .35s ease-in 1.28s forwards; }
+.st-ore .st-rock::before { animation: veinGrow 1.3s steps(1) forwards; }
+@keyframes veinGrow { 0% { opacity: 0; } 27% { opacity: .4; } 62% { opacity: .8; } 96% { opacity: 1; } 100% { opacity: 1; } }
+@keyframes rockHit { 0%, 50% { transform: none; filter: none; } 58% { transform: translate(-5px, 7px) scale(1.07, .9) rotate(-3deg); filter: brightness(1.9); } 100% { transform: none; filter: none; } }
+@keyframes rockBreak { to { transform: scale(1.9); opacity: 0; filter: brightness(4) blur(4px); } }
+.st-gem { position: absolute; left: -48px; top: -52px; width: 96px; height: 104px; opacity: 0; filter: drop-shadow(0 0 26px var(--gc)) drop-shadow(0 6px 8px #000a);
+  animation: gemPop .6s cubic-bezier(.2,.8,.3,1.5) 1.3s forwards, oreFloat 3s ease-in-out 1.9s infinite; }
+.st-gem i { position: absolute; inset: 0; clip-path: polygon(24% 0, 76% 0, 100% 32%, 50% 100%, 0 32%);
+  background: linear-gradient(180deg, transparent 31%, #ffffffaa 32%, transparent 33.5%), linear-gradient(90deg, transparent 24%, #ffffff44 25%, transparent 26%, transparent 49%, #ffffff66 50%, transparent 51%, transparent 74%, #00000033 75%, transparent 76%),
+    linear-gradient(115deg, #fff 0%, var(--gc) 28%, color-mix(in srgb, var(--gc) 55%, #000) 60%, var(--gc) 100%); }
+@keyframes gemPop { 0% { opacity: 0; transform: scale(.2) rotate(-40deg); } 100% { opacity: 1; transform: none; } }
+.st-hammer { position: absolute; left: calc(50% + 34px); top: 4px; font-size: 86px; line-height: 1; transform-origin: 88% 88%; transform: rotate(34deg);
+  animation: hammerStrike .45s cubic-bezier(.5,0,.8,.4) .1s 3, fadeOut .3s ease-in 1.5s forwards; }
+@keyframes hammerStrike { 0% { transform: rotate(34deg); } 55% { transform: rotate(-40deg); } 68% { transform: rotate(-28deg); } 100% { transform: rotate(34deg); } }
+.st-result { position: absolute; left: 0; right: 0; top: 196px; text-align: center; }
+.st-result b { display: block; font-family: var(--font-h); font-size: 54px; line-height: 1.2; color: var(--gc); text-shadow: 0 0 24px var(--gc), 0 3px 0 #000; animation: finSlam .5s cubic-bezier(.3,.9,.3,1.2) 1.55s backwards; }
+.st-result span { display: block; color: var(--muted); animation: riseIn .4s ease-out 1.85s backwards; }
+.st-result p { margin: 8px 0 0; color: var(--parch2); animation: riseIn .4s ease-out 1.95s backwards; }
+.reveal-modal .m-buttons { animation: riseIn .4s ease-out 2.05s backwards; }
+
+/* 作る画面 */
+.f-grade { animation: gradeGlow 2.6s ease-in-out infinite; }
+@keyframes gradeGlow { 50% { box-shadow: 0 0 22px color-mix(in srgb, var(--gc) 70%, transparent); } }
+.kw-chips button, .f-colors i, .f-iconbtn, .icon-grid button { transition: transform .14s cubic-bezier(.2,.8,.3,1.5), border-color .14s, background .14s; }
+.kw-chips button:hover { transform: translateY(-2px); border-color: #b78350; }
+.f-colors i:hover, .f-iconbtn:hover, .icon-grid button:hover { transform: scale(1.18); }
+.m-bar i { box-shadow: inset 0 1px 0 #ffffff55, inset 0 -3px 4px #0005; }
+.m-bar.over { animation: overPulse 1s ease-in-out infinite; }
+@keyframes overPulse { 50% { box-shadow: 0 0 18px #ff6b6bcc; } }
+.mini { transition: border-color .15s, background .15s, transform .15s; } .mini:hover { transform: translateX(3px); }
+.mini.fresh { animation: freshRow 2.2s ease-out; }
+@keyframes freshRow { 0% { background: #c8893e; border-color: #fff2c8; box-shadow: 0 0 20px #ffb04a; transform: translateX(-14px); } 25% { transform: none; } 100% { background: #1a130e; box-shadow: none; } }
+.fx .forged-ghost { position: absolute; left: 0; top: 0; z-index: 70; pointer-events: none; --cs: 16px; }
+
+/* ───────── 8. デッキ構築・遊び方 ───────── */
+.fx .deck-ghost { position: absolute; left: 0; top: 0; z-index: 70; pointer-events: none; --cs: 9.6px; }
+.deck-list li { transition: background .15s; } .deck-list li:hover { background: #261b13; }
+.deck-list li.bump { animation: rowBump .55s ease-out; }
+.deck-list li.drop { animation: rowDrop .45s ease-out; }
+@keyframes rowBump { 0% { background: #c8893e; transform: scale(1.04); box-shadow: 0 0 14px #ffb04a; } 100% { background: #1a130e; transform: none; box-shadow: none; } }
+@keyframes rowDrop { 0% { background: #6b2a22; transform: translateX(6px); } 100% { background: #1a130e; transform: none; } }
+.deck-count b { display: inline-block; transition: color .2s; }
+.deck-count b.ok { text-shadow: 0 0 14px #7fd88a; }
+.rules-nav button { transition: transform .14s cubic-bezier(.2,.8,.3,1.5), border-color .14s, background .14s; }
+.rules-nav button:hover:not(.on) { transform: translateX(4px); border-color: #b78350; }
+.rules-page h3 { animation: slideDown .3s cubic-bezier(.2,.8,.25,1); }
+.rp-body { animation: riseIn .38s cubic-bezier(.2,.8,.25,1); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

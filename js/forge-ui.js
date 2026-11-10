@@ -16,7 +16,11 @@
   const ICONS = ['🐺', '🦊', '🦉', '🐍', '🦂', '🐙', '🦇', '🐲', '🦄', '🦅', '🐢', '🦈', '🐗', '🦁', '🐻', '🦌', '🕷️', '🦋', '👻', '💀', '🤖', '🧙', '🧝', '🧛', '🧞', '🧜', '🥷', '🛡️', '⚔️', '🏹', '🔮', '📜', '🗝️', '💎', '🔥', '❄️', '⚡', '🌊', '🌪️', '🌋', '🌙', '☀️', '⭐', '🍄', '🌵', '🌹', '🍎', '🎭', '⚙️', '🪄'];
   const COLORS = ['#5f8f4e', '#5b6fb5', '#b5523f', '#8a5ab8', '#c9952b', '#3f9aa3', '#8a8f98', '#b85a8a'];
 
-  const F = { draft: null, editing: false };
+  const F = { draft: null, editing: false,
+    fresh: null,     // 保存したばかりのカードのID（一覧で光らせる）
+    meter: null,     // 直前の容量メーターの幅（なめらかに伸び縮みさせる）
+    wasOver: false,  // 直前に容量を超えていたか（超えた瞬間に揺らす）
+  };
 
   const blankEffect = (kind) => Parts.normalizeEffect({ kind }, { trig: kind === 'spell' ? 'cast' : 'summon', act: 'draw', n: 1, conds: [], pay: { k: 'none', n: 0 }, per: 'none' });
 
@@ -33,7 +37,8 @@
     for (const c of list.slice().reverse()) {
       const row = document.createElement('div');
       const bad = Parts.validate(c).length > 0;
-      row.className = 'mini' + (F.draft && F.draft.id === c.id ? ' on' : '') + (bad ? ' bad' : '');
+      row.className = 'mini' + (F.draft && F.draft.id === c.id ? ' on' : '') + (bad ? ' bad' : '') + (F.fresh === c.id ? ' fresh' : '');
+      row.dataset.id = c.id;
       if (bad) row.title = '規則の変更で容量に収まらなくなりました。作り直してください（このままでも対戦には使えます）';
       const g = Parts.GRADES[c.grade];
       row.innerHTML = `<span class="mi-cost">${c.cost}</span><span class="mi-icon">${esc(c.icon)}</span><span class="mi-name">${esc(c.name)}</span><span class="mi-grade" style="color:${g.color}">${g.label}</span>
@@ -89,7 +94,7 @@
       const rows = Object.values(Parts.GRADES).map((g) => `<tr><td style="color:${g.color}">${g.label}</td><td>×${g.mult}</td><td>${g.weight}%</td></tr>`).join('');
       m.innerHTML = `
         <div class="roll">
-          <div class="ore">💠</div>
+          <div class="ore"><div class="st-rock"></div><i></i><i></i><i></i></div>
           <h3>原石を引く</h3>
           <p>カードの元になる「原石」を引きます。原石の<b>素質</b>で、カードの<b>容量</b>（強さの上限）の倍率が決まります。</p>
           <table class="grade-table"><tr><th>素質</th><th>容量</th><th>出やすさ</th></tr>${rows}</table>
@@ -307,7 +312,9 @@
     if (!F.draft) { prev.innerHTML = '<div class="card-ghost">？</div>'; return; }
     const d = F.draft;
     const shown = { ...d, name: d.name || '（名前）' };
-    prev.appendChild(UI.cardEl(shown));
+    const pvCard = UI.cardEl(shown);
+    pvCard.removeAttribute('data-pv'); // 見本は十分大きく、全文も下に出ているので、拡大表示は出さない
+    prev.appendChild(pvCard);
     const cap = Parts.capacity(d.cost, d.grade);
     const u = Parts.usage(d);
     const seg = (v, cls, label) => (v > 0 ? `<i class="${cls}" style="width:${Math.min(100, (v / Math.max(cap, u.total)) * 100)}%" title="${label} ${Math.round(v)}"></i>` : '');
@@ -317,6 +324,16 @@
       <div class="m-label"><span>容量</span><b class="${over ? 'over' : ''}">${u.total} / ${cap}</b></div>
       <div class="m-bar${over ? ' over' : ''}">${seg(u.power, 'p', 'パワー')}${seg(Math.max(0, u.keywords), 'k', 'キーワード')}${seg(effTotal, 'e', 'テキスト効果')}<span class="m-cap" style="left:${Math.min(100, (cap / Math.max(cap, u.total)) * 100)}%"></span></div>
       <div class="m-legend"><span class="p">パワー ${Math.round(u.power)}</span><span class="k">キーワード ${u.keywords}</span><span class="e">テキスト ${effTotal}</span><span>残り ${cap - u.total}</span></div>`;
+    // メーターは作り直しているので、直前の幅から今の幅へ動かして、なめらかに見せる
+    const now = {};
+    meter.querySelectorAll('.m-bar i').forEach((el) => {
+      now[el.className] = el.style.width;
+      const from = (F.meter && F.meter[el.className]) || '0%';
+      if (from !== el.style.width) el.animate([{ width: from }, { width: el.style.width }], { duration: 260, easing: 'cubic-bezier(.2,.8,.25,1)' });
+    });
+    F.meter = now;
+    if (over && !F.wasOver) UI.pulse(meter, 'jolt', 400); // 容量を超えた瞬間に揺れる
+    F.wasOver = over;
     const e = Parts.validate(d);
     const lines = Parts.cardLines(shown);
     errs.innerHTML = (lines.length ? `<div class="full-text">${lines.map((l) => `<p>${esc(l)}</p>`).join('')}</div>` : '') + e.map((m) => `<p>⚠ ${esc(m)}</p>`).join('');
@@ -331,12 +348,29 @@
     const g = Parts.GRADES[grade];
     F.draft = newDraft(grade);
     F.editing = false;
-    const m = UI.modal('原石の素質', `<div class="reveal grade-${grade}" style="--gc:${g.color}"><div class="rv-ore">💠</div><b>${g.label}</b><span>容量 ×${g.mult}</span><p>${grade === 'star' ? '伝説級の原石！' : grade === 'platinum' ? 'とても良い原石だ' : grade === 'gold' ? '良い原石だ' : grade === 'silver' ? '標準的な原石' : '少し頼りない原石…'}</p></div>`, [
+    const msg = grade === 'star' ? '伝説級の原石！' : grade === 'platinum' ? 'とても良い原石だ' : grade === 'gold' ? '良い原石だ' : grade === 'silver' ? '標準的な原石' : '少し頼りない原石…';
+    // 原石を金槌で3回打つ → 割れて中の宝石が現れ、素質が分かる（動きは motion.css の .strike。打つ時刻は STRIKE_AT と合わせてある）
+    const m = UI.modal('原石を打つ', `
+      <div class="strike grade-${grade}" style="--gc:${g.color}">
+        <div class="st-rays"></div>
+        <div class="st-ore"><div class="st-rock"></div><div class="st-gem"><i></i></div></div>
+        <div class="st-hammer">🔨</div>
+        <div class="st-result"><b>${g.label}</b><span>容量 ×${g.mult}</span><p>${msg}</p></div>
+      </div>`, [
       { label: '作り始める', primary: true, onClick: () => { UI.closeModal(); render(); } },
     ], 'reveal-modal');
-    void m;
+    const ore = m.querySelector('.st-ore'), panel = m.querySelector('.panel');
+    const rich = { iron: 0.6, bronze: 0.8, silver: 1, gold: 1.4, platinum: 1.8, star: 2.6 }[grade] || 1; // 素質が良いほど派手に
+    STRIKE_AT.forEach((t, k) => setTimeout(() => {
+      if (!ore.isConnected) return;
+      const last = k === STRIKE_AT.length - 1;
+      UI.pulse(panel, 'jolt', 260);
+      if (root.Ambient) root.Ambient.burstAt(ore, last ? g.color : '#ffb04a', Math.round(last ? 40 * rich : 14), last ? 1.2 + rich * 0.3 : 0.8);
+      if (last && root.Ambient && rich > 1) setTimeout(() => root.Ambient.burstAt(ore, '#ffffff', Math.round(18 * rich), 1.6), 120);
+    }, t));
     render();
   }
+  const STRIKE_AT = [350, 800, 1250]; // 金槌が当たる時刻（ミリ秒）
 
   function save() {
     const d = F.draft;
@@ -344,9 +378,36 @@
     d.name = d.name.trim();
     const saved = Store.saveCard(JSON.parse(JSON.stringify(d)));
     UI.toast(`【${saved.name}】を工房に保存しました`);
+    forgedFx($('#forge-preview .card'), saved);
     F.draft = null;
     F.editing = false;
+    F.fresh = saved.id;
     render();
+    setTimeout(() => { if (F.fresh === saved.id) F.fresh = null; }, 2500);
+  }
+
+  /** 保存の演出：見本のカードが光って火花が散り、左の一覧へ飛んでいく */
+  function forgedFx(cardEl, saved) {
+    if (!cardEl) return;
+    const g = Parts.GRADES[saved.grade] || Parts.GRADES.silver;
+    const r = cardEl.getBoundingClientRect(), s = $('#stage').getBoundingClientRect(), k = s.width / 1280;
+    const from = { x: (r.left + r.width / 2 - s.left) / k, y: (r.top + r.height / 2 - s.top) / k };
+    const list = $('#forge-list').getBoundingClientRect();
+    const to = { x: (list.left + list.width / 2 - s.left) / k, y: (list.top - s.top) / k + 18 };
+    if (root.Ambient) root.Ambient.burst(from.x, from.y, g.color, 44, 1.5);
+    const ghost = UI.cardEl(saved);
+    ghost.removeAttribute('data-pv');
+    ghost.classList.add('forged-ghost');
+    $('#fx').appendChild(ghost);
+    ghost.animate([
+      { transform: `translate(${from.x}px, ${from.y}px) translate(-50%, -50%) scale(1)`, filter: 'brightness(3)', opacity: 1 },
+      { transform: `translate(${from.x}px, ${from.y - 16}px) translate(-50%, -50%) scale(1.1)`, filter: 'brightness(1.4)', opacity: 1, offset: 0.28 },
+      { transform: `translate(${(from.x + to.x) / 2}px, ${Math.min(from.y, to.y) - 60}px) translate(-50%, -50%) scale(.55) rotate(-12deg)`, filter: 'brightness(1.2)', opacity: 1, offset: 0.7 },
+      { transform: `translate(${to.x}px, ${to.y}px) translate(-50%, -50%) scale(.12) rotate(-20deg)`, filter: 'brightness(2)', opacity: 0.4 },
+    ], { duration: 900, easing: 'cubic-bezier(.3,.6,.3,1)', fill: 'forwards' }).onfinish = () => {
+      ghost.remove();
+      if (root.Ambient) root.Ambient.burst(to.x, to.y, g.color, 14, 0.7);
+    };
   }
 
   function init() {

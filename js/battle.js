@@ -32,6 +32,7 @@
   const { $, $$, esc, fx } = UI;
   const ME = 0, OP = 1;
   const AI_DELAY = 800;
+  const INTRO_MS = 2300; // 対戦開始の演出（VS）の長さ
   const PORTRAIT = ['🧑‍🔧', '🤖'];
   const KW_ICON = { guard: '🛡', assassin: '🗡', haste: '⚡', double: '⚔', pierce: '➹', stealth: '👁', undying: '✚', sniper: '🎯', drain: '🩸', ward: '🔰', slow: '🐢', fleeting: '⌛' };
 
@@ -43,6 +44,7 @@
     hpShown: [0, 0],       // 画面に出している体力（ダメージの演出に合わせて減らす）
     drag: null,            // ドラッグ中の情報
     noClickUntil: 0,       // ドラッグの直後に「クリック」が重ねて起きないようにする
+    lockUntil: 0,          // 対戦開始の演出が終わるまで操作を受け付けない
     pendingDirty: false, activating: null,
   };
 
@@ -132,12 +134,32 @@
     B.hpShown = [g.cfg.startHP, g.cfg.startHP];
     Anim.reset();
     for (const id of ['#field-0', '#field-1', '#fx', '#feed', '#hand', '#op-hand']) $(id).innerHTML = '';
+    $('#board').classList.remove('danger');
+    $$('#board .portrait.ko').forEach((x) => x.classList.remove('ko'));
     UI.setDetail(showDetail);
     UI.closeModal();
     UI.showScreen('battle');
+    // 開始の演出（VS）の時間を先に確保してから始める。最初のターンの演出やドローは、その後に並ぶ
+    Anim.schedule(INTRO_MS, () => {}, 0);
+    B.lockUntil = performance.now() + INTRO_MS;
+    setTimeout(() => { B.sig = ''; }, INTRO_MS + 30);
     g.start();
-    banner(g.first === ME ? 'あなたが先攻' : 'CPUが先攻', '先攻の1ターン目はドローしません');
+    introFx(g.first);
     B.raf = requestAnimationFrame(loop);
+  }
+
+  /** 対戦開始：左右から顔が滑り込み、中央で VS がぶつかり、先攻を告げる（見た目は motion.css の .intro） */
+  function introFx(first) {
+    const el = document.createElement('div');
+    el.className = 'intro';
+    el.innerHTML = `
+      <div class="in-side me"><div class="in-face">${PORTRAIT[ME]}</div><b>あなた</b></div>
+      <div class="in-side op"><div class="in-face">${PORTRAIT[OP]}</div><b>CPU</b></div>
+      <div class="in-vs">VS</div>
+      <div class="in-first"><b>${first === ME ? 'あなたが先攻' : 'CPUが先攻'}</b><small>先攻の1ターン目はドローしません</small></div>`;
+    $('#fx').appendChild(el);
+    setTimeout(() => { if (!el.isConnected) return; impact({ x: 640, y: 330 }, '#ffd86a', true); shake($('#board'), 10, 400); if (root.Ambient) root.Ambient.burst(640, 330, '#ffd88a', 40, 1.5); }, 620);
+    setTimeout(() => el.remove(), INTRO_MS + 250);
   }
 
   function stop() { cancelAnimationFrame(B.raf); clearTimeout(B.aiT); B.aiT = 0; }
@@ -157,7 +179,7 @@
   }
 
   // ───────────── 入力 ─────────────
-  function myTurn(step) { const g = B.game; return !g.over && !g.pending && g.active === ME && (!step || g.step === step); }
+  function myTurn(step) { const g = B.game; return !g.over && !g.pending && g.active === ME && (!step || g.step === step) && performance.now() >= B.lockUntil; }
   /** メインステップ中でも「攻撃しようとすれば攻撃できるか」 */
   const couldAttack = (uid) => B.game.canAttack(ME, uid, true);
   const targetsOf = (uid) => B.game.attackTargets(ME, uid, true);
@@ -398,7 +420,7 @@
     switch (ev.type) {
       case 'turn':
         B.attackFrom = null;
-        Anim.schedule(700, () => banner(ev.player === ME ? 'あなたのターン' : 'CPUのターン', `第${Math.ceil(ev.turn / 2)}巡　最大マナ ${g.players[ev.player].maxMana}`), 0.5);
+        Anim.schedule(950, () => turnBanner(ev.player, Math.ceil(ev.turn / 2), g.players[ev.player].maxMana), 0.45);
         break;
       case 'step':
         if (ev.player === ME) UI.toast('アタックステップへ（このターンはもうカードを使えない）');
@@ -494,12 +516,15 @@
     }
   }
 
-  function banner(big, small) {
+  /** ターンの始まり：その人の色の帯が横から走り、「あなたのターン」が出る。自分の番なら「ターン終了」も一度光る */
+  function turnBanner(pi, round, maxMana) {
     const el = document.createElement('div');
-    el.className = 'banner';
-    el.innerHTML = `<b>${esc(big)}</b><span>${esc(small)}</span>`;
+    el.className = 'turn-banner ' + (pi === ME ? 'me' : 'op');
+    el.innerHTML = `<i></i><b>${pi === ME ? 'あなたのターン' : 'CPUのターン'}</b><span>第${round}巡<em>◆</em>最大マナ ${maxMana}</span>`;
     $('#fx').appendChild(el);
     setTimeout(() => el.remove(), 1500);
+    UI.pulse($('#dial-' + pi), 'refill', 700);
+    if (pi === ME) UI.pulse($('#btn-end'), 'wake', 800);
   }
 
   /** 一時的な要素を舞台に置いて、終わったら消す */
@@ -705,6 +730,20 @@
       }, 200);
     }, 0.4);
   }
+  /** パワーの増減：クリーチャーの上に「+500」「−1000」が浮かび、緑／赤に光る */
+  function powerFx(el, delta) {
+    Anim.schedule(280, () => {
+      if (!alive(el) || el.dataset.dead) return;
+      const p = UI.stagePoint(el);
+      const up = delta > 0;
+      const c = up ? '#9fffb0' : '#ff8a7a';
+      const tag = spawn('fx-pw ' + (up ? 'up' : 'down'), { x: p.x, y: p.y + 40 }, (up ? '+' : '−') + Math.abs(delta));
+      tag.animate([{ transform: 'translate(-50%,-50%) scale(.4)', opacity: 0 }, { transform: 'translate(-50%,-90%) scale(1.25)', opacity: 1, offset: 0.25 }, { transform: 'translate(-50%,-130%) scale(1)', opacity: 1, offset: 0.7 }, { transform: `translate(-50%,${up ? -190 : -90}%) scale(.9)`, opacity: 0 }],
+        { duration: 1000, easing: 'ease-out', fill: 'forwards' }).onfinish = () => tag.remove();
+      el.animate([{ filter: 'none' }, { filter: `brightness(1.6) drop-shadow(0 0 12px ${c})`, transform: up ? 'scale(1.07)' : 'scale(.95)', offset: 0.3 }, { filter: 'none', transform: 'none' }], { duration: 520, easing: 'ease-out' });
+    }, 0.85);
+  }
+
   /** 破壊されずに耐えた（不屈・守られた） */
   function surviveFx(el, text, c) {
     Anim.schedule(700, () => {
@@ -867,6 +906,7 @@
     renderMid();
     B.pendingDirty = true; // 選択のダイアログは、演出が終わってから出す（loop で）
     if (!(g.pending && g.pending.player === ME)) $('#guide').className = 'guide'; // 隠すのはすぐ
+    $('#board').classList.toggle('danger', !g.over && B.hpShown[ME] <= 2500); // 体力が少ない時は、画面のふちが赤く脈打つ
   }
 
   /** 顔と体力・枚数・マナと火種・山札と墓地 */
@@ -881,25 +921,52 @@
     av.classList.toggle('targetable', !!targetable);
     av.classList.toggle('active', g.active === pi);
     const locks = g.metaOn(p).map((r) => (Parts.META[r.k] ? `<span class="lock" title="${r.statik ? '相手の場の常在効果' : '相手の次のターンの始めまで'}">🔒${esc(Parts.META[r.k].short(r.n))}${r.statik ? '（常在）' : ''}</span>` : '')).join('') + (p.nextDiscount ? `<span class="buffchip">次のカード-${p.nextDiscount}</span>` : '');
-    av.innerHTML = `
-      <div class="portrait">${PORTRAIT[pi]}</div>
-      <div class="av-body">
-        <div class="av-name">${esc(p.name)}${g.active === pi ? '<span class="av-turn">ターン中</span>' : ''}</div>
-        <div class="hpbar${hp <= 1500 ? ' low' : ''}"><i style="width:${pct}%"></i><span>♥ ${hp}</span></div>
-        ${locks ? `<div class="av-status">${locks}</div>` : ''}
-      </div>`;
-    av.onclick = () => clickPlayer(pi);
+    // 要素は最初に1度だけ作り、あとは中身だけ書き換える（体力の帯やマナの輪がなめらかに動くように）
+    if (!av.firstChild) {
+      av.innerHTML = `
+        <div class="portrait">${PORTRAIT[pi]}</div>
+        <div class="av-body">
+          <div class="av-name"><span class="av-n"></span><span class="av-turn">ターン中</span><span class="av-think"><i></i><i></i><i></i></span></div>
+          <div class="hpbar"><em></em><i></i><span></span></div>
+          <div class="av-status"></div>
+        </div>`;
+      av.onclick = () => clickPlayer(pi);
+    }
+    $('.av-n', av).textContent = p.name;
+    const bar = $('.hpbar', av);
+    bar.classList.toggle('low', hp <= 2000);
+    $('i', bar).style.width = pct + '%';
+    $('em', bar).style.width = pct + '%'; // 遅れて縮む白い帯（どれだけ減ったかが見える）
+    $('span', bar).textContent = '♥ ' + hp;
+    const st = $('.av-status', av);
+    if (st.innerHTML !== locks) st.innerHTML = locks;
+    st.style.display = locks ? '' : 'none';
     // 枚数
     $('#counts-' + pi).innerHTML = `<span class="ct-label">カード枚数</span><span title="山札（0枚で引くと負け）" class="${p.deck.length <= 5 ? 'warn' : ''}">📚<b>${p.deck.length}</b></span><span title="手札">🂠<b>${p.hand.length}</b></span><span title="墓地">⚰<b>${p.grave.length}</b></span>`;
     // マナと火種
     const capLock = g.metaOn(p).find((r) => r.k === 'manaCap');
-    const angles = pi === ME ? [-60, -30, 0, 30, 60] : [165, 197, 229, 261, 293];
-    $('#dial-' + pi).innerHTML = `
-      <div class="dial-ring" style="--p:${p.maxMana ? p.mana / p.maxMana : 0}"></div>
-      <div class="dial-core" title="マナ（今使える量 / 最大マナ。最大マナは毎ターン1増え、${g.cfg.maxManaCap}まで）"><b>${p.mana}</b><i></i><small>${p.maxMana}</small></div>
-      <div class="dial-label">MANA</div>
-      ${capLock ? `<div class="dial-lock" title="このターン使えるマナの上限">🔒${capLock.n}</div>` : ''}
-      ${angles.slice(0, g.cfg.emberCap).map((a, k) => `<i class="sock${k < p.ember ? ' on' : ''}" style="--a:${a}deg" title="火種 ${p.ember} / ${g.cfg.emberCap}：攻撃されるたびに1つ得る。マナの代わりに使えるほか、${g.cfg.emberBlockCost}つ払って本体への攻撃をブロックできる"></i>`).join('')}`;
+    const dial = $('#dial-' + pi);
+    if (!dial.firstChild) {
+      const angles = pi === ME ? [-60, -30, 0, 30, 60] : [165, 197, 229, 261, 293];
+      dial.innerHTML = `
+        <div class="dial-ring"></div>
+        <div class="dial-core" title="マナ（今使える量 / 最大マナ。最大マナは毎ターン1増え、${g.cfg.maxManaCap}まで）"><b></b><i></i><small></small></div>
+        <div class="dial-label">MANA</div>
+        <div class="dial-lock" title="このターン使えるマナの上限"></div>
+        ${angles.slice(0, g.cfg.emberCap).map((a) => `<i class="sock" style="--a:${a}deg" title="火種（上限${g.cfg.emberCap}）：攻撃されるたびに1つ得る。マナの代わりに使えるほか、${g.cfg.emberBlockCost}つ払って本体への攻撃をブロックできる"></i>`).join('')}`;
+    }
+    $('.dial-ring', dial).style.setProperty('--p', p.maxMana ? p.mana / p.maxMana : 0);
+    const mb = $('.dial-core b', dial), ms = $('.dial-core small', dial);
+    if (mb.textContent !== String(p.mana)) { mb.textContent = p.mana; UI.pulse(mb, 'pop', 350); }       // 数字が変わったら弾む
+    if (ms.textContent !== String(p.maxMana)) { ms.textContent = p.maxMana; UI.pulse(ms, 'pop', 350); }
+    const lk = $('.dial-lock', dial);
+    lk.textContent = capLock ? '🔒' + capLock.n : '';
+    lk.style.display = capLock ? '' : 'none';
+    $$('.sock', dial).forEach((s, k) => {
+      const on = k < p.ember;
+      if (on && !s.classList.contains('on')) UI.pulse(s, 'ignite', 600); // 火種が灯る
+      s.classList.toggle('on', on);
+    });
     // 山札と墓地
     const top = p.grave[p.grave.length - 1];
     const piles = $('#piles-' + pi);
@@ -956,6 +1023,8 @@
         + (pd && pd.options.includes(u.uid) ? ' pickable' : '') + (B.picks.includes(u.uid) ? ' picked' : '')
         + (g.hasKw(u, 'guard') ? ' guard' : '') + (canAct ? ' can-activate' : '') + (u.silenced ? ' silenced' : '') + (u.frozen ? ' frozen' : '');
       el.style.setProperty('--cc', u.spec.color || '#5f8f4e');
+      if (el._pw != null && el._pw !== pw && !B.arriving.has(u.uid)) powerFx(el, pw - el._pw); // パワーが変わったら数字を出す
+      el._pw = pw;
       el.dataset.power = pw;
       el.dataset.now = `今のパワー ${pw}${u.tapped ? '・タップ中（相手の攻撃対象になる）' : '・アンタップ（攻撃されない）'}${u.sick ? '・召喚したターン' : ''}${u.silenced ? '・能力を消されている' : ''}${u.frozen ? '・凍結（次のターンにアンタップしない）' : ''}${u.protectedBy != null ? '・破壊されない' : ''}${u.returnTo != null ? '・このターンだけ奪われている' : ''}${kws.length ? '　キーワード：' + kws.join('・') : ''}`;
       el.innerHTML = `
@@ -989,7 +1058,9 @@
     const step = n > 1 ? Math.min(CW + 6, (W - CW) / (n - 1)) : 0;
     me.hand.forEach((c, i) => {
       const chk = g.canPlay(ME, c.iid);
-      const el = UI.cardEl(c.spec, { badge: !chk.ok && g.active === ME && !g.pending ? chk.reason : '', cost: g.costOf(me, c.spec) });
+      // 使えない理由は短いもの（マナ不足など）だけカードの上に出す。長い理由は、クリックした時にお知らせで出る
+      const why = !chk.ok && g.active === ME && !g.pending && chk.reason && [...chk.reason].length <= 7 ? chk.reason : '';
+      const el = UI.cardEl(c.spec, { badge: why, cost: g.costOf(me, c.spec) });
       const off = i - (n - 1) / 2;
       el.style.setProperty('--r', (off * 2.2).toFixed(1) + 'deg');
       el.style.setProperty('--y', (Math.abs(off) ** 1.6 * 2.2).toFixed(1) + 'px');
@@ -1039,7 +1110,18 @@
     UI.setDetail(null);
     const win = g.winner === ME;
     const [me, op] = g.players;
+    $('#board').classList.remove('danger');
+    // 決着の演出：負けた側の顔が砕け、大きな文字が叩きつけられる。勝った時は火花が上がる
+    const pt = portrait(win ? OP : ME);
+    if (pt) { impact(UI.stagePoint(pt), win ? '#ffd86a' : '#ff5a3a', true); pt.classList.add('ko'); }
+    shake($('#board'), 14, 600);
+    const fin = document.createElement('div');
+    fin.className = 'finish ' + (win ? 'win' : 'lose');
+    fin.innerHTML = `<div class="fin-rays"></div><b>${win ? 'VICTORY' : 'DEFEAT'}</b><span>${win ? '勝利！' : '敗北…'}</span>`;
+    $('#fx').appendChild(fin);
+    if (win && root.Ambient) for (let i = 0; i < 6; i++) setTimeout(() => root.Ambient.burst(200 + Math.random() * 880, 160 + Math.random() * 300, i % 2 ? '#ffd88a' : '#ff9a4a', 30, 1.3), 350 + i * 230);
     setTimeout(() => {
+      fin.remove();
       UI.modal(`<span class="result ${win ? 'win' : 'lose'}">${win ? 'VICTORY' : 'DEFEAT'}</span>`,
         `<p class="result-sub">${win ? '勝利！' : '敗北…'}　${esc(g.endReason)}（${g.turn}ターン）</p>
         <table class="result-table"><tr><th></th><th>あなた</th><th>CPU</th></tr>
@@ -1050,8 +1132,8 @@
         [
           { label: 'タイトルへ', onClick: () => { UI.closeModal(); UI.showScreen('title'); } },
           { label: 'もう一度', primary: true, onClick: () => { UI.closeModal(); start({ ...B.setup, cpuDeck: AI.buildDeck() }); } },
-        ]);
-    }, 600);
+        ], 'result-modal');
+    }, 2100);
   }
 
   function init() {

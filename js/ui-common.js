@@ -30,6 +30,9 @@
   function showScreen(name) {
     $$('.screen').forEach((el) => el.classList.toggle('active', el.id === 'screen-' + name));
     hidePreview();
+    $('#stage').dataset.screen = name; // 画面ごとに見た目を変える所のため（お知らせの位置など）
+    pulse($('#wipe'), 'go', 650); // 画面の切り替え：光が横切る
+    if (root.Ambient) root.Ambient.setDensity({ title: 1.3, battle: 0.45 }[name] || 0.8); // 火の粉の量
     (screenHooks[name] || []).forEach((fn) => fn());
   }
 
