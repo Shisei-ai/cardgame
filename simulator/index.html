@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>シールドバトル・シミュレーター</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=M+PLUS+1p:wght@400;500;700;800&display=swap">
+  <link rel="stylesheet" href="css/sim.css">
+</head>
+<body data-screen="home">
+
+<!-- ===== メニュー ===== -->
+<section id="screen-home" class="screen page">
+  <div class="home">
+    <div class="home-logo">
+      <div class="logo-shields"><i></i><i></i><i></i><i></i><i></i></div>
+      <h1>シールドバトル<span>シミュレーター</span></h1>
+      <p class="tagline">5枚のシールドを割って、とどめを刺せ。<br>手持ちのカードを画像から登録して、CPUと対戦できるルール再現ツール</p>
+    </div>
+    <nav class="home-menu">
+      <button class="menu-card primary" data-go="setup"><b>対戦する</b><small>CPUと1対1で対戦</small></button>
+      <button class="menu-card" data-go="library"><b>カード</b><small>画像から登録・編集</small></button>
+      <button class="menu-card" data-go="decks"><b>デッキ</b><small>40枚を組む・画像から作る</small></button>
+      <button class="menu-card" data-go="help"><b>遊び方</b><small>ルールと操作</small></button>
+      <button class="menu-card" data-go="settings"><b>設定</b><small>画像の読み取り方法など</small></button>
+    </nav>
+    <p class="home-foot">v0.1 ・ 非公式のファンメイドツールです。登録したカードの画像・文章は、あなたのブラウザの中だけに保存されます。</p>
+  </div>
+</section>
+
+<!-- ===== カード一覧 ===== -->
+<section id="screen-library" class="screen page">
+  <header class="page-head">
+    <button class="btn ghost" data-go="home">← メニュー</button>
+    <h2>カード</h2>
+    <span class="hint" id="lib-count"></span>
+    <div class="spacer"></div>
+    <button class="btn primary" id="lib-import">画像から登録</button>
+    <button class="btn" id="lib-new">手で入力して登録</button>
+    <button class="btn ghost" id="lib-export" title="登録したカードとデッキをファイルに保存">書き出し</button>
+    <button class="btn ghost" id="lib-load" title="書き出したファイルを読み込む">読み込み</button>
+  </header>
+  <div class="filters">
+    <input id="lib-q" type="search" placeholder="名前・文章・種族で探す" aria-label="検索">
+    <select id="lib-civ" aria-label="文明"></select>
+    <select id="lib-type" aria-label="種類"></select>
+    <label class="chk"><input type="checkbox" id="lib-ng"> 対戦で動かない文があるカードだけ</label>
+  </div>
+  <p class="hint pad-x">「画像から登録」では、カード1枚の画像でも、何枚も写った画像でも読み取れます。読み取った後に1枚ずつ確認・修正してから登録します。</p>
+  <div class="lib-grid" id="lib-grid"></div>
+</section>
+
+<!-- ===== デッキ ===== -->
+<section id="screen-decks" class="screen page">
+  <header class="page-head">
+    <button class="btn ghost" data-go="home">← メニュー</button>
+    <h2>デッキ</h2>
+    <div class="spacer"></div>
+    <button class="btn primary" id="deck-from-image">画像から作る</button>
+    <button class="btn" id="deck-from-text">文字から作る</button>
+    <button class="btn" id="deck-new">新しいデッキ</button>
+  </header>
+  <div class="deck-layout">
+    <aside class="deck-side">
+      <div class="deck-list" id="deck-list"></div>
+      <div class="deck-side-btns"><button class="btn small" id="deck-copy">コピー</button><button class="btn small danger" id="deck-del">削除</button></div>
+    </aside>
+    <div class="deck-pool-wrap">
+      <div class="filters"><input id="deck-q" type="search" placeholder="カードを探す" aria-label="カードを探す"><select id="deck-civ" aria-label="文明"></select>
+        <span class="hint">クリックで追加・右クリックで1枚減らす</span></div>
+      <div class="deck-pool" id="deck-pool"></div>
+    </div>
+    <div class="deck-body" id="deck-body"></div>
+  </div>
+</section>
+
+<!-- ===== 対戦の準備 ===== -->
+<section id="screen-setup" class="screen page">
+  <header class="page-head"><button class="btn ghost" data-go="home">← メニュー</button><h2>対戦の準備</h2></header>
+  <div class="setup">
+    <label class="f">あなたのデッキ<select id="setup-my"></select></label>
+    <label class="f">CPUのデッキ<select id="setup-cpu"></select></label>
+    <div class="f-row">
+      <label class="f">先攻・後攻<select id="setup-first"><option value="random">ランダム</option><option value="me">あなたが先攻</option><option value="cpu">CPUが先攻</option></select></label>
+      <label class="f">演出の速さ<select id="setup-speed"><option value="1.4">ゆっくり</option><option value="1" selected>ふつう</option><option value="0.5">はやい</option><option value="0.15">とてもはやい</option></select></label>
+    </div>
+    <p class="ng" id="setup-note"></p>
+    <button class="btn primary big" id="setup-start">対戦開始</button>
+  </div>
+</section>
+
+<!-- ===== 対戦 ===== -->
+<section id="screen-battle" class="screen">
+  <div class="bt">
+    <aside class="bt-left">
+      <div class="pinfo op" id="bt-opp-info"></div>
+      <div class="bt-phase" id="bt-phase"></div>
+      <div class="pinfo me" id="bt-my-info"></div>
+      <div class="bt-left-btns">
+        <select id="bt-speed" aria-label="演出の速さ"><option value="1.4">ゆっくり</option><option value="1">ふつう</option><option value="0.5">はやい</option><option value="0.15">とてもはやい</option></select>
+        <button class="btn small danger" id="bt-quit">降参</button>
+      </div>
+    </aside>
+    <main class="bt-board">
+      <div class="row hand opp" id="bt-opp-hand"></div>
+      <div class="row res opp">
+        <div class="zone-box shields" id="bt-opp-shields"><div class="zone-title">シールド</div><div class="zone-cards"></div></div>
+        <div class="zone-box mana" id="bt-opp-mana"><div class="zone-title">マナ</div><div class="zone-cards"></div></div>
+      </div>
+      <div class="battlezone opp" id="bt-opp-battle"></div>
+      <div class="bt-mid"><div class="bt-prompt" id="bt-prompt"></div><div class="bt-buttons" id="bt-buttons"></div></div>
+      <div class="battlezone me" id="bt-my-battle"></div>
+      <div class="row res me">
+        <div class="zone-box shields" id="bt-my-shields"><div class="zone-title">シールド</div><div class="zone-cards"></div></div>
+        <div class="zone-box mana" id="bt-my-mana"><div class="zone-title">マナ</div><div class="zone-cards"></div></div>
+      </div>
+      <div class="row hand me" id="bt-my-hand"></div>
+      <div class="bt-flash" id="bt-flash"></div>
+      <div class="bt-casting" id="bt-casting"></div>
+    </main>
+    <aside class="bt-right">
+      <div class="detail" id="bt-detail"></div>
+      <div class="bt-log" id="bt-log" aria-live="polite"></div>
+    </aside>
+  </div>
+</section>
+
+<!-- ===== 設定 ===== -->
+<section id="screen-settings" class="screen page">
+  <header class="page-head"><button class="btn ghost" data-go="home">← メニュー</button><h2>設定</h2></header>
+  <div class="settings">
+    <h3>画像の読み取り方法</h3>
+    <label class="radio"><input type="radio" name="reader" value="claude">
+      <span><b>Claude（おすすめ・高精度）</b><br>Anthropic の AI に画像を送って読み取ります。日本語の小さな文字や、1枚に何枚も写った画像も読めます。自分の API キーが必要で、読み取りごとに少額の料金がかかります。</span></label>
+    <label class="radio"><input type="radio" name="reader" value="ocr">
+      <span><b>文字認識（OCR・無料）</b><br>ブラウザの中で文字を認識します（Tesseract.js）。キーは不要ですが、読み間違いが多いので、読み取った後に必ず手で直してください。初回は認識用のデータ（十数MB）を読み込みます。</span></label>
+
+    <h3>Claude の API キー</h3>
+    <p class="hint">キーは <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">Claude Console</a> で作れます。キーはこのブラウザの中（localStorage）にだけ保存され、画像と一緒に Anthropic の API にだけ送られます。共用のパソコンでは使い終わったら消してください。</p>
+    <div class="key-row">
+      <input id="set-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
+      <button class="btn small" id="set-show">表示</button>
+      <button class="btn small" id="set-test">接続を確認</button>
+      <button class="btn small danger" id="set-clear">消す</button>
+    </div>
+    <p id="set-test-result" class="hint"></p>
+    <label class="f">使うモデル<select id="set-model">
+      <option value="claude-opus-5-5">Claude Opus 5.5（最も正確）</option>
+      <option value="claude-sonnet-5-5">Claude Sonnet 5.5（速くて安い）</option>
+    </select></label>
+
+    <h3>対戦</h3>
+    <label class="f">CPUが考える時間（ミリ秒）<input id="set-wait" type="number" min="0" max="3000" step="50"></label>
+
+    <h3>保存について</h3>
+    <p class="hint" id="set-storage"></p>
+  </div>
+</section>
+
+<!-- ===== 遊び方 ===== -->
+<section id="screen-help" class="screen page">
+  <header class="page-head"><button class="btn ghost" data-go="home">← メニュー</button><h2>遊び方</h2></header>
+  <article class="help">
+    <h3>使い方の流れ</h3>
+    <ol>
+      <li><b>カードを登録</b>：「カード」→「画像から登録」で、カードの画像を選びます。読み取った名前・文明・コスト・パワー・能力の文章を確認して登録します。</li>
+      <li><b>デッキを作る</b>：「デッキ」で40枚を選ぶか、「画像から作る」でデッキリストの画像を読み取ります（先に、デッキに入るカードを登録しておく必要があります）。</li>
+      <li><b>対戦する</b>：「対戦する」でデッキを選んで開始。登録前でも、見本のデッキで遊べます。</li>
+    </ol>
+
+    <h3>勝ち方</h3>
+    <p>相手のシールド（最初は5枚）をすべてブレイクした後、さらにクリーチャーで相手プレイヤーを攻撃して通れば（ダイレクトアタック）勝ちです。また、山札が0枚になったプレイヤーは負けになります。</p>
+
+    <h3>ターンの流れ</h3>
+    <ol>
+      <li><b>ターン開始</b>：自分のバトルゾーンとマナゾーンのカードがすべてアンタップ（縦向き）に戻ります。</li>
+      <li><b>ドロー</b>：山札から1枚引きます（先攻の最初のターンは引きません）。</li>
+      <li><b>マナチャージ</b>：手札から1枚まで、マナゾーンに置けます。2つ以上の文明を持つ多色カードは、タップした状態で置かれます。</li>
+      <li><b>メイン</b>：マナをタップしてクリーチャーを召喚したり、呪文を唱えたりします。コストと同じ枚数のマナが必要で、その中にカードの文明がすべて含まれていなければいけません。</li>
+      <li><b>攻撃</b>：クリーチャーをタップして、相手プレイヤーか、相手のタップしているクリーチャーを攻撃します。出たばかりのクリーチャーは、そのターンは攻撃できません（召喚酔い）。</li>
+      <li><b>ターン終了</b>：「このターン」の効果が終わります。</li>
+    </ol>
+
+    <h3>攻撃とバトル</h3>
+    <ul>
+      <li>攻撃されたプレイヤーは、アンタップしている<b>ブロッカー</b>で攻撃を止められます（ブロックしたクリーチャーとバトル）。</li>
+      <li><b>バトル</b>：パワーの大きい方が勝ち、負けた方は破壊されます。同じパワーなら両方破壊されます。</li>
+      <li>プレイヤーへの攻撃が通ると、シールドを1枚（W・ブレイカーは2枚、T・ブレイカーは3枚）ブレイクし、その持ち主の手札に加わります。</li>
+      <li>ブレイクされたカードに<b>S・トリガー</b>があれば、コストを払わずにすぐ使えます。</li>
+    </ul>
+
+    <h3>対戦画面の操作</h3>
+    <ul>
+      <li>光っているカードが、今クリックできるカードです。画面の中央に「今何をするか」が表示されます。</li>
+      <li>攻撃は「攻撃するクリーチャー」→「攻撃先（相手のシールド／タップしているクリーチャー）」の順にクリックします。</li>
+      <li>マナの支払いは自動です（必要な文明をそろえ、多色カードはなるべく残すように選びます）。</li>
+      <li>Enterキーで、光っているボタン（攻撃へ進む・ターン終了など）を押せます。墓地の枚数をクリックすると中身を見られます。</li>
+    </ul>
+
+    <h3>対応している能力</h3>
+    <p>カードの文章は、決まった言い回しを読んで効果に変えています。読めなかった文はカード編集画面に赤く表示され、対戦では動きません（その場合は意味を変えない範囲で言い回しを書き換えてください）。対応している主なもの：</p>
+    <ul id="help-examples"></ul>
+    <p class="hint">まだ対応していないもの（今後の課題）：ツインパクト、超次元・GR、コスト軽減、置換効果（〜する代わりに）、相手のターン中の誘発、細かい裁定（効果の解決順の選択など）。</p>
+  </article>
+</section>
+
+<div id="modals"></div>
+<div id="toasts"></div>
+
+<script src="js/data.js"></script>
+<script src="js/textparser.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/sample-cards.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/reader.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/library-ui.js"></script>
+<script src="js/deck-ui.js"></script>
+<script src="js/battle-ui.js"></script>
+<script src="js/main.js"></script>
+<script>
+  // 遊び方に、対応している言い回しの例を並べる
+  document.getElementById('help-examples').innerHTML = TextParser.EXAMPLES.map((e) => '<li>' + UI.esc(e) + '</li>').join('');
+</script>
+</body>
+</html>
