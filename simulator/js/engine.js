@@ -93,26 +93,40 @@
     }
     return s;
   }
-  const isCreatureDef = (def) => def.type === 'creature' || def.type === 'evolution';
-  const isElementDef = (def) => isCreatureDef(def) || def.type === 'tamaseed';
+  const isCreatureDef = (def) => def.type === 'creature' || def.type === 'evolution' || def.type === 'psychic' || def.type === 'gr';
+  const isElementDef = (def) => isCreatureDef(def) || def.type === 'tamaseed' || def.type === 'dragheart';
+  /** 超次元ゾーンに置くカード（サイキック・クリーチャー、ドラグハート） */
+  const isHyperDef = (def) => def.type === 'psychic' || def.type === 'dragheart';
+  const isGrDef = (def) => def.type === 'gr';
   /** そのカードを「呪文として」見た時の定義（呪文そのもの、またはツインパクトの呪文側） */
   const spellView = (def) => (def.type === 'spell' ? def : spellSideDef(def));
 
   /** デッキが規則を満たしているか（40枚・同名4枚まで）。問題があれば文の配列を返す */
+  /** デッキを「山札（メイン）・超次元ゾーン・GRゾーン」に分ける */
+  function splitDeck(defs) {
+    return { main: defs.filter((d) => !isHyperDef(d) && !isGrDef(d)), hyper: defs.filter(isHyperDef), gr: defs.filter(isGrDef) };
+  }
+  /**
+   * デッキが規則を満たしているか。問題があれば文の配列を返す
+   *   メイン40枚ちょうど・同名4枚まで／超次元ゾーン8枚まで（同名4枚まで）／GRゾーン0枚か12枚（同名2枚まで）
+   */
   function validateDeck(defs) {
     const errors = [];
-    if (defs.length !== RULES.deckSize) errors.push(`デッキは${RULES.deckSize}枚ちょうどにしてください（今は${defs.length}枚）`);
-    const count = {};
-    for (const d of defs) count[d.name] = (count[d.name] || 0) + 1;
-    for (const [name, n] of Object.entries(count)) if (n > RULES.maxCopies) errors.push(`「${name}」が${n}枚あります（同じ名前は${RULES.maxCopies}枚まで）`);
+    const { main, hyper, gr } = splitDeck(defs);
+    if (main.length !== RULES.deckSize) errors.push(`メインデッキは${RULES.deckSize}枚ちょうどにしてください（今は${main.length}枚）`);
+    const countBy = (list) => { const c = {}; for (const d of list) c[d.name] = (c[d.name] || 0) + 1; return c; };
+    for (const [name, n] of Object.entries(countBy([...main, ...hyper]))) if (n > RULES.maxCopies) errors.push(`「${name}」が${n}枚あります（同じ名前は${RULES.maxCopies}枚まで）`);
+    if (hyper.length > RULES.hyperMax) errors.push(`超次元ゾーンのカードは${RULES.hyperMax}枚までです（今は${hyper.length}枚）`);
+    if (gr.length && gr.length !== RULES.grSize) errors.push(`GRゾーンは0枚か${RULES.grSize}枚ちょうどにしてください（今は${gr.length}枚）`);
+    for (const [name, n] of Object.entries(countBy(gr))) if (n > RULES.grMaxCopies) errors.push(`GRクリーチャー「${name}」が${n}枚あります（${RULES.grMaxCopies}枚まで）`);
     return errors;
   }
 
   /** 名前を「」で囲む（「真実を見極めよ」のように、すでに「」で始まる名前はそのまま） */
   const q = (name) => (/^「.*」$/.test(name) ? name : `「${name}」`);
 
-  const ZONE_KEYS = { deck: 'deck', hand: 'hand', mana: 'mana', battle: 'battle', shield: 'shields', grave: 'grave' };
-  const ZONE_NAMES = { deck: '山札', hand: '手札', mana: 'マナゾーン', battle: 'バトルゾーン', shield: 'シールド', grave: '墓地', deckBottom: '山札の下' };
+  const ZONE_KEYS = { deck: 'deck', hand: 'hand', mana: 'mana', battle: 'battle', shield: 'shields', grave: 'grave', hyper: 'hyperZone', gr: 'grZone' };
+  const ZONE_NAMES = { deck: '山札', hand: '手札', mana: 'マナゾーン', battle: 'バトルゾーン', shield: 'シールド', grave: '墓地', deckBottom: '山札の下', hyper: '超次元ゾーン', gr: 'GRゾーン' };
 
   class Game {
     /**
@@ -141,14 +155,16 @@
       this.skipAfterAttack = false;
       this.players = [0, 1].map((i) => ({
         idx: i, name: (o.names || ['あなた', 'CPU'])[i],
-        deck: [], hand: [], mana: [], battle: [], shields: [], grave: [],
+        deck: [], hand: [], mana: [], battle: [], shields: [], grave: [], hyperZone: [], grZone: [],
         charged: false,
       }));
       o.decks.forEach((defs, i) => {
         for (const def of defs) {
-          const c = { uid: this.uidSeq++, def, owner: i, zone: 'deck', tapped: false, enteredTurn: -1, under: [], tempPower: 0 };
+          // サイキック・ドラグハートは超次元ゾーン、GRクリーチャーはGRゾーンから始まる
+          const zone = isHyperDef(def) ? 'hyper' : isGrDef(def) ? 'gr' : 'deck';
+          const c = { uid: this.uidSeq++, def, owner: i, zone, tapped: false, enteredTurn: -1, under: [], tempPower: 0 };
           this.cards.set(c.uid, c);
-          this.players[i].deck.push(c);
+          this.players[i][ZONE_KEYS[zone]].push(c);
         }
       });
       this.first = o.first != null ? o.first : (this.rng() < 0.5 ? 0 : 1);
@@ -196,6 +212,7 @@
             if (st.kind !== 'grant' || !st.keywords.includes(name)) continue;
             if (st.filter.other && src === c) continue;
             if (!this.isCreature(c)) continue;
+            if (st.filter.equipped) { if (src.equippedTo === c.uid) return name === 'breaker' ? 2 : true; continue; }
             if (this.matches(c, Object.assign({}, st.filter, { type: null }), src)) return name === 'breaker' ? 2 : true;
           }
         }
@@ -214,6 +231,7 @@
         for (const st of this.ab(src).statics) {
           if (st.kind !== 'powerBuff') continue;
           if (st.filter.other && src === c) continue;
+          if (st.filter.equipped) { if (src.equippedTo === c.uid) p += st.amount; continue; }
           // パワーの条件は付けずに判定する（パワーの計算が自分自身を呼び続けないように）
           const f = Object.assign({}, st.filter, { maxPower: null, minPower: null });
           if (this.matches(c, f, src)) p += st.amount;
@@ -239,7 +257,7 @@
       let views = [d];
       if (f.type === 'creature') { if (!isCreatureDef(d)) return false; }
       else if (f.type === 'element') { if (!isElementDef(d)) return false; }
-      else if (f.type === 'tamaseed') { if (d.type !== 'tamaseed') return false; }
+      else if (f.type === 'tamaseed' || f.type === 'psychic' || f.type === 'dragheart' || f.type === 'gr') { if (d.type !== f.type) return false; }
       else if (f.type === 'spell') { const sv = c.zone === 'battle' ? null : spellView(d); if (!sv) return false; views = [sv]; }
       else if (d.spellSide && c.zone !== 'battle') views = [d, spellSideDef(d)];
       if (!views.some((v) => this.defMatches(v, f))) return false;
@@ -264,14 +282,22 @@
       const from = c.zone;
       const arr = this.zoneArr(c);
       if (arr) { const i = arr.indexOf(c); if (i >= 0) arr.splice(i, 1); }
+      // ルール：サイキック・ドラグハートは超次元ゾーンへ、GRクリーチャーはGRゾーンの一番下へ（手札・墓地などには行かない）
+      if (isHyperDef(c.def) && to !== 'battle' && to !== 'hyper') to = 'hyper';
+      if (isGrDef(c.def) && to !== 'battle' && to !== 'gr') { to = 'gr'; opts = Object.assign({}, opts, { bottom: true }); }
       if (to === 'deckBottom') { to = 'deck'; opts = Object.assign({}, opts, { bottom: true }); }
+      if (from === 'battle' && to !== 'battle') {
+        c.equippedTo = null;
+        // 装備していたウエポンは超次元ゾーンへ戻る
+        for (const w of this.players[c.owner].battle.filter((x) => x.equippedTo === c.uid)) this.move(w, 'hyper');
+      }
       const under = from === 'battle' && to !== 'battle' ? c.under : [];
       // 状態をリセット
       c.tempPower = 0; c.attacking = false; c.cantAttackTurn = -1; c.jdProtected = false;
       if (from === 'battle' && to !== 'battle') { c.under = []; c.hyper = false; }
       c.zone = to;
       const dest = this.players[c.owner][ZONE_KEYS[to]];
-      if (to === 'deck' && opts.bottom) dest.unshift(c); else dest.push(c);
+      if ((to === 'deck' || to === 'gr') && opts.bottom) dest.unshift(c); else dest.push(c);
       if (to === 'battle') {
         c.tapped = !!opts.tapped;
         c.enteredTurn = this.turnNo;
@@ -294,13 +320,13 @@
      * そのカードを使うためにタップするマナを探す。払えなければ null。
      * まず「必要な文明」を1枚ずつ割り当て（多色カードはなるべく温存）、残りを他のカードで埋める。
      */
-    findPayment(pi, def) {
+    findPayment(pi, def, costOverride) {
       const P = this.players[pi];
       const untapped = P.mana.filter((c) => !c.tapped);
-      const cost = def.cost || 0;
-      if (untapped.length < cost) return null;
       const need = (def.civs || []).filter((k) => k !== 'zero');
-      if (need.length > Math.max(cost, 0) && cost > 0) return null;
+      let cost = costOverride != null ? costOverride : def.cost || 0;
+      if (cost > 0 && need.length > cost) cost = need.length; // 文明の数より少なくはタップできない
+      if (untapped.length < cost) return null;
       const byFew = [...untapped].sort((a, b) => a.def.civs.length - b.def.civs.length);
       const used = new Set();
       const assign = (i) => {
@@ -324,7 +350,34 @@
       const pay = [...used, ...rest.slice(0, cost - used.size)];
       return pay.length === cost ? pay : null;
     }
-    canPay(pi, def) { return !!this.findPayment(pi, def); }
+    canPay(pi, def, card) { return !!this.findPayment(pi, def, card ? this.costOf(pi, card, def) : undefined); }
+
+    /**
+     * 実際に払うコスト（コストを減らす・増やす効果を反映）。
+     * 減らす効果ではコストは1より少なくならない（元が0のものは0のまま）
+     */
+    costOf(pi, c, useDef = c.def) {
+      const base = useDef.cost || 0;
+      let reduce = 0, add = 0;
+      const ab = abilitiesOf(useDef);
+      if (ab.selfCost) reduce += ab.selfCost.amount * this.players[pi].battle.filter((x) => this.isCreature(x) && this.matches(x, ab.selfCost.filter)).length;
+      for (const Q of this.players) {
+        for (const src of Q.battle) {
+          for (const st of this.ab(src).statics) {
+            if (st.kind !== 'costMod') continue;
+            if ((st.side === 'self') !== (src.owner === pi)) continue;
+            const f = st.filter || {};
+            if (f.type === 'spell' && useDef.type !== 'spell') continue;
+            if (f.type === 'creature' && !isCreatureDef(useDef)) continue;
+            if (!this.defMatches(useDef, f)) continue;
+            if (st.amount < 0) reduce -= st.amount; else add += st.amount;
+          }
+        }
+      }
+      let cost = base - reduce;
+      if (reduce && base > 0) cost = Math.max(1, cost);
+      return Math.max(0, cost + add);
+    }
 
     /** 進化元にできる自分のクリーチャー（シンカライズを持つタマシードも） */
     evolutionBases(pi, def) {
@@ -462,7 +515,7 @@
           const act = actions.find((a) => ans && a.kind === ans.kind && a.uid === ans.uid) || { kind: 'toAttack' };
           if (act.kind === 'toAttack') break;
           if (act.kind === 'hyper') await this.activateHyper(pi, this.card(act.uid));
-          else await this.playCard(pi, this.card(act.uid), act.kind === 'cast' ? 'spell' : 'main');
+          else await this.playCard(pi, this.card(act.uid), act.kind === 'cast' ? 'spell' : 'main', { free: !!act.free });
           await this.settle();
         }
         // ── 攻撃
@@ -481,6 +534,14 @@
         this.phase = 'end';
         for (const c of [...P.battle]) this.fireSelf(c, 'turnEnd');
         await this.settle();
+        for (const Q of this.players) {
+          for (const c of [...Q.battle]) {
+            if (c.ninjaTurn !== this.turnNo) continue;
+            c.ninjaTurn = null;
+            this.move(c, 'deckBottom');
+            this.say(`ニンジャ・ストライクで出た${this.nameOf(c)}は山札の下に置かれた`, Q.idx);
+          }
+        }
         await this.handTriggersAtTurnEnd(pi);
       } catch (e) {
         if (!(e instanceof SkipTurn)) throw e;
@@ -501,13 +562,16 @@
       const acts = [];
       for (const c of P.hand) {
         const d = c.def;
-        if (this.canPay(pi, d)) {
-          if (d.type === 'creature' || d.type === 'tamaseed') acts.push({ kind: 'summon', uid: c.uid });
-          else if (d.type === 'evolution') { if (this.evolutionBases(pi, d).length) acts.push({ kind: 'summon', uid: c.uid }); }
+        const usable = d.type !== 'evolution' || this.evolutionBases(pi, d).length > 0;
+        if (this.canPay(pi, d, c) && usable) {
+          if (d.type === 'creature' || d.type === 'tamaseed' || d.type === 'evolution') acts.push({ kind: 'summon', uid: c.uid });
           else if (d.type === 'spell') acts.push({ kind: 'cast', uid: c.uid });
+        } else if (usable && abilitiesOf(d).gZero && this.checkCond(pi, abilitiesOf(d).gZero)) {
+          // G・ゼロ：条件を満たしていれば、コストを支払わずに使える
+          acts.push({ kind: d.type === 'spell' ? 'cast' : 'summon', uid: c.uid, free: true });
         }
         const sv = d.type !== 'spell' && spellSideDef(d);
-        if (sv && this.canPay(pi, sv)) acts.push({ kind: 'cast', uid: c.uid });
+        if (sv && this.canPay(pi, sv, c)) acts.push({ kind: 'cast', uid: c.uid });
       }
       for (const c of P.battle) if (this.canHyper(pi, c)) acts.push({ kind: 'hyper', uid: c.uid });
       acts.push({ kind: 'toAttack' });
@@ -557,13 +621,14 @@
      * 手札のカードを、マナを払って使う。
      * @param side 'main'（カードの本来の面）か 'spell'（ツインパクトの呪文側）
      */
-    async playCard(pi, c, side = 'main') {
+    async playCard(pi, c, side = 'main', opts = {}) {
       const P = this.players[pi];
       if (!c || c.zone !== 'hand') return;
       const useDef = side === 'spell' ? spellView(c.def) : c.def;
       if (!useDef) return;
-      const pay = this.findPayment(pi, useDef);
+      const pay = opts.free ? [] : this.findPayment(pi, useDef, this.costOf(pi, c, useDef));
       if (!pay) return;
+      if (opts.free) this.say(`G・ゼロ：${q(useDef.name)}をコストを支払わずに使う`, pi);
       let base = null;
       if (useDef.type === 'evolution') {
         const bases = this.evolutionBases(pi, useDef);
@@ -577,6 +642,16 @@
         await this.castSpell(pi, c, { fromHand: true });
       } else {
         await this.putCreature(pi, c, base, useDef.type === 'tamaseed' ? '使った' : '召喚した', { summoned: true });
+      }
+    }
+
+    /** 効果でバトルゾーンに出す。ドラグハートのウエポンは、出したクリーチャーに装備する */
+    async putFromHyperOrZone(pi, c, source, verb) {
+      const weapon = c.def.type === 'dragheart' && !(c.def.races || []).some((r) => /フォートレス/.test(r)) && !/フォートレス/.test(c.def.text || '');
+      await this.putCreature(pi, c, null, verb);
+      if (weapon && source && source.zone === 'battle' && this.isCreature(source) && source.owner === pi && c.zone === 'battle') {
+        c.equippedTo = source.uid;
+        this.say(`${this.nameOf(c)}を${this.nameOf(source)}に装備した`, pi);
       }
     }
 
@@ -599,7 +674,7 @@
         c.under = under;
         this.say(`${this.players[pi].name}は${this.nameOf(base)}を${this.nameOf(c)}に進化させた`, pi);
       } else {
-        this.move(c, 'battle');
+        this.move(c, 'battle', { tapped: !!opts.tapped });
         this.say(`${this.players[pi].name}は${this.nameOf(c)}を${verb}`, pi);
       }
       this.emit({ kind: 'summon', uid: c.uid, player: pi });
@@ -679,8 +754,22 @@
     /** 予約した能力を解決する（ターンのプレイヤーの分から先に） */
     async flushTriggers() {
       while (this.pendingTriggers.length) {
-        const list = this.pendingTriggers.splice(0);
-        list.sort((a, b) => (a.controller === this.active ? 0 : 1) - (b.controller === this.active ? 0 : 1));
+        const all = this.pendingTriggers.splice(0);
+        // ターンのプレイヤーの能力が先。同じプレイヤーの能力が同時にいくつもあれば、そのプレイヤーが順番を選ぶ
+        const list = [];
+        for (const who of [this.active, this.opp(this.active)]) {
+          const mine = all.filter((t) => t.controller === who);
+          while (mine.length) {
+            let k = 0;
+            const distinct = new Set(mine.map((t) => t.card.uid + ':' + t.when)).size > 1;
+            if (mine.length > 1 && distinct) {
+              const labels = mine.map((t) => `${t.card.def.name}【${TextParser.WHEN_NAMES[t.when] || t.when}】${t.effects.map((e) => TextParser.describeEffect(e)).join(' → ').slice(0, 60)}`);
+              k = await this.askOption(who, '同時に発動した能力があります。先に解決する能力を選んでください', labels, { op: 'triggerOrder' });
+            }
+            list.push(mine.splice(k, 1)[0]);
+            if (mine.length && !distinct) { list.push(...mine.splice(0)); }
+          }
+        }
         for (const t of list) {
           this.emit({ kind: 'trigger', uid: t.card.uid, when: t.when });
           this.say(`${this.nameOf(t.card)}の能力が発動`, t.controller);
@@ -749,6 +838,8 @@
     checkCond(pi, c) {
       const P = this.players[pi];
       switch (c.kind) {
+        case 'manaCivGE': return P.mana.filter((m) => c.civs.some((k) => m.def.civs.includes(k))).length >= c.n;
+        case 'battleHas': return P.battle.filter((x) => this.matches(x, c.filter)).length >= c.n;
         case 'manaLE': return P.mana.length <= c.n;
         case 'manaGE': return P.mana.length >= c.n;
         case 'handLE': return P.hand.length <= c.n;
@@ -816,12 +907,31 @@
           break;
         }
         case 'putToBattle': {
-          const zoneArr = { grave: P.grave, hand: P.hand, mana: P.mana }[e.from];
-          const cands = zoneArr.filter((c) => c.def.type === 'creature' && this.matches(c, e.filter, source));
-          const picked = await this.chooseCards(pi, cands, e.upTo ? 0 : e.n, e.n, `バトルゾーンに出すクリーチャーを選んでください`, { op: 'putToBattle' });
-          for (const c of picked) await this.putCreature(pi, c, null, `${ZONE_NAMES[e.from]}からバトルゾーンに出した`);
+          const zoneArr = { grave: P.grave, hand: P.hand, mana: P.mana, hyper: P.hyperZone }[e.from];
+          const cands = zoneArr.filter((c) => (e.from === 'hyper' ? isHyperDef(c.def) : c.def.type === 'creature') && this.matches(c, e.filter, source));
+          const picked = await this.chooseCards(pi, cands, e.upTo ? 0 : e.n, e.n, `バトルゾーンに出すカードを選んでください`, { op: 'putToBattle' });
+          for (const c of picked) await this.putFromHyperOrZone(pi, c, source, `${ZONE_NAMES[e.from]}からバトルゾーンに出した`);
           break;
         }
+        case 'putHyperTotal': {
+          // 超次元ゾーンから、コストの合計が決まった数以下になるように好きな数
+          const cands = P.hyperZone.filter((c) => this.matches(c, e.filter, source) && (c.def.cost || 0) <= e.maxTotal);
+          const picked = await this.chooseCards(pi, cands, 0, cands.length, `超次元ゾーンから出すカードを選んでください（コストの合計${e.maxTotal}以下）`, { op: 'putHyperTotal', maxTotal: e.maxTotal });
+          let sum = 0;
+          for (const c of picked) {
+            if (sum + (c.def.cost || 0) > e.maxTotal) continue; // 合計を超える分は出さない
+            sum += c.def.cost || 0;
+            await this.putFromHyperOrZone(pi, c, source, '超次元ゾーンからバトルゾーンに出した');
+          }
+          break;
+        }
+        case 'grSummon':
+          for (let i = 0; i < (e.n || 1); i++) {
+            const c = P.grZone[P.grZone.length - 1];
+            if (!c) { this.say('GRゾーンにカードがない', pi); break; }
+            await this.putCreature(pi, c, null, 'GR召喚した', { summoned: true });
+          }
+          break;
         case 'recover': {
           const zoneArr = e.from === 'grave' ? P.grave : P.mana;
           const cands = zoneArr.filter((c) => this.matches(c, e.filter, source));
@@ -916,7 +1026,7 @@
           else if (e.op === 'tap' || e.op === 'untap') { for (const c of ts) { c.tapped = e.op === 'tap'; this.emit({ kind: 'tap', uid: c.uid, tapped: c.tapped }); } this.say(`${ts.map((c) => this.nameOf(c)).join('、')}を${e.op === 'tap' ? 'タップ' : 'アンタップ'}した`, pi); }
           else {
             const to = { toGrave: 'grave', bounce: 'hand', toMana: 'mana' }[e.op];
-            for (const c of ts) { this.move(c, to); this.say(`${this.nameOf(c)}は${ZONE_NAMES[to]}に置かれた`, pi); }
+            for (const c of ts) { const dest = isHyperDef(c.def) ? 'hyper' : isGrDef(c.def) ? 'gr' : to; if (await this.leaveBattle(c, to)) this.say(`${this.nameOf(c)}は${ZONE_NAMES[dest]}に置かれた`, pi); }
           }
           await this.pace({ kind: e.op });
           break;
@@ -994,17 +1104,61 @@
       await this.checkState();
     }
 
-    /** 破壊する（同時に）。破壊された時の能力を予約する */
+    /**
+     * 破壊する（同時に）。置換効果（セイバー・破壊される時のかわりの行き先・エスケープ）を適用し、
+     * 破壊された時・離れた時の能力を予約する
+     */
     async destroyCards(list) {
-      const alive = list.filter((c) => c.zone === 'battle');
-      for (const c of alive) {
-        this.emit({ kind: 'destroy', uid: c.uid });
+      let alive = list.filter((c) => c.zone === 'battle');
+      // セイバー：自分の他のクリーチャーが破壊される時、かわりにセイバーを持つクリーチャーを破壊してよい
+      const swapped = [];
+      for (const c of [...alive]) {
+        const savers = this.players[c.owner].battle.filter((s) => s !== c && !alive.includes(s) && !swapped.includes(s) && this.ab(s).saver && this.isCreature(c) && this.matches(c, Object.assign({}, this.ab(s).saver, { type: null }), s));
+        if (!savers.length) continue;
+        const [s] = await this.chooseCards(c.owner, savers, 0, 1, `セイバー：${this.nameOf(c)}のかわりに破壊するクリーチャーを選べます`, { op: 'saver', target: c.uid });
+        if (s) { this.say(`セイバー！ ${this.nameOf(c)}のかわりに${this.nameOf(s)}が破壊される`, c.owner); alive = alive.map((x) => (x === c ? s : x)); swapped.push(s); }
       }
-      await this.pace({ kind: 'destroy', uids: alive.map((c) => c.uid) });
-      for (const c of alive) {
-        this.move(c, 'grave');
+      const gone = [];
+      for (const c of alive) if (!(await this.escapeOrStay(c, 'destroy'))) gone.push(c);
+      for (const c of gone) this.emit({ kind: 'destroy', uid: c.uid });
+      if (gone.length) await this.pace({ kind: 'destroy', uids: gone.map((c) => c.uid) });
+      for (const c of gone) {
+        const rep = this.ab(c).replaceDestroy;
+        const dest = { hand: 'hand', mana: 'mana', shield: 'shield', deckBottom: 'deckBottom', deckShuffle: 'deck' }[rep] || 'grave';
+        this.move(c, dest);
+        if (rep === 'deckShuffle') this.shuffle(this.players[c.owner].deck);
+        if (rep) this.say(`${this.nameOf(c)}は墓地のかわりに${ZONE_NAMES[dest] || '山札'}へ`, c.owner);
         this.fireSelf(c, 'destroyed');
+        this.fireSelf(c, 'leave');
       }
+      return gone;
+    }
+
+    /**
+     * バトルゾーンを離れる前の確認。離れずに済んだら true を返す
+     *   ・バトルゾーンを離れない（能力）
+     *   ・エスケープ：かわりに自分のシールドを1つ手札に加えてよい
+     */
+    async escapeOrStay(c, cause) {
+      if (c.zone !== 'battle') return true;
+      if (this.kw(c, 'cantLeave') && cause !== 'rule') { this.say(`${this.nameOf(c)}はバトルゾーンを離れない`, c.owner); return true; }
+      const P = this.players[c.owner];
+      if (this.kw(c, 'escape') && P.shields.length) {
+        if (await this.askYesNo(c.owner, `エスケープ：${c.def.name}がバトルゾーンを離れるかわりに、自分のシールドを1つ手札に加えますか？`, { op: 'escape', uid: c.uid })) {
+          const [s] = await this.chooseCards(c.owner, P.shields, 1, 1, '手札に加えるシールドを選んでください', { op: 'escapeShield' });
+          this.move(s, 'hand');
+          this.say(`エスケープ！ ${this.nameOf(c)}はバトルゾーンに残り、シールドを1つ手札に加えた`, c.owner);
+          return true;
+        }
+      }
+      return false;
+    }
+    /** 効果でバトルゾーンから別の場所へ動かす（手札・マナ・墓地・山札の下など）。離れた時の能力も予約する */
+    async leaveBattle(c, to, cause = 'effect') {
+      if (await this.escapeOrStay(c, cause)) return false;
+      this.move(c, to);
+      this.fireSelf(c, 'leave');
+      return true;
     }
 
     // ───────────── 攻撃 ─────────────
@@ -1019,9 +1173,13 @@
       this.say(`${this.nameOf(att)}が${tgtCard ? this.nameOf(tgtCard) : D.name}を攻撃！`, pi);
       this.emit({ kind: 'attack', uid: att.uid, target });
       await this.pace({ kind: 'attack', uid: att.uid, target });
+      const attackers = [att]; // 革命チェンジ・侵略で入れ替わった後も、攻撃中の印を最後に外すため
       try {
         this.fireSelf(att, 'attack');
         this.fireEvent('attack', { player: pi, card: att });
+        // ── 侵略・革命チェンジ（攻撃するクリーチャーを手札のカードに入れ替える・重ねる）
+        att = await this.attackSwaps(pi, att);
+        attackers.push(att);
         await this.flushTriggers();
         // ── アタック・チャンス（手札の呪文をタダで唱える）とスマッシュ・バースト（自分の呪文側を唱える）
         await this.attackChance(pi, att);
@@ -1035,6 +1193,10 @@
         await this.checkState();
         if (att.zone !== 'battle') return; // 攻撃中に離れたら、攻撃は終わり
         if (tgtCard && tgtCard.zone !== 'battle') return; // 攻撃先がいなくなった
+        // ── 守る側：ニンジャ・ストライク（マナの枚数が足りれば手札からタダで召喚）と革命0トリガー
+        await this.defenderReactions(di, att, tgtCard);
+        if (att.zone !== 'battle') return;
+        if (tgtCard && tgtCard.zone !== 'battle') return;
         // ── ガードマン：自分の他のクリーチャーへの攻撃を、かわりに受ける
         if (tgtCard) {
           const guards = D.battle.filter((c) => c !== tgtCard && !c.tapped && this.isCreature(c) && this.kw(c, 'guardman'));
@@ -1079,8 +1241,68 @@
         const picked = await this.chooseCards(pi, D.shields, n, n, `ブレイクするシールドを${n}つ選んでください`, { op: 'breakShield' });
         await this.breakShields(pi, picked, att);
       } finally {
-        att.attacking = false;
+        for (const a of attackers) a.attacking = false;
       }
+    }
+
+    /**
+     * 侵略：手札の進化クリーチャーを、攻撃しているクリーチャーの上に重ねる（攻撃は続く）
+     * 革命チェンジ：攻撃しているクリーチャーを手札に戻し、手札のクリーチャーをかわりに出す（攻撃は続く）
+     * 入れ替わった後の、攻撃中のクリーチャーを返す
+     */
+    async attackSwaps(pi, att) {
+      const P = this.players[pi];
+      for (let guard = 0; guard < 6 && att.zone === 'battle'; guard++) {
+        const inv = P.hand.filter((c) => abilitiesOf(c.def).invasion && this.matches(att, Object.assign({ type: 'creature' }, abilitiesOf(c.def).invasion)));
+        const rev = P.hand.filter((c) => isCreatureDef(c.def) && c.def.type !== 'evolution' && abilitiesOf(c.def).revChange && this.matches(att, Object.assign({ type: 'creature' }, abilitiesOf(c.def).revChange)));
+        if (!inv.length && !rev.length) break;
+        const opts = [...inv.map((c) => `侵略：${c.def.name}を${att.def.name}の上に重ねる`), ...rev.map((c) => `革命チェンジ：${att.def.name}と${c.def.name}を入れ替える`), '使わない'];
+        const k = await this.askOption(pi, `${att.def.name}の攻撃で使える能力があります`, opts, { op: 'attackSwap', inv: inv.map((c) => c.uid), rev: rev.map((c) => c.uid), attacker: att.uid });
+        if (k >= inv.length + rev.length) break;
+        if (k < inv.length) {
+          const evo = inv[k];
+          this.say(`侵略！ ${this.nameOf(att)}の上に${this.nameOf(evo)}を重ねた`, pi);
+          this.emit({ kind: 'shieldTrigger', uid: evo.uid, player: pi });
+          await this.putCreature(pi, evo, att, '侵略で出した');
+          evo.tapped = true;
+          evo.attacking = true;
+          att = evo;
+        } else {
+          const nc = rev[k - inv.length];
+          this.say(`革命チェンジ！ ${this.nameOf(att)}を手札に戻し、${this.nameOf(nc)}を出した`, pi);
+          this.move(att, 'hand');
+          this.fireSelf(att, 'leave');
+          await this.putCreature(pi, nc, null, '革命チェンジで出した', { tapped: true });
+          nc.tapped = true;
+          nc.attacking = true;
+          att = nc;
+        }
+      }
+      return att;
+    }
+
+    /** 守る側の手札から使える能力（ニンジャ・ストライク・革命0トリガー） */
+    async defenderReactions(di, att, tgtCard) {
+      const D = this.players[di];
+      for (const c of [...D.hand]) {
+        if (c.zone !== 'hand' || att.zone !== 'battle') continue;
+        const kw = abilitiesOf(c.def).keywords;
+        if (kw.ninjaStrike && D.mana.length >= kw.ninjaStrike && isCreatureDef(c.def) && c.def.type !== 'evolution') {
+          if (await this.askYesNo(di, `ニンジャ・ストライク${kw.ninjaStrike}：${c.def.name}をコストを支払わずに召喚しますか？（ターンの終わりに山札の下へ）`, { op: 'ninjaStrike', uid: c.uid })) {
+            this.say(`ニンジャ・ストライク！`, di);
+            await this.putCreature(di, c, null, 'ニンジャ・ストライクで召喚した', { summoned: true });
+            c.ninjaTurn = this.turnNo;
+          }
+        } else if (kw.rev0 && !tgtCard && D.shields.length === 0) {
+          if (await this.askYesNo(di, `革命0トリガー：シールドが0なので、${c.def.name}をコストを支払わずに使えます。使いますか？`, { op: 'rev0', uid: c.uid })) {
+            this.say(`革命0トリガー！ ${this.nameOf(c)}`, di);
+            this.emit({ kind: 'shieldTrigger', uid: c.uid, player: di });
+            if (spellView(c.def) && c.def.type === 'spell') await this.castSpell(di, c, { fromHand: true });
+            else await this.putCreature(di, c, null, '革命0トリガーで召喚した', { summoned: true });
+          }
+        }
+      }
+      await this.settle();
     }
 
     /** アタック・チャンス：攻撃したクリーチャーが条件に合えば、手札のその呪文をタダで唱えてよい */
@@ -1170,5 +1392,5 @@
     }
   }
 
-  return { Game, GameOver, SkipTurn, validateDeck, abilitiesOf, spellSideDef, spellView, isCreatureDef, isElementDef, makeRng, ZONE_NAMES };
+  return { Game, GameOver, SkipTurn, validateDeck, splitDeck, abilitiesOf, spellSideDef, spellView, isCreatureDef, isElementDef, isHyperDef, isGrDef, makeRng, ZONE_NAMES };
 });

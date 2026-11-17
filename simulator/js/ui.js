@@ -66,7 +66,7 @@
     const pw = opts.power != null ? opts.power : def.power;
     const pwCls = opts.power != null && def.power != null && opts.power !== def.power ? (opts.power > def.power ? ' up' : ' down') : '';
     const badges = `${opts.under ? `<span class="under-badge" title="下に重なっているカード">+${opts.under}</span>` : ''}${opts.hyper ? '<span class="hyper-badge" title="ハイパーモード中">HYPER</span>' : ''}`;
-    const hasPower = def.type !== 'spell' && def.type !== 'tamaseed';
+    const hasPower = def.type !== 'spell' && def.type !== 'tamaseed' && def.type !== 'dragheart';
     if (def.image) {
       return `<div class="${cls} has-img"${attrs}><img src="${def.image}" alt="${esc(def.name)}" draggable="false">
         ${hasPower && pwCls ? `<span class="pw-badge${pwCls}">${pw}</span>` : ''}${badges}</div>`;
@@ -76,7 +76,7 @@
         <div class="cf-top"><span class="cost">${def.cost != null ? def.cost : '?'}</span><span class="nm">${esc(def.name)}</span></div>
         <div class="cf-type">${esc(SimData.TYPE_BY_KEY[def.type] ? SimData.TYPE_BY_KEY[def.type].name : '')}${def.races && def.races.length ? ' / ' + esc(def.races.join('・')) : ''}</div>
         <div class="cf-kw">${shortKeywords(def).map((k) => `<span>${esc(k)}</span>`).join('')}</div>
-        ${hasPower ? `<div class="pw${pwCls}">${pw != null ? pw : ''}</div>` : `<div class="pw spell">${def.type === 'tamaseed' ? 'タマシード' : '呪文'}</div>`}
+        ${hasPower ? `<div class="pw${pwCls}">${pw != null ? pw : ''}</div>` : `<div class="pw spell">${{ tamaseed: 'タマシード', dragheart: 'ドラグハート' }[def.type] || '呪文'}</div>`}
       </div>${badges}</div>`;
   }
 
@@ -91,7 +91,7 @@
       <div class="detail-info">
         <h3>${esc(def.name)}</h3>
         <p class="meta">${civDots(def.civs)} ${esc((def.civs || []).map(civName).join('/'))}　コスト${def.cost}　${esc((SimData.TYPE_BY_KEY[def.type] || {}).name || '')}
-          ${def.type !== 'spell' && def.type !== 'tamaseed' ? `　パワー${extra.power != null && extra.power !== def.power ? `<b class="${extra.power > def.power ? 'up' : 'down'}">${extra.power}</b>（元${def.power}）` : def.power}` : ''}</p>
+          ${def.type !== 'spell' && def.type !== 'tamaseed' && def.type !== 'dragheart' ? `　パワー${extra.power != null && extra.power !== def.power ? `<b class="${extra.power > def.power ? 'up' : 'down'}">${extra.power}</b>（元${def.power}）` : def.power}` : ''}</p>
         ${def.races && def.races.length ? `<p class="meta">種族：${esc(def.races.join(' / '))}</p>` : ''}
         ${lines.length ? `<ul class="ab-list">${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : '<p class="hint">能力なし</p>'}
         ${ab.unparsed.length ? `<ul class="ab-list ng">${ab.unparsed.map((l) => `<li title="この行は対戦で動きません">⚠ ${esc(l)}</li>`).join('')}</ul>` : ''}

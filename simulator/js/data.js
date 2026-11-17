@@ -32,6 +32,9 @@
     { key: 'evolution', name: '進化クリーチャー' },
     { key: 'spell', name: '呪文' },
     { key: 'tamaseed', name: 'タマシード' },
+    { key: 'psychic', name: 'サイキック・クリーチャー' }, // 超次元ゾーンに置く。バトルゾーン以外へ行く時は超次元ゾーンに戻る
+    { key: 'dragheart', name: 'ドラグハート' },         // 超次元ゾーンに置く（ウエポン・フォートレス）。クリーチャーではない
+    { key: 'gr', name: 'GRクリーチャー' },              // GRゾーンに置く。GR召喚で出て、離れると GRゾーンの一番下へ
   ];
   const TYPE_BY_KEY = Object.fromEntries(TYPES.map((t) => [t.key, t]));
 
@@ -43,6 +46,9 @@
     startHand: 5,      // 最初の手札の枚数
     turnLimit: 120,    // これだけターンが進んだら引き分け（無限ループ防止のための安全装置）
     effectDepth: 30,   // 効果が効果を呼ぶ連鎖の上限（同上）
+    hyperMax: 8,       // 超次元ゾーンのカードは8枚まで
+    grSize: 12,        // GRゾーンは0枚か12枚ちょうど
+    grMaxCopies: 2,    // GRゾーンの同じ名前のカードは2枚まで
   };
 
   return { CIVS, CIV_BY_KEY, CIV_BY_NAME, TYPES, TYPE_BY_KEY, RULES };

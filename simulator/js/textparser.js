@@ -115,9 +115,26 @@
     const races = [...p.matchAll(/《([^》]+)》/g)].map((x) => x[1]);
     if (races.length) f.races = races;
     if (/エレメント/.test(p)) f.type = 'element';
+    else if (/サイキック/.test(p)) f.type = 'psychic';
+    else if (/ドラグハート/.test(p)) f.type = 'dragheart';
+    else if (/GRクリーチャー/.test(p)) f.type = 'gr';
     else if (/タマシード/.test(p)) f.type = 'tamaseed';
     else if (/呪文/.test(p)) f.type = 'spell';
     else if (/クリーチャー/.test(p)) f.type = 'creature';
+    return f;
+  }
+
+  /**
+   * 条件の言葉（革命チェンジ・侵略・セイバーなど）から絞り込みを読む。
+   * 《》で囲まれていない種族名（例：「コスト5以上のドラゴン」）も最後の言葉から読み取る
+   */
+  function parseCondFilter(str) {
+    const f = parseFilter(str);
+    if (!f.races) {
+      const m = str.replace(/、/g, '').match(/(?:^|の)([^の]+?)$/);
+      const last = m && m[1].replace(/(?:クリーチャー|カード)$/, '');
+      if (last && !new RegExp(`^(?:${CIV_NAMES}|自分|相手|コスト\\d+以[上下]|パワー\\d+以[上下]|進化|)$`).test(last)) f.races = [last];
+    }
     return f;
   }
 
@@ -129,6 +146,10 @@
     if ((m = c.match(/自分の手札が(\d+)枚以下/))) return { kind: 'handLE', n: +m[1] };
     if ((m = c.match(/自分のシールドが(\d+)つ以下/))) return { kind: 'shieldLE', n: +m[1] };
     if ((m = c.match(/相手のクリーチャーが自分のクリーチャーより(\d+)体以上多/))) return { kind: 'oppMoreCreatures', n: +m[1] };
+    // マナ武装など：「自分のマナゾーンに火のカードが5枚以上」
+    if ((m = c.match(new RegExp(`自分のマナゾーンに((?:${CIV_NAMES})(?:または(?:${CIV_NAMES}))*)の(?:カード)?が(\\d+)枚以上`)))) return { kind: 'manaCivGE', civs: m[1].split('または').map(civKey), n: +m[2] };
+    // 「バトルゾーンに自分の〜が（N体以上）」
+    if ((m = c.match(/^(?:バトルゾーンに)?自分の(.+?)が(?:(\d+)(?:体|枚|つ)以上)?(?:バトルゾーンに)?(?:い|あ)?$/))) return { kind: 'battleHas', filter: parseCondFilter(m[1]), n: m[2] ? +m[2] : 1 };
     return null;
   }
 
@@ -188,11 +209,20 @@
       return done({ op: 'manaToGrave', n: +m[1] });
     if ((m = s.match(/相手のマナゾーン(?:にある|の|から)(?:カードを)?(\d+)枚(?:選び、)?(?:持ち主の)?手札に戻す/)))
       return done({ op: 'manaToHand', n: +m[1] });
-    // ── 墓地・マナ・手札からバトルゾーンへ
-    if ((m = s.match(/(?:自分の)?(墓地|手札|マナゾーン)から(.*?)を(\d+)体(まで)?、?(?:選び、)?バトルゾーンに出す/))) {
-      const from = { 墓地: 'grave', 手札: 'hand', マナゾーン: 'mana' }[m[1]];
+    // ── GR召喚
+    if ((m = s.match(/^GR召喚(?:を(\d+)回)?する$/))) return done({ op: 'grSummon', n: m[1] ? +m[1] : 1 });
+    // ── 超次元ゾーンから、コストの合計がN以下になるように好きな数
+    if ((m = s.match(/(?:自分の)?超次元ゾーンから、?コストの合計が(\d+)以下になるように、?(.*?)を好きな数(?:、|選び、)?バトルゾーンに出す/))) {
       const f = parseFilter(m[2]);
-      f.type = 'creature';
+      if (!f.type) f.type = 'psychic';
+      return done({ op: 'putHyperTotal', maxTotal: +m[1], filter: f });
+    }
+    // ── 墓地・マナ・手札・超次元ゾーンからバトルゾーンへ
+    if ((m = s.match(/(?:自分の)?(墓地|手札|マナゾーン|超次元ゾーン)から(.*?)を(\d+)(?:体|枚)(まで)?、?(?:選び、)?バトルゾーンに出す/))) {
+      const from = { 墓地: 'grave', 手札: 'hand', マナゾーン: 'mana', 超次元ゾーン: 'hyper' }[m[1]];
+      const f = parseFilter(m[2]);
+      if (from !== 'hyper') f.type = 'creature';
+      else if (!f.type) f.type = 'psychic';
       return done({ op: 'putToBattle', from, filter: f, n: +m[3], upTo: !!m[4] });
     }
     // ── 墓地・マナから手札へ（回収）
@@ -317,6 +347,10 @@
     if (/^マッハファイター$/.test(l)) return (kw.machFighter = true);
     if (/^ジャストダイバー$/.test(l)) return (kw.justDiver = true);
     if (/^ヨビニオン$/.test(l)) return (kw.yobinion = true);
+    if (/^エスケープ$/.test(l)) return (kw.escape = true);
+    if (/^革命0トリガー$/.test(l)) return (kw.rev0 = true);
+    if ((m = l.match(/^ニンジャ・?ストライク(\d+)$/))) return (kw.ninjaStrike = +m[1]);
+    if (/^このクリーチャーはバトルゾーンを離れない$/.test(l)) return (kw.cantLeave = true);
     if (/^ガードマン$/.test(l)) return (kw.guardman = true);
     if (/^スマッシュ・?バースト$/.test(l)) return (kw.smashBurst = true);
     if (/^(?:G・?ストライク)?シンカライズ$/.test(l)) { if (/G・?ストライク/.test(l)) kw.gStrike = true; return (kw.sinkarize = true); }
@@ -351,6 +385,7 @@
     [/^この(?:クリーチャー|タマシード)(?:をバトルゾーンに出した|がバトルゾーンに出た|が出た)時、/, ['cip']],
     [/^このクリーチャーが攻撃する時、/, ['attack']],
     [/^この(?:クリーチャー|タマシード)が破壊された時、/, ['destroyed']],
+    [/^この(?:クリーチャー|タマシード|ドラグハート)が(?:バトルゾーンを)?離れた時、/, ['leave']],
     [/^このクリーチャーがブロックした時、/, ['block']],
     [/^このクリーチャーがバトルに勝った時、/, ['winBattle']],
     [/^自分のターンの(?:はじめ|始め)に、/, ['turnStart']],
@@ -372,7 +407,15 @@
   };
   /** 常在効果（パワーを上げる・キーワードを与える） */
   function parseStatic(line) {
-    let m = line.match(/^(?:バトルゾーンにある)?(自分の.*?)(?:すべて)?のパワー(?:を|は)\+(\d+)(?:する|される)。?$/);
+    let m;
+    // ドラグハート・ウエポン：装備したクリーチャーだけに掛かる
+    if ((m = line.match(/^(?:この(?:ドラグハート|ウエポン)を)?装備(?:した|している)クリーチャー(?:に|は)((?:「[^」]+」(?:と|、)?)+)を(?:与える|得る)。?$/))) {
+      const keys = [...m[1].matchAll(/「([^」]+)」/g)].map((x) => GRANT_WORDS[x[1]]);
+      if (keys.every(Boolean)) return { kind: 'grant', keywords: keys, filter: { equipped: true } };
+    }
+    if ((m = line.match(/^(?:この(?:ドラグハート|ウエポン)を)?装備(?:した|している)クリーチャーのパワー(?:を|は)\+(\d+)(?:する|される)。?$/)))
+      return { kind: 'powerBuff', amount: +m[1], filter: { equipped: true } };
+    m = line.match(/^(?:バトルゾーンにある)?(自分の.*?)(?:すべて)?のパワー(?:を|は)\+(\d+)(?:する|される)。?$/);
     if (m) return { kind: 'powerBuff', amount: +m[2], filter: parseFilter(m[1]) };
     m = line.match(/^(?:バトルゾーンにある)?(自分の.*?クリーチャー)(?:すべて|全体)?(?:に|は)(?:すべて)?((?:「[^」]+」(?:と|、)?)+)を(?:与える|得る)。?$/);
     if (m) {
@@ -403,7 +446,8 @@
    * @param {string} type  'creature' | 'evolution' | 'spell' | 'tamaseed'
    */
   function parse(text, type) {
-    const ab = { keywords: {}, evolution: null, triggers: [], handTriggers: [], spell: [], statics: [], unparsed: [], attackChance: null, hyperCost: null, hyper: null };
+    const ab = { keywords: {}, evolution: null, triggers: [], handTriggers: [], spell: [], statics: [], unparsed: [], attackChance: null, hyperCost: null, hyper: null,
+      selfCost: null, gZero: null, revChange: null, invasion: null, replaceDestroy: null, saver: null };
     const hp = String(text || '').replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).match(/ハイパーモード[^\n]*?パワー\s*(\d+)/);
     const lines = splitLines(normalize(text));
     let cur = ab; // ハイパーモードの行以降は ab.hyper に書き込む
@@ -439,6 +483,34 @@
       const ac = parseAttackChance(line);
       if (ac) { ab.attackChance = ac; continue; }
       let m;
+      // マナ武装：見出しを取り除き、続く本文（「〜あれば、」の条件つき）を普通に読む
+      if ((m = line.match(/^マナ武装\d+:?(.+)$/))) line = m[1];
+      // コストを変える常在効果・召喚の条件
+      if ((m = line.match(/^(自分|相手)の(.+?)(?:の召喚コスト|を召喚するコスト|を唱えるコスト|の(?:使用)?コスト)を(\d+)(少なく|多く)する/)) ||
+          (m = line.match(/^(自分|相手)が(.+?)を(?:召喚する|唱える|使う)コストは(\d+)(少なく|多く)なる/))) {
+        const f = parseFilter(m[2] + (/呪文/.test(line) && !/呪文/.test(m[2]) ? '呪文' : ''));
+        if (/呪文を唱える/.test(line)) f.type = 'spell';
+        else if (/召喚/.test(line) && !f.type) f.type = 'creature';
+        (cur.statics = cur.statics || []).push({ kind: 'costMod', side: m[1] === '自分' ? 'self' : 'opp', amount: (m[4] === '少なく' ? -1 : 1) * +m[3], filter: f });
+        continue;
+      }
+      if ((m = line.match(/^このクリーチャーの召喚コストを、?(?:バトルゾーンにある)?(自分の.+?)(?:1体|1枚|1つ)につき(\d+)少なくする/))) { ab.selfCost = { filter: parseCondFilter(m[1].replace(/^自分の/, '').replace(/^バトルゾーンにある/, '')), amount: +m[2] }; continue; }
+      if ((m = line.match(/^シンパシー[-:]?(.+?)。?$/))) { ab.selfCost = { filter: parseCondFilter(m[1].replace(/^自分の/, '')), amount: 1 }; continue; }
+      if ((m = line.match(/^G・?ゼロ[-:]?(.+?)(?:、このクリーチャーをコストを支払わずに召喚してもよい|、このカードをコストを支払わずに(?:召喚|使用|使っ|唱え)てもよい)?。?$/))) {
+        const c = parseCondition(m[1].replace(/(?:あれば|いれば|いるなら|あるなら)$/, '').replace(/^バトルゾーンに/, ''));
+        if (c) { ab.gZero = c; continue; }
+      }
+      // 革命チェンジ・侵略：攻撃する自分のクリーチャーの条件
+      if ((m = line.match(/^革命チェンジ[-:]?(.+?)。?$/))) { ab.revChange = parseCondFilter(m[1].replace(/^自分の/, '')); continue; }
+      if ((m = line.match(/^(?:S級|SSS級)?侵略(?:\[[^\]]*\])?[-:]?(.+?)。?$/))) { ab.invasion = parseCondFilter(m[1].replace(/^自分の/, '')); continue; }
+      // 置換効果：破壊される時、墓地に置くかわりに〜
+      if ((m = line.match(/^このクリーチャーが破壊される時、?(?:墓地に置く)?(?:かわりに|代わりに)、?(?:持ち主の)?(手札に戻す|手札に加える|マナゾーンに置く|山札の(?:一番)?下に置く|シールド化する|シールドゾーンに置く|山札に加えてシャッフルする)/))) {
+        ab.replaceDestroy = /手札/.test(m[1]) ? 'hand' : /マナ/.test(m[1]) ? 'mana' : /シールド/.test(m[1]) ? 'shield' : /シャッフル/.test(m[1]) ? 'deckShuffle' : 'deckBottom';
+        continue;
+      }
+      // セイバー：自分の他のクリーチャーが破壊される時、かわりにこのクリーチャーを破壊してもよい
+      if ((m = line.match(/^セイバー[-:]?(.+?)。?$/))) { ab.saver = parseCondFilter(m[1]); continue; }
+      if ((m = line.match(/^(?:バトルゾーンにある)?自分の(?:他の)?(.*?)が破壊される時、?(?:かわりに|代わりに)このクリーチャーを破壊してもよい/))) { ab.saver = m[1] ? parseCondFilter(m[1]) : {}; continue; }
       if ((m = line.match(/^ハイパー化:?(.*)$/))) {
         const t = m[1].match(/自分の他のクリーチャーを(\d+)体タップする/);
         ab.hyperCost = { tapOthers: t ? +t[1] : 1 };
@@ -500,7 +572,7 @@
     if (f.blocker) parts.push('ブロッカーを持つ');
     if (f.civs) parts.push(f.civs.map(civName).join('または') + 'の');
     if (f.races) parts.push(f.races.map((r) => `《${r}》`).join('または') + 'の');
-    parts.push({ spell: '呪文', creature: 'クリーチャー', element: 'エレメント', tamaseed: 'タマシード' }[f.type] || 'カード');
+    parts.push({ spell: '呪文', creature: 'クリーチャー', element: 'エレメント', tamaseed: 'タマシード', psychic: 'サイキック・クリーチャー', dragheart: 'ドラグハート', gr: 'GRクリーチャー' }[f.type] || 'カード');
     return parts.join('');
   }
   function describeTarget(t) {
@@ -510,9 +582,11 @@
     const cnt = t.count === 'all' ? 'すべて' : `${t.count}${t.filter && t.filter.type === 'element' ? 'つ' : '体'}${t.upTo ? 'まで' : ''}`;
     return `${side}${describeFilter(Object.assign({ type: 'creature' }, t.filter))}を${cnt}`;
   }
-  const ZONE_JA = { grave: '墓地', hand: '手札', mana: 'マナゾーン', shield: 'シールド', deckBottom: '山札の下', handOrGrave: '手札か墓地' };
+  const ZONE_JA = { grave: '墓地', hand: '手札', mana: 'マナゾーン', shield: 'シールド', deckBottom: '山札の下', handOrGrave: '手札か墓地', hyper: '超次元ゾーン' };
   const PER_JA = { myMana: '自分のマナ1枚', myGrave: '自分の墓地1枚', myHand: '自分の手札1枚', myCreatures: '自分のクリーチャー1体' };
   function describeCond(c) {
+    if (c.kind === 'manaCivGE') return `マナに${c.civs.map(civName).join('または')}のカードが${c.n}枚以上`;
+    if (c.kind === 'battleHas') return `バトルゾーンに自分の${describeFilter(c.filter)}が${c.n}つ以上`;
     return { manaLE: `マナが${c.n}枚以下`, manaGE: `マナが${c.n}枚以上`, handLE: `手札が${c.n}枚以下`, shieldLE: `シールドが${c.n}つ以下`, oppMoreCreatures: `相手のクリーチャーが${c.n}体以上多い` }[c.kind] || '条件';
   }
   function describeEffect(e) {
@@ -528,7 +602,7 @@
       shieldToGrave: () => `相手のシールドを${e.n}つ墓地に置く`,
       manaToGrave: () => `相手のマナを${e.n}枚墓地に置く`,
       manaToHand: () => `相手のマナを${e.n}枚手札に戻す`,
-      putToBattle: () => `${ZONE_JA[e.from]}から${describeFilter(e.filter)}を${e.n}体バトルゾーンに出す`,
+      putToBattle: () => `${ZONE_JA[e.from]}から${describeFilter(e.filter)}を${e.n}${e.filter.type === 'dragheart' ? '枚' : '体'}バトルゾーンに出す`,
       recover: () => `${ZONE_JA[e.from]}から${describeFilter(e.filter)}を${e.n}枚${e.upTo ? 'まで' : ''}手札に戻す`,
       search: () => `山札から${describeFilter(e.filter)}を${e.n}枚まで手札に加え、山札をシャッフル`,
       look: () => `山札の上から${e.n}枚を見て、${e.picks.map((p) => `${p.filter && Object.keys(p.filter).length ? describeFilter(p.filter) : ''}${p.count}枚${p.upTo ? 'まで' : ''}を${ZONE_JA[p.to]}に`).join('、')}、残りを${ZONE_JA[e.rest]}へ`,
@@ -547,6 +621,8 @@
       recastEvent: () => 'その呪文を墓地からタダでもう一度唱える',
       castFree: () => `${describeFilter(e.filter)}を${e.n}枚、${ZONE_JA[e.from]}からタダで唱える`,
       summonSelf: () => 'このクリーチャーをタダで召喚する',
+      grSummon: () => `GR召喚を${e.n}回する`,
+      putHyperTotal: () => `超次元ゾーンから${describeFilter(e.filter)}をコストの合計${e.maxTotal}以下になるように好きな数バトルゾーンに出す`,
       if: () => `${describeCond(e.cond)}なら：${e.effects.map(describeEffect).join(' → ')}`,
       choose: () => `${e.repeat ? `次から${e.times}回選ぶ` : `次から${e.times}つ選ぶ`}${e.allIfFullCivs ? '（すべての文明があれば全部）' : ''}：${e.options.map((o, i) => `[${i + 1}] ${o.map(describeEffect).join(' → ')}`).join(' ／ ')}`,
     }[e.op];
@@ -557,10 +633,10 @@
     blocker: 'ブロッカー', speedAttacker: 'スピードアタッカー', shieldTrigger: 'S・トリガー', gStrike: 'G・ストライク',
     slayer: 'スレイヤー', machFighter: 'マッハファイター', justDiver: 'ジャストダイバー', cantAttack: '攻撃できない',
     cantAttackPlayers: 'プレイヤーを攻撃できない', unblockable: 'ブロックされない', attackUntapped: 'アンタップしているクリーチャーを攻撃できる',
-    yobinion: 'ヨビニオン', guardman: 'ガードマン', smashBurst: 'スマッシュ・バースト', sinkarize: 'シンカライズ', manaUntapped: 'アンタップでマナに置ける',
+    yobinion: 'ヨビニオン', guardman: 'ガードマン', escape: 'エスケープ', rev0: '革命0トリガー', cantLeave: 'バトルゾーンを離れない', smashBurst: 'スマッシュ・バースト', sinkarize: 'シンカライズ', manaUntapped: 'アンタップでマナに置ける',
   };
   const WHEN_NAMES = {
-    cip: '出た時', summoned: '召喚した時', attack: '攻撃する時', destroyed: '破壊された時', block: 'ブロックした時', winBattle: 'バトルに勝った時',
+    cip: '出た時', summoned: '召喚した時', leave: '離れた時', attack: '攻撃する時', destroyed: '破壊された時', block: 'ブロックした時', winBattle: 'バトルに勝った時',
     turnStart: '自分のターンのはじめに', turnEnd: '自分のターンの終わりに', oppCreatureEnters: '相手のクリーチャーが出た時', oppCastSpell: '相手が呪文を唱えた時',
     oppManaPut: '相手がマナを置いた時', oppUseCard: '相手がカードを使った時', oppAttack: '相手のクリーチャーが攻撃する時',
     selfCastFromHand: '自分が手札から呪文を唱えた時', selfCastSpell: '自分が呪文を唱えた時', oppTurnEnd: '相手のターンの終わりに（手札から）',
@@ -571,12 +647,16 @@
       if (!v) continue;
       if (k === 'breaker') out.push({ 2: 'W・ブレイカー', 3: 'T・ブレイカー', 4: 'Q・ブレイカー', 99: 'ワールド・ブレイカー' }[v] || `${v}枚ブレイク`);
       else if (k === 'powerAttacker') out.push(`パワーアタッカー+${v}`);
+      else if (k === 'ninjaStrike') out.push(`ニンジャ・ストライク${v}`);
       else out.push(KEYWORD_NAMES[k] || k);
     }
     return out;
   }
   function describeStatic(st) {
-    if (st.kind === 'grant') return `【常在】自分の${describeFilter(Object.assign({ type: 'creature' }, st.filter))}すべてに${st.keywords.map((k) => `「${KEYWORD_NAMES[k] || k}」`).join('')}を与える`;
+    if (st.kind === 'costMod') return `【常在】${st.side === 'self' ? '自分' : '相手'}の${describeFilter(st.filter)}のコストを${Math.abs(st.amount)}${st.amount < 0 ? '少なく' : '多く'}する`;
+    const kwName = (k) => (k === 'breaker' ? 'W・ブレイカー' : KEYWORD_NAMES[k] || k);
+    if (st.filter && st.filter.equipped) return st.kind === 'grant' ? `【装備】装備したクリーチャーに${st.keywords.map((k) => `「${kwName(k)}」`).join('')}を与える` : `【装備】装備したクリーチャーのパワー+${st.amount}`;
+    if (st.kind === 'grant') return `【常在】自分の${describeFilter(Object.assign({ type: 'creature' }, st.filter))}すべてに${st.keywords.map((k) => `「${kwName(k)}」`).join('')}を与える`;
     return `【常在】自分の${describeFilter(st.filter)}のパワー+${st.amount}`;
   }
 
@@ -587,6 +667,12 @@
       const c = [...ab.evolution.civs.map(civName), ...ab.evolution.races.map((r) => `《${r}》`)];
       out.push(`進化：自分の${c.length ? c.join('または') + 'の' : ''}クリーチャー1体の上に置く`);
     }
+    if (ab.selfCost) out.push(`召喚コスト：自分の${describeFilter(Object.assign({ type: 'creature' }, ab.selfCost.filter))}1体につき${ab.selfCost.amount}少なくなる（1より少なくはならない）`);
+    if (ab.gZero) out.push(`G・ゼロ：${describeCond(ab.gZero)}なら、タダで使える`);
+    if (ab.revChange) out.push(`革命チェンジ：自分の${describeFilter(Object.assign({ type: 'creature' }, ab.revChange))}が攻撃する時、手札のこのクリーチャーと入れ替えてよい`);
+    if (ab.invasion) out.push(`侵略：自分の${describeFilter(Object.assign({ type: 'creature' }, ab.invasion))}が攻撃する時、手札からその上に重ねてよい`);
+    if (ab.replaceDestroy) out.push(`破壊される時、墓地のかわりに${{ hand: '手札', mana: 'マナゾーン', shield: 'シールド', deckShuffle: '山札（シャッフル）', deckBottom: '山札の下' }[ab.replaceDestroy]}へ`);
+    if (ab.saver) out.push(`セイバー：自分の${describeFilter(Object.assign({ type: 'creature' }, ab.saver))}が破壊される時、かわりにこのクリーチャーを破壊してよい`);
     if (ab.attackChance) out.push(`アタック・チャンス：自分の${ab.attackChance.civs.map(civName).join('と')}${ab.attackChance.races.map((r) => `の《${r}》`).join('')}が攻撃する時、タダで唱えてよい`);
     for (const t of ab.triggers) out.push(`【${WHEN_NAMES[t.when]}${t.oppTurnOnly ? '・相手のターン中' : ''}】` + t.effects.map(describeEffect).join(' → '));
     for (const t of ab.handTriggers || []) out.push(`【${WHEN_NAMES[t.when]}】${t.cond.oppMoreCreatures ? `相手のクリーチャーが${t.cond.oppMoreCreatures}体以上多く、` : ''}${t.cond.noneNamed ? `自分の《${t.cond.noneNamed}》がいなければ、` : ''}` + t.effects.map(describeEffect).join(' → '));
@@ -620,6 +706,13 @@
     'アタック・チャンス－水と闇と自然のディスペクター / 自分のクリーチャーすべてに「スピードアタッカー」と「ガードマン」を与える。',
     'ハイパー化：自分の他のクリーチャーを1体タップする。 / ハイパーモード パワー11000（この行より下がハイパーモード中の能力）',
     'バトルゾーンにある自分の他の火のクリーチャーのパワーは+1000される。',
+    '自分の火のクリーチャーの召喚コストを1少なくする。 / シンパシー：《ドラゴン》 / G・ゼロ：バトルゾーンに自分の《天使》があれば、このクリーチャーをコストを支払わずに召喚してもよい。',
+    '相手の呪文を唱えるコストを1多くする。',
+    '革命チェンジ－火または自然のコスト5以上のドラゴン / 侵略－火のクリーチャー / ニンジャ・ストライク4 / 革命0トリガー / エスケープ',
+    'このクリーチャーが破壊される時、墓地に置くかわりに手札に戻す。 / セイバー：《天使》 / このクリーチャーが離れた時、〜',
+    'マナ武装5：このクリーチャーが出た時、自分のマナゾーンに自然のカードが5枚以上あれば、〜',
+    '自分の超次元ゾーンからコスト5以下のサイキック・クリーチャーを1体バトルゾーンに出す。 / GR召喚する。',
+    '自分の超次元ゾーンからコスト3以下のドラグハートを1枚バトルゾーンに出す。（ウエポンは出したクリーチャーに装備）',
   ];
 
   return { normalize, parse, parseSelector, parseFilter, parseSentence, describe, describeEffect, describeFilter, EXAMPLES, KEYWORD_NAMES, WHEN_NAMES };

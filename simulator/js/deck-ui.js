@@ -44,13 +44,14 @@
     const box = $('#deck-body');
     if (!current) { box.innerHTML = '<p class="empty">左の一覧からデッキを選ぶか、新しく作ってください。</p>'; return; }
     const { defs, errs } = deckSummary(current);
+    const parts = Engine.splitDeck(defs);
     const groups = {};
     for (const id of current.cards) groups[id] = (groups[id] || 0) + 1;
     const rows = Object.entries(groups).map(([id, n]) => ({ id, n, def: Library.card(id) }))
       .sort((a, b) => ((a.def && a.def.cost) || 0) - ((b.def && b.def.cost) || 0));
     // コストごとの枚数（グラフ）
     const curve = Array(9).fill(0);
-    for (const d of defs) curve[Math.min(8, d.cost || 0)]++;
+    for (const d of parts.main) curve[Math.min(8, d.cost || 0)]++;
     const maxC = Math.max(1, ...curve);
     const civCount = {};
     for (const d of defs) for (const k of d.civs || []) civCount[k] = (civCount[k] || 0) + 1;
@@ -58,7 +59,11 @@
     box.innerHTML = `
       <div class="deck-head">
         <input id="deck-name" value="${esc(current.name)}" ${current.sample ? 'disabled' : ''} aria-label="デッキ名">
-        <span class="deck-total ${current.cards.length === SimData.RULES.deckSize ? 'ok' : 'ng'}">${current.cards.length} / ${SimData.RULES.deckSize}枚</span>
+        <span class="deck-total ${parts.main.length === SimData.RULES.deckSize ? 'ok' : 'ng'}" title="メインデッキ">${parts.main.length} / ${SimData.RULES.deckSize}枚</span>
+      </div>
+      <div class="deck-parts">
+        <span class="${parts.hyper.length <= SimData.RULES.hyperMax ? '' : 'ng'}">超次元ゾーン ${parts.hyper.length} / ${SimData.RULES.hyperMax}</span>
+        <span class="${!parts.gr.length || parts.gr.length === SimData.RULES.grSize ? '' : 'ng'}">GRゾーン ${parts.gr.length} / ${SimData.RULES.grSize}</span>
       </div>
       ${current.sample ? '<p class="hint">見本デッキは編集できません。「コピー」で自分のデッキにできます。</p>' : ''}
       ${errs.length ? `<ul class="errs">${errs.map((e) => `<li>${esc(e)}</li>`).join('')}</ul>` : '<p class="ok">✓ このデッキで対戦できます</p>'}
@@ -80,7 +85,11 @@
     if (delta > 0) {
       const def = Library.card(id);
       const same = current.cards.filter((x) => { const d = Library.card(x); return d && def && d.name === def.name; }).length;
-      if (same >= SimData.RULES.maxCopies) return UI.toast(`同じ名前のカードは${SimData.RULES.maxCopies}枚までです`, 'bad');
+      const limit = def && def.type === 'gr' ? SimData.RULES.grMaxCopies : SimData.RULES.maxCopies;
+      if (same >= limit) return UI.toast(`同じ名前のカードは${limit}枚までです`, 'bad');
+      const parts = Engine.splitDeck(Library.deckDefs(current));
+      if (def && Engine.isHyperDef(def) && parts.hyper.length >= SimData.RULES.hyperMax) return UI.toast(`超次元ゾーンは${SimData.RULES.hyperMax}枚までです`, 'bad');
+      if (def && Engine.isGrDef(def) && parts.gr.length >= SimData.RULES.grSize) return UI.toast(`GRゾーンは${SimData.RULES.grSize}枚までです`, 'bad');
       current.cards.push(id);
     } else {
       const i = current.cards.lastIndexOf(id);

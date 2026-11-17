@@ -169,6 +169,7 @@
     if (c.zone === 'battle' && game.isCreature(c) && c.enteredTurn === game.turnNo && c.owner === game.active && !game.kw(c, 'speedAttacker') && c.def.type !== 'evolution') cls.push('sick');
     if (c.zone === 'battle' && !game.isCreature(c)) cls.push('element');
     if (c.jdProtected) cls.push('protected');
+    if (c.equippedTo) cls.push('equipped');
     const pw = c.zone === 'battle' && game.isCreature(c) ? game.power(c) : undefined;
     let html = UI.cardHTML(c.def, { uid: c.uid, tapped: c.tapped, power: pw, under: c.under.length, cls: cls.join(' '), back: extra.back, small: extra.small, hyper: c.hyper });
     if (extra.style) html = html.replace('<div class="card', `<div style="${extra.style}" class="card`);
@@ -232,6 +233,8 @@
     $('#bt-my-deck').innerHTML = `<div><b>${me.deck.length}</b><small>山札</small></div>`;
     $('#bt-opp-grave-n').textContent = op.grave.length;
     $('#bt-my-grave-n').textContent = me.grave.length;
+    $('#bt-extra-btn').hidden = !(me.hyperZone.length || me.grZone.length || op.hyperZone.length || op.grZone.length || me.battle.concat(op.battle).some((c) => Engine.isHyperDef(c.def) || Engine.isGrDef(c.def)));
+    $('#bt-extra-n').textContent = `${me.hyperZone.length}/${me.grZone.length}`;
     $('#bt-opp-shields').classList.toggle('sel-target', it.playerTarget);
     const pr = $('#bt-prompt');
     pr.textContent = it.prompt;
@@ -310,6 +313,7 @@
     if (e.target.closest('#bt-log-btn')) { const d = $('#bt-log-drawer'); d.hidden = !d.hidden; if (!d.hidden) { const l = $('#bt-log'); l.scrollTop = l.scrollHeight; } return; }
     if (e.target.closest('#bt-log-close')) { $('#bt-log-drawer').hidden = true; return; }
     if (e.target.closest('#bt-menu-btn')) { const m = $('#bt-menu'); m.hidden = !m.hidden; return; }
+    if (e.target.closest('#bt-extra-btn')) return showExtraZones();
     if (!e.target.closest('#bt-menu')) $('#bt-menu').hidden = true;
     if (e.target.closest('#bt-opp-shields, #bt-opp-emblem') && ui.req && ui.req.type === 'attack' && ui.attacker != null) {
       if (interaction().playerTarget) return answer({ kind: 'attack', attacker: ui.attacker, target: 'player' });
@@ -368,8 +372,9 @@
     const P = game.players[0];
     const untapped = P.mana.filter((m) => !m.tapped).length;
     const sv = Engine.spellSideDef(c.def);
-    const minCost = Math.min(c.def.cost, sv ? sv.cost : Infinity);
-    if (untapped < minCost) return `マナが足りません（コスト${sv ? `${c.def.cost}／呪文側${sv.cost}` : c.def.cost}、使えるマナ${untapped}）`;
+    const cost = game.costOf(0, c), svCost = sv ? game.costOf(0, c, sv) : Infinity;
+    const minCost = Math.min(cost, svCost);
+    if (untapped < minCost) return `マナが足りません（コスト${sv ? `${cost}／呪文側${svCost}` : cost}、使えるマナ${untapped}）`;
     if (c.def.type === 'evolution' && !game.evolutionBases(0, c.def).length) return '進化元になるクリーチャーがいません';
     return `${c.def.civs.map(UI.civName).join('と')}の文明のマナが必要です`;
   }
@@ -410,6 +415,12 @@
     box.classList.add('show');
   }
   function hideDetail() { const b = $('#bt-detail'); if (b) b.classList.remove('show'); }
+  /** 超次元ゾーン・GRゾーン（超次元ゾーンは表向き、GRゾーンは枚数だけ） */
+  function showExtraZones() {
+    const part = (P) => `<h4>${esc(P.name)}の超次元ゾーン（${P.hyperZone.length}枚）・GRゾーン（${P.grZone.length}枚）</h4>
+      ${P.hyperZone.length ? `<div class="picker">${P.hyperZone.map((c) => `<div class="pick" data-u="${c.uid}">${UI.cardHTML(c.def)}<span>${esc(c.def.name)}</span></div>`).join('')}</div>` : '<p class="hint">超次元ゾーンにカードはありません。</p>'}`;
+    UI.modal({ title: '超次元ゾーン・GRゾーン', wide: true, html: part(game.players[0]) + part(game.players[1]) });
+  }
   /** マナゾーンの一覧（タップしているカードは暗く） */
   function showMana(pi) {
     const P = game.players[pi];

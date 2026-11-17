@@ -85,7 +85,7 @@
     required: ['name', 'type', 'civs', 'cost', 'power', 'races', 'text', 'spellSide', 'box'],
     properties: {
       name: { type: 'string', description: 'カード名' },
-      type: { type: 'string', enum: ['creature', 'evolution', 'spell', 'tamaseed'] },
+      type: { type: 'string', enum: ['creature', 'evolution', 'spell', 'tamaseed', 'psychic', 'dragheart', 'gr'] },
       civs: { type: 'array', items: { type: 'string', enum: ['light', 'water', 'darkness', 'fire', 'nature', 'zero'] } },
       cost: { type: 'integer' },
       power: { type: 'integer', description: '呪文は0' },
@@ -127,7 +127,9 @@
 
 各項目の決まり：
 - name：カード名を正確に。
-- type：クリーチャーは "creature"、進化クリーチャーは "evolution"、呪文は "spell"、タマシードは "tamaseed"。
+- type：クリーチャーは "creature"、進化クリーチャーは "evolution"、呪文は "spell"、タマシードは "tamaseed"、
+  サイキック・クリーチャーは "psychic"、ドラグハート（ウエポン・フォートレス）は "dragheart"、GRクリーチャーは "gr"。
+  ドラグハートは races に「ドラグハート・ウエポン」か「ドラグハート・フォートレス」を入れる。
   ツインパクト（上半分がクリーチャー、下半分が呪文の1枚のカード）は、クリーチャー側をこの項目に、呪文側を spellSide に入れる。
 - civs：文明。光="light"（黄色）、水="water"（青）、闇="darkness"（黒・紫）、火="fire"（赤）、自然="nature"（緑）、無色="zero"。多色カードはすべて入れる。
 - cost：左上などに書かれたコストの数字。
@@ -257,7 +259,7 @@
     const out = await askClaude(big, CARD_PROMPT, CARDS_SCHEMA);
     const cards = out.cards || [];
     for (const c of cards) {
-      if (c.type === 'spell' || c.type === 'tamaseed') c.power = null;
+      if (c.type === 'spell' || c.type === 'tamaseed' || c.type === 'dragheart') c.power = null;
       else c.power = c.power || 0;
       if (!c.spellSide || !c.spellSide.name) delete c.spellSide;
       // 1枚だけなら画像全体、複数なら写っている範囲を切り出してカードの画像にする

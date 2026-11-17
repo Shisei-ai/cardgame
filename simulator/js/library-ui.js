@@ -103,7 +103,7 @@
           card.name = $('#ed-name', m).value.trim();
           card.type = $('#ed-type', m).value;
           card.cost = $('#ed-cost', m).value === '' ? null : Number($('#ed-cost', m).value);
-          card.power = card.type === 'spell' || card.type === 'tamaseed' || $('#ed-power', m).value === '' ? null : Number($('#ed-power', m).value);
+          card.power = card.type === 'spell' || card.type === 'tamaseed' || card.type === 'dragheart' || $('#ed-power', m).value === '' ? null : Number($('#ed-power', m).value);
           card.civs = [...m.querySelectorAll('#ed-civs input:checked')].map((i) => i.value);
           card.races = $('#ed-races', m).value.split(/[\/／、,]/).map((s) => s.trim()).filter(Boolean);
           card.text = $('#ed-text', m).value;
@@ -134,7 +134,7 @@
         };
         const refresh = () => {
           read();
-          $('#ed-power-wrap', m).style.visibility = card.type === 'spell' || card.type === 'tamaseed' ? 'hidden' : '';
+          $('#ed-power-wrap', m).style.visibility = (card.type === 'spell' || card.type === 'tamaseed' || card.type === 'dragheart') ? 'hidden' : '';
           const show = (box, text, type) => {
             const ab = TextParser.parse(text || '', type);
             const ok = TextParser.describe(ab);
@@ -190,7 +190,7 @@
           read();
           if (!card.name) return UI.toast('名前を入力してください', 'bad');
           if (card.cost == null || Number.isNaN(card.cost)) return UI.toast('コストを入力してください', 'bad');
-          if (card.type === 'tamaseed') card.power = null;
+          if (card.type === 'tamaseed' || card.type === 'dragheart') card.power = null;
           else if (card.type !== 'spell' && (card.power == null || Number.isNaN(card.power))) return UI.toast('パワーを入力してください', 'bad');
           if (card.spellSide) {
             if (card.type === 'spell') delete card.spellSide;

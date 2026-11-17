@@ -60,7 +60,7 @@ class ScriptAgent {
 }
 
 const deckOf = (sd) => sd.cards.map((id) => byId[id]);
-const total = (g) => g.players.reduce((n, P) => n + P.deck.length + P.hand.length + P.mana.length + P.shields.length + P.grave.length + P.battle.reduce((m, c) => m + 1 + c.under.length, 0), 0);
+const total = (g) => g.players.reduce((n, P) => n + P.deck.length + P.hand.length + P.mana.length + P.shields.length + P.grave.length + P.hyperZone.length + P.grZone.length + P.battle.reduce((m, c) => m + 1 + c.under.length, 0), 0);
 
 /** 対戦の途中の盤面を手で作るための道具 */
 function freshGame(agents, deckA, deckB, first = 0) {
@@ -72,7 +72,7 @@ function freshGame(agents, deckA, deckB, first = 0) {
 /** 指定のカードを指定のゾーンに用意する（山札から探して持ってくる） */
 function put(g, pi, id, zone, opts = {}) {
   const P = g.players[pi];
-  const all = [...P.deck, ...P.hand, ...P.shields, ...P.grave, ...P.mana];
+  const all = [...P.deck, ...P.hand, ...P.shields, ...P.grave, ...P.mana, ...P.hyperZone, ...P.grZone];
   let c = all.find((x) => x.def.id === 's_' + id && x.zone !== zone);
   if (!c) { // デッキに無いカードなら作って足す
     c = { uid: g.uidSeq++, def: byId['s_' + id], owner: pi, zone: 'deck', tapped: false, enteredTurn: -1, under: [], tempPower: 0 };
@@ -527,6 +527,167 @@ function put(g, pi, id, zone, opts = {}) {
     assert.strictEqual(attacks, 1, '1回だけ攻撃できた');
   });
 
+
+  console.log('\n[3c] 超次元・GR・コストの増減・置換効果・革命チェンジ・侵略・ニンジャ・ストライクなど');
+  const sdeck = deckOf(DECKS.find((d) => d.name === '見本：超次元とGR'));
+  const freshS = (a0, a1, first = 0) => { const g = new Game({ decks: [sdeck, sdeck], agents: [a0 || new CpuAgent(), a1 || new CpuAgent()], seed: 11, first }); g.setup(); g.turnNo = 3; g.active = first; return g; };
+  await check('デッキの規則：メイン40枚＋超次元ゾーン8枚まで＋GRゾーン0枚か12枚（同名2枚まで）', () => {
+    assert.deepStrictEqual(validateDeck(sdeck), []);
+    assert.ok(validateDeck([...sdeck, byId.s_psy_sol]).some((e) => /超次元/.test(e)));
+    assert.ok(validateDeck(sdeck.filter((d) => d.id !== 's_gr_mini')).some((e) => /GRゾーン/.test(e)));
+    assert.ok(validateDeck([...sdeck.filter((d) => d.id !== 's_gr_mini'), byId.s_gr_wb, byId.s_gr_wb]).some((e) => /2枚まで/.test(e)));
+  });
+  await check('対戦の準備：超次元ゾーン・GRゾーンのカードは山札に入らない', () => {
+    const g = freshS();
+    for (const P of g.players) { assert.strictEqual(P.hyperZone.length, 8); assert.strictEqual(P.grZone.length, 12); assert.strictEqual(P.deck.length + P.hand.length + P.shields.length + P.mana.length, 40); }
+  });
+  await check('サイキック・クリーチャー：超次元ゾーンから出て、離れる時は超次元ゾーンへ戻る', async () => {
+    const g = freshS(ans({ target: (game, req) => [req.candidates[0]] }));
+    const P = g.players[0];
+    await castNow(g, 0, 'psycall');
+    const psy = P.battle.find((c) => c.def.type === 'psychic');
+    assert.ok(psy && psy.def.cost <= 5);
+    await g.doEffect(1, TextParser.parseSentence('相手のクリーチャーを1体選び、持ち主の手札に戻す'), put(g, 1, 'lili', 'battle'));
+    assert.strictEqual(psy.zone, 'hyper', '手札ではなく超次元ゾーンへ');
+    assert.strictEqual(P.hyperZone.length, 8);
+  });
+  await check('コストの合計が決まった数以下になるように好きな数出す', async () => {
+    const g = freshS();
+    await castNow(g, 0, 'psygate');
+    const out = g.players[0].battle.filter((c) => c.def.type === 'psychic');
+    assert.ok(out.length >= 1);
+    assert.ok(out.reduce((n, c) => n + c.def.cost, 0) <= 9);
+  });
+  await check('ドラグハート・ウエポン：出したクリーチャーに装備し、パワーとW・ブレイカーを与える／装備先が離れると超次元ゾーンへ', async () => {
+    const g = freshS(ans({ yesno: () => true, target: (game, req) => req.purpose.op === 'putToBattle' ? [req.candidates.find((u) => game.card(u).def.id === 's_blade') || req.candidates[0]] : undefined }));
+    const d = put(g, 0, 'doran', 'hand');
+    await g.putCreature(0, d, null, '召喚した', { summoned: true });
+    const blade = g.players[0].battle.find((c) => c.def.id === 's_blade');
+    assert.ok(blade && blade.equippedTo === d.uid);
+    assert.strictEqual(g.power(d), 8000);
+    assert.strictEqual(g.kw(d, 'breaker'), 2);
+    await g.destroyCards([d]);
+    assert.strictEqual(blade.zone, 'hyper');
+  });
+  await check('GR召喚：GRゾーンの上から出る（召喚扱い）／離れるとGRゾーンの一番下へ', async () => {
+    const g = freshS();
+    const P = g.players[0];
+    const top = P.grZone[P.grZone.length - 1];
+    await castNow(g, 0, 'bell');
+    assert.strictEqual(top.zone, 'battle');
+    assert.strictEqual(P.grZone.length, 10);
+    await g.destroyCards([top]);
+    assert.strictEqual(top.zone, 'gr'); assert.strictEqual(P.grZone[0], top, '一番下');
+  });
+  await check('コスト軽減：火のクリーチャーが1少なく（1より少なくはならない）／シンパシー／相手の呪文のコスト増加', async () => {
+    const g = freshS();
+    const h = put(g, 0, 'baldio', 'hand');
+    assert.strictEqual(g.costOf(0, h), 7);
+    put(g, 0, 'pico', 'battle');
+    assert.strictEqual(g.costOf(0, h), 6);
+    const p2 = put(g, 0, 'phene', 'hand');
+    put(g, 0, 'pico', 'battle'); put(g, 0, 'pico', 'battle');
+    assert.strictEqual(g.costOf(0, p2), 1, '3-3=0 だが1より少なくならない');
+    const w = put(g, 0, 'wingdragon', 'hand'); // シンパシー：竜騎兵（ピコ3体）＋ピコの軽減3
+    assert.strictEqual(g.costOf(0, w), 2);
+    put(g, 1, 'warden2', 'battle');
+    assert.strictEqual(g.costOf(0, put(g, 0, 'psycall', 'hand')), 6, '相手の封呪の番人で呪文のコスト+1');
+  });
+  await check('G・ゼロ：条件を満たすとコストを支払わずに召喚できる', async () => {
+    const g = freshS();
+    for (const m of [...g.players[0].mana]) g.move(m, 'grave');
+    const z = put(g, 0, 'zepha', 'hand');
+    assert.ok(!g.mainActions(0).some((a) => a.uid === z.uid));
+    put(g, 0, 'lili', 'battle');
+    const a = g.mainActions(0).find((x) => x.uid === z.uid);
+    assert.ok(a && a.free);
+    await g.playCard(0, z, 'main', { free: true });
+    assert.strictEqual(z.zone, 'battle');
+  });
+  await check('置換効果：破壊される時、墓地のかわりに手札へ（破壊された時の能力は働く）', async () => {
+    const g = freshS();
+    const c = put(g, 0, 'phene', 'battle');
+    await g.destroyCards([c]);
+    assert.strictEqual(c.zone, 'hand');
+  });
+  await check('セイバー：自分の《天使》が破壊される時、かわりにセイバーを持つクリーチャーを破壊できる', async () => {
+    const g = freshS(ans({ target: (game, req) => req.purpose.op === 'saver' ? [req.candidates[0]] : undefined }));
+    const angel = put(g, 0, 'zepha', 'battle');
+    const sv = put(g, 0, 'garan', 'battle');
+    await g.destroyCards([angel]);
+    assert.strictEqual(angel.zone, 'battle'); assert.strictEqual(sv.zone, 'grave');
+  });
+  await check('エスケープ：離れるかわりにシールドを1つ手札に加えられる／離れた時の能力', async () => {
+    const g = freshS(ans({ yesno: () => true }));
+    const P = g.players[0];
+    const e = put(g, 0, 'hermit', 'battle');
+    const sh = P.shields.length, h = P.hand.length;
+    await g.destroyCards([e]);
+    assert.strictEqual(e.zone, 'battle'); assert.strictEqual(P.shields.length, sh - 1); assert.strictEqual(P.hand.length, h + 1);
+    const f = put(g, 0, 'farewell2', 'battle');
+    const m = P.mana.length;
+    await g.destroyCards([f]); await g.settle();
+    assert.strictEqual(P.mana.length, m + 1);
+  });
+  await check('同時に発動した能力：持ち主が解決の順番を選べる', async () => {
+    let asked = null;
+    const g = freshS(ans({ option: (game, req) => { if (req.purpose.op === 'triggerOrder') { asked = req.options.length; return req.options.length - 1; } } }));
+    const a = put(g, 0, 'farewell2', 'battle'), b = put(g, 0, 'phene', 'battle');
+    g.fireSelf(put(g, 0, 'colon', 'battle'), 'cip');
+    g.fireSelf(put(g, 0, 'gr_draw', 'battle'), 'cip');
+    await g.flushTriggers();
+    assert.strictEqual(asked, 2);
+  });
+  await check('マナ武装：自然のマナが5枚以上ある時だけ効果が働く', async () => {
+    const g = freshS();
+    const P = g.players[0];
+    for (const m of [...P.mana]) g.move(m, 'grave');
+    const t = put(g, 1, 'lili', 'battle');
+    await g.putCreature(0, put(g, 0, 'grim', 'hand'), null, '召喚した', { summoned: true });
+    assert.strictEqual(t.zone, 'battle');
+    for (let i = 0; i < 5; i++) put(g, 0, 'hermit', 'mana');
+    await g.putCreature(0, put(g, 0, 'grim', 'hand'), null, '召喚した', { summoned: true });
+    assert.strictEqual(t.zone, 'mana');
+  });
+  await check('革命チェンジ：攻撃したクリーチャーを手札に戻し、手札のクリーチャーが出て攻撃を続ける', async () => {
+    const g = freshS(ans({ option: (game, req) => (req.purpose.op === 'attackSwap' ? 0 : undefined) }));
+    const a = put(g, 0, 'phene', 'battle'); // 火・コスト3
+    const r = put(g, 0, 'baldio', 'hand');
+    const sh = g.players[1].shields.length;
+    await g.attack(a, 'player');
+    assert.strictEqual(a.zone, 'hand'); assert.strictEqual(r.zone, 'battle');
+    assert.ok(r.tapped);
+    assert.strictEqual(g.players[1].shields.length, sh - 3, 'バルディオ（T・ブレイカー）でブレイク');
+  });
+  await check('侵略：攻撃したクリーチャーの上に手札の進化クリーチャーを重ねて攻撃を続ける', async () => {
+    const g = freshS(ans({ option: (game, req) => (req.purpose.op === 'attackSwap' ? 0 : undefined) }));
+    const a = put(g, 0, 'pico', 'battle');
+    const v = put(g, 0, 'blaze', 'hand');
+    const sh = g.players[1].shields.length;
+    await g.attack(a, 'player');
+    assert.strictEqual(v.zone, 'battle'); assert.deepStrictEqual(v.under, [a]);
+    assert.strictEqual(g.players[1].shields.length, sh - 2);
+  });
+  await check('ニンジャ・ストライク：攻撃された時にマナが足りれば手札からタダで召喚、ターンの終わりに山札の下へ', async () => {
+    const g = new Game({ decks: [sdeck, sdeck], agents: [ans({ charge: () => null }), ans({ yesno: (game, req) => (req.purpose.op === 'ninjaStrike' ? true : undefined) })], seed: 21, first: 0 });
+    g.setup();
+    const N = put(g, 1, 'hayate', 'hand');
+    while (g.players[1].mana.length < 4) put(g, 1, 'hermit', 'mana');
+    put(g, 0, 'phene', 'battle').enteredTurn = 0;
+    await g.playTurn();
+    assert.strictEqual(N.zone, 'deck', 'ターンの終わりに山札の下へ');
+    assert.strictEqual(g.players[1].deck[0], N);
+  });
+  await check('革命0トリガー：シールドが0の時に攻撃されると、手札からタダで使える', async () => {
+    const g = freshS(null, ans({ yesno: (game, req) => (req.purpose.op === 'rev0' ? true : undefined) }));
+    for (const s of [...g.players[1].shields]) g.move(s, 'grave');
+    const A = put(g, 1, 'amate', 'hand');
+    const att = put(g, 0, 'pico', 'battle');
+    await g.attack(att, 'player');
+    assert.strictEqual(A.zone, 'battle', '出てきてブロックできた');
+    assert.strictEqual(g.winner, null);
+  });
+
   console.log(`\n[4] 大量の対戦（${GAMES}戦ずつ）`);
   for (const [label, mk] of [['CPU 対 CPU', () => new CpuAgent()], ['ランダム 対 ランダム', () => new RandomAgent()]]) {
     await check(label + '：エラー・無限ループ・カードの消失なし', async () => {
@@ -534,9 +695,9 @@ function put(g, pi, id, zone, opts = {}) {
       for (let i = 0; i < GAMES; i++) {
         const da = DECKS[i % DECKS.length], db = DECKS[(i + 1) % DECKS.length];
         const g = new Game({ decks: [deckOf(da), deckOf(db)], agents: [mk(), mk()], seed: 1000 + i });
-        const before = 80;
+        const before = da.cards.length + db.cards.length;
         const res = await g.run();
-        assert.strictEqual(total(g), before, `カードの合計が80枚でない（${total(g)}枚, seed ${1000 + i}）`);
+        assert.strictEqual(total(g), before, `カードの合計が${before}枚でない（${total(g)}枚, seed ${1000 + i}）`);
         wins[res.winner < 0 ? 2 : res.winner === g.first ? 0 : 1]++;
         turns += res.turns;
       }

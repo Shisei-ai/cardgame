@@ -174,7 +174,7 @@
         if (op === 'cycleHand') return (c.def.cost || 0) - game.players[pi].mana.length; // 重すぎるカードを戻す
         if (op === 'look') return req.purpose.to === 'hand' ? v : req.purpose.to === 'mana' ? -v + (c.def.civs.length > 1 ? 5 : 0) : -v;
         if (op === 'castFree') return v;
-        if (op === 'guardman') return -v;
+        if (op === 'guardman' || op === 'saver') return -v;
         if (op === 'discardOwn') return -v;                     // 捨てるのは安いカード
         if (op === 'breakShield' || op === 'shieldToGrave') return game.rng(); // シールドの中身は見えない
         if (harmful) return mine ? -v : v;                       // 相手には強いものを、自分には弱いものを
@@ -186,6 +186,11 @@
       // 害のある効果で「〜まで」選ぶ時は、相手のカードだけを選ぶ（自分のカードは選ばない）
       if (harmful && req.min < req.max && op !== 'discardOwn' && op !== 'cycleHand') n = Math.max(req.min, Math.min(req.max, sorted.filter((c) => c.owner !== pi).length));
       if (op === 'cycleHand') n = sorted.filter((c) => (c.def.cost || 0) > game.players[pi].mana.length + 1).length;
+      if (op === 'saver') {
+        // セイバー：守るクリーチャーの方が大事な時だけ、かわりに破壊する
+        const t = game.card(req.purpose.target);
+        n = sorted[0] && this.value(game, t) > this.value(game, sorted[0]) + 5 ? 1 : 0;
+      }
       if (op === 'guardman') {
         // ガードマン：攻撃を受けても勝てる（または狙われたクリーチャーの方が大事な）時だけ
         const att = game.card(req.purpose.attacker), tgt = game.card(req.purpose.target);
@@ -198,7 +203,8 @@
     // ── 「〜してもよい」
     on_yesno(game, pi, req) {
       const p = req.purpose || {};
-      if (p.op === 'shieldTrigger' || p.op === 'gStrike') return true;
+      if (p.op === 'shieldTrigger' || p.op === 'gStrike' || p.op === 'ninjaStrike' || p.op === 'rev0') return true;
+      if (p.op === 'escape') return game.players[pi].shields.length >= 3 || this.value(game, game.card(p.uid)) >= 60;
       if (p.op === 'smashBurst' || p.op === 'attackChance') {
         const c = game.card(p.uid);
         return this.spellUseful(game, pi, c);
@@ -249,6 +255,15 @@
         return 1;
       }
       if (p.op === 'twinSide') return 1;
+      if (p.op === 'triggerOrder') return 0;
+      if (p.op === 'attackSwap') {
+        // 侵略・革命チェンジ：攻撃しているクリーチャーより強いカードに入れ替えられるなら使う
+        const att = game.card(p.attacker);
+        const ids = [...p.inv, ...p.rev];
+        let best = ids.length, bestV = this.value(game, att);
+        ids.forEach((u, i) => { const v = this.value(game, game.card(u)); if (v > bestV) { bestV = v; best = i; } });
+        return best;
+      }
       if (p.op === 'choose' && p.effect) {
         let best = 0, bestS = -Infinity;
         p.avail.forEach((optIdx, i) => {
