@@ -91,39 +91,62 @@
   </div>
 </section>
 
-<!-- ===== 対戦 ===== -->
+<!-- ===== 対戦 =====
+     16:9 の卓（1600×900）を画面に合わせて拡大縮小する。
+     上が相手、下が自分。手札は右下、マナは四隅の丸いカウンター、ログはふだん隠しておく。 -->
 <section id="screen-battle" class="screen">
-  <div class="bt">
-    <aside class="bt-left">
-      <div class="pinfo op" id="bt-opp-info"></div>
-      <div class="bt-phase" id="bt-phase"></div>
-      <div class="pinfo me" id="bt-my-info"></div>
-      <div class="bt-left-btns">
-        <select id="bt-speed" aria-label="演出の速さ"><option value="1.4">ゆっくり</option><option value="1">ふつう</option><option value="0.5">はやい</option><option value="0.15">とてもはやい</option></select>
-        <button class="btn small danger" id="bt-quit">降参</button>
+  <div class="bt-viewport">
+    <div class="bt-stage" id="bt-stage">
+      <div class="bt-table"></div>
+
+      <!-- 相手 -->
+      <div class="bt-opp-hand" id="bt-opp-hand"></div>
+      <div class="bt-chip op" id="bt-opp-chip"></div>
+      <button class="bt-mana op" id="bt-opp-mana" data-mana="1" aria-label="相手のマナゾーン"></button>
+      <div class="bt-emblem op" id="bt-opp-emblem"></div>
+      <div class="bt-shields op" id="bt-opp-shields"></div>
+      <div class="bt-zone op" id="bt-opp-battle"></div>
+
+      <!-- 中央：今すること -->
+      <div class="bt-prompt" id="bt-prompt"></div>
+
+      <!-- 自分 -->
+      <div class="bt-zone me" id="bt-my-battle"></div>
+      <div class="bt-shields me" id="bt-my-shields"></div>
+      <div class="bt-emblem me" id="bt-my-emblem"></div>
+      <div class="bt-chip me" id="bt-my-chip"></div>
+      <button class="bt-mana me" id="bt-my-mana" data-mana="0" aria-label="自分のマナゾーン"></button>
+      <div class="bt-hand" id="bt-my-hand"></div>
+
+      <!-- 左の小さなボタン（墓地・ログ・メニュー） -->
+      <div class="bt-side">
+        <button class="side-btn" data-grave="1" title="相手の墓地"><span class="ico">墓</span><b id="bt-opp-grave-n">0</b><small>相手の墓地</small></button>
+        <button class="side-btn" id="bt-log-btn" title="ログを表示"><span class="ico">≡</span><small>ログ</small></button>
+        <button class="side-btn" id="bt-menu-btn" title="メニュー"><span class="ico">⚙</span><small>メニュー</small></button>
+        <button class="side-btn" data-grave="0" title="自分の墓地"><span class="ico">墓</span><b id="bt-my-grave-n">0</b><small>自分の墓地</small></button>
       </div>
-    </aside>
-    <main class="bt-board">
-      <div class="row hand opp" id="bt-opp-hand"></div>
-      <div class="row res opp">
-        <div class="zone-box shields" id="bt-opp-shields"><div class="zone-title">シールド</div><div class="zone-cards"></div></div>
-        <div class="zone-box mana" id="bt-opp-mana"><div class="zone-title">マナ</div><div class="zone-cards"></div></div>
-      </div>
-      <div class="battlezone opp" id="bt-opp-battle"></div>
-      <div class="bt-mid"><div class="bt-prompt" id="bt-prompt"></div><div class="bt-buttons" id="bt-buttons"></div></div>
-      <div class="battlezone me" id="bt-my-battle"></div>
-      <div class="row res me">
-        <div class="zone-box shields" id="bt-my-shields"><div class="zone-title">シールド</div><div class="zone-cards"></div></div>
-        <div class="zone-box mana" id="bt-my-mana"><div class="zone-title">マナ</div><div class="zone-cards"></div></div>
-      </div>
-      <div class="row hand me" id="bt-my-hand"></div>
+
+      <!-- 右：山札と、大きな行動ボタン -->
+      <div class="bt-deck op" id="bt-opp-deck"></div>
+      <div class="bt-actions" id="bt-buttons"></div>
+      <div class="bt-deck me" id="bt-my-deck"></div>
+
+      <!-- カードの説明（指したカードだけ表示） -->
+      <div class="bt-detail" id="bt-detail"></div>
       <div class="bt-flash" id="bt-flash"></div>
       <div class="bt-casting" id="bt-casting"></div>
-    </main>
-    <aside class="bt-right">
-      <div class="detail" id="bt-detail"></div>
-      <div class="bt-log" id="bt-log" aria-live="polite"></div>
-    </aside>
+
+      <!-- ログ（ふだんは隠す） -->
+      <aside class="bt-log-drawer" id="bt-log-drawer" hidden>
+        <div class="drawer-head"><b>プレイログ</b><button class="btn small ghost" id="bt-log-close">閉じる</button></div>
+        <div class="bt-log" id="bt-log" aria-live="off"></div>
+      </aside>
+      <!-- メニュー -->
+      <div class="bt-menu" id="bt-menu" hidden>
+        <label class="f">演出の速さ<select id="bt-speed" aria-label="演出の速さ"><option value="1.4">ゆっくり</option><option value="1">ふつう</option><option value="0.5">はやい</option><option value="0.15">とてもはやい</option></select></label>
+        <button class="btn danger" id="bt-quit">降参してメニューへ</button>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -197,7 +220,10 @@
       <li>攻撃は「攻撃するクリーチャー」→「攻撃先（相手のシールド／タップしているクリーチャー）」の順にクリックします。</li>
       <li>マナの支払いは自動です（必要な文明をそろえ、多色カードはなるべく残すように選びます）。</li>
       <li>ツインパクトは、手札でクリックするとクリーチャー側・呪文側のどちらで使うか選べます。ハイパー化は、メインステップ中にバトルゾーンのクリーチャーをクリックします。</li>
-      <li>Enterキーで、光っているボタン（攻撃へ進む・ターン終了など）を押せます。墓地の枚数をクリックすると中身を見られます。</li>
+      <li>画面の右にある大きなボタン（攻撃へ進む・ターン終了など）で次へ進みます。Enterキーでも押せます。</li>
+      <li>カードにマウスを乗せる（スマホではタップする）と、そのカードの説明が表示されます。</li>
+      <li>四隅の丸いカウンターは「使えるマナ／マナの枚数」です（外側の色は文明の割合）。クリックするとマナゾーンの一覧を見られます。</li>
+      <li>左の「墓」ボタンで墓地、「ログ」ボタンでプレイログ（ふだんは隠れています）、「メニュー」で演出の速さの変更や降参ができます。</li>
     </ul>
 
     <h3>対応している能力</h3>

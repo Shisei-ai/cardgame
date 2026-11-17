@@ -154,11 +154,11 @@
     }
     return out;
   }
-  /** 候補のカードがすべて盤面に見えているか（見えていなければダイアログで選ぶ） */
+  /** 候補のカードがすべて盤面に見えているか（見えていなければダイアログで選ぶ。マナはカウンター表示なのでダイアログ） */
   function onBoard(uids) {
     return uids.every((u) => {
       const c = game.card(u);
-      return c.zone === 'battle' || c.zone === 'shield' || c.zone === 'mana' || (c.zone === 'hand' && c.owner === 0);
+      return c.zone === 'battle' || c.zone === 'shield' || (c.zone === 'hand' && c.owner === 0);
     });
   }
 
@@ -170,24 +170,29 @@
     if (c.zone === 'battle' && !game.isCreature(c)) cls.push('element');
     if (c.jdProtected) cls.push('protected');
     const pw = c.zone === 'battle' && game.isCreature(c) ? game.power(c) : undefined;
-    return UI.cardHTML(c.def, { uid: c.uid, tapped: c.tapped, power: pw, under: c.under.length, cls: cls.join(' '), back: extra.back, small: extra.small, hyper: c.hyper });
+    let html = UI.cardHTML(c.def, { uid: c.uid, tapped: c.tapped, power: pw, under: c.under.length, cls: cls.join(' '), back: extra.back, small: extra.small, hyper: c.hyper });
+    if (extra.style) html = html.replace('<div class="card', `<div style="${extra.style}" class="card`);
+    return html;
   }
 
-  function renderZone(sel, cards, it, extra) {
-    const e = $(sel);
-    if (e) e.innerHTML = cards.map((c) => cardFor(c, it, extra)).join('') || (extra && extra.empty ? `<span class="zone-empty">${extra.empty}</span>` : '');
-  }
-
-  function manaSummary(P) {
+  /** マナの丸いカウンター：中央に「使えるマナ／全部」、外周に文明の割合 */
+  function manaGauge(el, P) {
     const civs = {};
     for (const c of P.mana) for (const k of c.def.civs) civs[k] = (civs[k] || 0) + 1;
+    const total = Object.values(civs).reduce((a, b) => a + b, 0);
+    let at = 0;
+    const segs = Object.entries(civs).map(([k, n]) => { const a = at; at += (n / total) * 100; return `${UI.civColor(k)} ${a}% ${at}%`; });
+    el.style.setProperty('--ring', segs.length ? segs.join(', ') : '#2c4a80 0 100%');
     const untapped = P.mana.filter((c) => !c.tapped).length;
-    return `<b>${untapped}</b>/${P.mana.length} ${Object.entries(civs).map(([k, n]) => `<span>${UI.civDots([k])}${n}</span>`).join('')}`;
+    el.innerHTML = `<span class="mn"><b>${untapped}</b><i>${P.mana.length}</i><small>MANA</small></span>`;
+    el.title = `マナ：使える${untapped}枚／全部${P.mana.length}枚（${Object.entries(civs).map(([k, n]) => `${UI.civName(k)}${n}`).join('・') || 'なし'}）。クリックで一覧`;
   }
-  function infoHTML(P, isMe) {
-    return `<div class="pi-name">${esc(P.name)}${game.active === P.idx && game.phase !== 'over' ? '<i class="turn-mark">ターン中</i>' : ''}</div>
-      <div class="pi-stats"><span title="山札">山札 <b>${P.deck.length}</b></span><span title="手札">手札 <b>${P.hand.length}</b></span>
-      <span title="シールド">盾 <b>${P.shields.length}</b></span><button class="pi-grave" data-grave="${P.idx}" title="墓地を見る">墓地 <b>${P.grave.length}</b></button></div>`;
+  function chipHTML(P) {
+    return `<span>山札<b>${P.deck.length}</b></span><span>手札<b>${P.hand.length}</b></span><span>墓地<b>${P.grave.length}</b></span><span>シールド<b>${P.shields.length}</b></span>`;
+  }
+  function emblemHTML(P, isMe) {
+    const active = game.active === P.idx && game.phase !== 'over';
+    return `<div class="em">${isMe ? 'YOU' : 'CPU'}</div><div class="em-info"><b>${esc(P.name)}</b>${active ? `<span class="phase">ターン${game.turnNo}・${PHASE[game.phase] || ''}</span>` : '<span>待機中</span>'}</div>`;
   }
 
   let renderPending = false;
@@ -201,24 +206,46 @@
     if (!game) return;
     const g = game, me = g.players[0], op = g.players[1];
     const it = interaction();
-    $('#bt-opp-info').innerHTML = infoHTML(op, false);
-    $('#bt-my-info').innerHTML = infoHTML(me, true);
-    $('#bt-phase').innerHTML = `<span class="ph-turn">ターン ${g.turnNo}</span><span class="ph-name ${g.active === 0 ? 'me' : 'op'}">${g.active === 0 ? 'あなた' : 'CPU'}：${PHASE[g.phase] || g.phase}</span>`;
-    $('#bt-opp-hand').innerHTML = op.hand.map((c) => cardFor(c, it, { back: true, small: true })).join('');
-    renderZone('#bt-opp-shields .zone-cards', op.shields, it, { back: true, small: true, empty: 'シールドなし' });
-    renderZone('#bt-my-shields .zone-cards', me.shields, it, { back: true, small: true, empty: 'シールドなし' });
-    renderZone('#bt-opp-mana .zone-cards', op.mana, it, { small: true });
-    renderZone('#bt-my-mana .zone-cards', me.mana, it, { small: true });
-    $('#bt-opp-mana .zone-title').innerHTML = 'マナ ' + manaSummary(op);
-    $('#bt-my-mana .zone-title').innerHTML = 'マナ ' + manaSummary(me);
-    renderZone('#bt-opp-battle', op.battle, it, { empty: '' });
-    renderZone('#bt-my-battle', me.battle, it, { empty: '' });
-    renderZone('#bt-my-hand', me.hand, it, {});
+    fitStage();
+    $('#bt-opp-chip').innerHTML = chipHTML(op);
+    $('#bt-my-chip').innerHTML = chipHTML(me);
+    manaGauge($('#bt-opp-mana'), op);
+    manaGauge($('#bt-my-mana'), me);
+    for (const [sel, P, isMe] of [['#bt-opp-emblem', op, false], ['#bt-my-emblem', me, true]]) {
+      const e = $(sel);
+      e.innerHTML = emblemHTML(P, isMe);
+      e.classList.toggle('active', g.active === P.idx && g.phase !== 'over');
+    }
+    $('#bt-opp-hand').innerHTML = op.hand.map((c) => cardFor(c, it, { back: true })).join('');
+    $('#bt-opp-shields').innerHTML = op.shields.map((c) => cardFor(c, it, { back: true })).join('') || '<span class="empty">シールドなし</span>';
+    $('#bt-my-shields').innerHTML = me.shields.map((c) => cardFor(c, it, { back: true })).join('') || '<span class="empty">シールドなし</span>';
+    $('#bt-opp-battle').innerHTML = op.battle.map((c) => cardFor(c, it)).join('');
+    $('#bt-my-battle').innerHTML = me.battle.map((c) => cardFor(c, it)).join('');
+    const mid = (me.hand.length - 1) / 2;
+    $('#bt-my-hand').innerHTML = me.hand.map((c, i) => cardFor(c, it, { style: `--i:${i};--mid:${mid};z-index:${i + 1}` })).join('');
+    // 手札が多い時は重ねを深くして、はみ出さないようにする
+    const overlap = me.hand.length > 1 ? Math.max(40, Math.min(112, (132 * me.hand.length - 600) / (me.hand.length - 1))) : 0;
+    document.querySelectorAll('#bt-my-hand .card:not(:first-child)').forEach((e) => { e.style.marginLeft = `-${overlap}px`; });
     // 手札で、使えないカードは少し暗く
     if (ui.req && ui.req.type === 'main') document.querySelectorAll('#bt-my-hand .card:not(.sel)').forEach((e) => e.classList.add('dim'));
+    $('#bt-opp-deck').innerHTML = `<div><b>${op.deck.length}</b><small>山札</small></div>`;
+    $('#bt-my-deck').innerHTML = `<div><b>${me.deck.length}</b><small>山札</small></div>`;
+    $('#bt-opp-grave-n').textContent = op.grave.length;
+    $('#bt-my-grave-n').textContent = me.grave.length;
     $('#bt-opp-shields').classList.toggle('sel-target', it.playerTarget);
-    $('#bt-prompt').textContent = it.prompt;
+    const pr = $('#bt-prompt');
+    pr.textContent = it.prompt;
+    pr.title = it.prompt;
+    pr.classList.toggle('op', !ui.req && g.active === 1);
     $('#bt-buttons').innerHTML = it.buttons.map((b) => `<button class="btn ${b.cls || ''}" data-act="${b.act}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('');
+  }
+
+  /** 1600×900 の卓を、ウィンドウに収まる大きさにする */
+  function fitStage() {
+    const st = $('#bt-stage');
+    if (!st) return;
+    const sc = Math.min(window.innerWidth / 1600, window.innerHeight / 900);
+    st.style.setProperty('--s', sc.toFixed(4));
   }
 
   // ───────────── ダイアログで答える質問 ─────────────
@@ -278,12 +305,19 @@
     if (btn) return onButton(btn.dataset.act);
     const grave = e.target.closest('[data-grave]');
     if (grave) return showGrave(+grave.dataset.grave);
-    if (e.target.closest('#bt-opp-shields') && ui.req && ui.req.type === 'attack' && ui.attacker != null) {
+    const mana = e.target.closest('[data-mana]');
+    if (mana) return showMana(+mana.dataset.mana);
+    if (e.target.closest('#bt-log-btn')) { const d = $('#bt-log-drawer'); d.hidden = !d.hidden; if (!d.hidden) { const l = $('#bt-log'); l.scrollTop = l.scrollHeight; } return; }
+    if (e.target.closest('#bt-log-close')) { $('#bt-log-drawer').hidden = true; return; }
+    if (e.target.closest('#bt-menu-btn')) { const m = $('#bt-menu'); m.hidden = !m.hidden; return; }
+    if (!e.target.closest('#bt-menu')) $('#bt-menu').hidden = true;
+    if (e.target.closest('#bt-opp-shields, #bt-opp-emblem') && ui.req && ui.req.type === 'attack' && ui.attacker != null) {
       if (interaction().playerTarget) return answer({ kind: 'attack', attacker: ui.attacker, target: 'player' });
     }
     const cardEl = e.target.closest('.card[data-uid]');
     if (!cardEl) return;
     const uid = +cardEl.dataset.uid;
+    if (!cardEl.classList.contains('back')) { showDetail(uid); clearTimeout(hideDetail.t); hideDetail.t = setTimeout(hideDetail, 2500); }
     const req = ui.req;
     if (!req) return;
     const it = interaction();
@@ -354,6 +388,10 @@
 
   function showDetail(uid) {
     const c = game && game.card(uid);
+    // 指したカードと反対側（上のカードなら下、下のカードなら上）に出して、カードを隠さないようにする
+    const el = document.querySelector(`#screen-battle .card[data-uid="${uid}"]`);
+    const st = $('#bt-stage').getBoundingClientRect();
+    if (el) $('#bt-detail').classList.toggle('low', el.getBoundingClientRect().top < st.top + st.height * 0.45);
     if (!c) return;
     // 見えないカード（相手の手札・シールド・山札）は表示しない
     if ((c.zone === 'hand' && c.owner !== 0 && !(ui.req && ui.req.candidates && ui.req.candidates.includes(uid))) || c.zone === 'shield' || c.zone === 'deck') return;
@@ -367,7 +405,18 @@
       if (c.jdProtected) notes.push('ジャストダイバーで守られている');
       if (c.cantAttackTurn === game.turnNo) notes.push('このターン攻撃できない');
     }
-    $('#bt-detail').innerHTML = UI.detailHTML(c.def, { power: pw, note: notes.join('・'), hyper: c.hyper });
+    const box = $('#bt-detail');
+    box.innerHTML = UI.detailHTML(c.def, { power: pw, note: notes.join('・'), hyper: c.hyper });
+    box.classList.add('show');
+  }
+  function hideDetail() { const b = $('#bt-detail'); if (b) b.classList.remove('show'); }
+  /** マナゾーンの一覧（タップしているカードは暗く） */
+  function showMana(pi) {
+    const P = game.players[pi];
+    UI.modal({
+      title: `${P.name}のマナゾーン（使える${P.mana.filter((c) => !c.tapped).length}枚／${P.mana.length}枚）`, wide: true,
+      html: P.mana.length ? `<div class="picker">${P.mana.map((c) => `<div class="pick ${c.tapped ? 'tapped-mana' : ''}" data-u="${c.uid}">${UI.cardHTML(c.def)}<span>${esc(c.def.name)}${c.tapped ? '（タップ）' : ''}</span></div>`).join('')}</div>` : '<p>マナゾーンにカードはありません。</p>',
+    });
   }
   function showGrave(pi) {
     const P = game.players[pi];
@@ -403,7 +452,9 @@
     });
     game = g;
     $('#bt-log').innerHTML = '';
-    $('#bt-detail').innerHTML = '<p class="hint">カードにマウスを乗せると、ここに詳しく表示されます。</p>';
+    $('#bt-log-drawer').hidden = true;
+    $('#bt-menu').hidden = true;
+    hideDetail();
     g.on((ev) => {
       if (g !== game) return;
       if (ev.kind === 'log') addLog(ev);
@@ -443,8 +494,13 @@
     scr.addEventListener('click', onClick);
     scr.addEventListener('mouseover', (e) => {
       const c = e.target.closest('.card[data-uid]');
-      if (c && !c.classList.contains('back')) showDetail(+c.dataset.uid);
+      if (c && !c.classList.contains('back')) { clearTimeout(hideDetail.t); showDetail(+c.dataset.uid); }
     });
+    scr.addEventListener('mouseout', (e) => {
+      if (e.target.closest('.card[data-uid]') && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.card[data-uid]'))) { clearTimeout(hideDetail.t); hideDetail.t = setTimeout(hideDetail, 120); }
+    });
+    window.addEventListener('resize', fitStage);
+    UI.onScreen('battle', fitStage);
     $('#bt-quit').onclick = async () => {
       if (game && game.phase !== 'over' && !(await UI.confirmBox('対戦をやめる', '降参してメニューに戻りますか？', '降参する', 'danger'))) return;
       stop();
