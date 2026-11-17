@@ -12,23 +12,29 @@
   const Library = Store.Library;
 
   const state = { q: '', civ: '', type: '', onlyNg: false };
+  /** 対戦で動かない文の数（ツインパクトは呪文側も数える） */
+  function ngCount(c) {
+    let n = TextParser.parse(c.text || '', c.type).unparsed.length;
+    if (c.spellSide && c.spellSide.name) n += TextParser.parse(c.spellSide.text || '', 'spell').unparsed.length;
+    return n;
+  }
 
   function render() {
     const el = $('#lib-grid');
     const q = state.q.trim();
     let cards = Library.allCards();
     cards = cards.filter((c) => {
-      if (q && !(c.name.includes(q) || (c.text || '').includes(q) || (c.races || []).some((r) => r.includes(q)))) return false;
+      if (q && !(c.name.includes(q) || (c.text || '').includes(q) || (c.races || []).some((r) => r.includes(q)) || (c.spellSide && (c.spellSide.name || '').includes(q)))) return false;
       if (state.civ && !(c.civs || []).includes(state.civ)) return false;
       if (state.type && c.type !== state.type) return false;
-      if (state.onlyNg && !TextParser.parse(c.text || '', c.type).unparsed.length) return false;
+      if (state.onlyNg && !ngCount(c)) return false;
       return true;
     });
     cards.sort((a, b) => (a.sample ? 1 : 0) - (b.sample ? 1 : 0) || (b.updatedAt || 0) - (a.updatedAt || 0) || a.cost - b.cost);
     const userCount = Library.allCards().filter((c) => !c.sample).length;
     $('#lib-count').textContent = `登録したカード ${userCount}種類 ／ 見本カード ${Library.allCards().length - userCount}種類`;
     el.innerHTML = cards.length ? cards.map((c) => {
-      const ng = TextParser.parse(c.text || '', c.type).unparsed.length;
+      const ng = ngCount(c);
       return `<button class="lib-item" data-id="${esc(c.id)}">${UI.cardHTML(c)}
         <span class="lib-name">${ng ? '<b class="ng" title="対戦で動かない文があります">⚠</b>' : ''}${c.sample ? '<i class="tag">見本</i>' : ''}${esc(c.name)}</span></button>`;
     }).join('') : '<p class="empty">カードがありません。「画像から登録」でカードを追加しましょう。</p>';
@@ -45,7 +51,9 @@
     const card = JSON.parse(JSON.stringify(draft));
     if (!card.civs) card.civs = [];
     if (!card.races) card.races = [];
+    const twin = card.spellSide && card.spellSide.name ? card.spellSide : null;
     const civChecks = SimData.CIVS.map((c) => `<label class="civ-check" style="--c:${c.color}"><input type="checkbox" value="${c.key}" ${card.civs.includes(c.key) ? 'checked' : ''}><span>${c.name}</span></label>`).join('');
+    const twinCivChecks = SimData.CIVS.map((c) => `<label class="civ-check" style="--c:${c.color}"><input type="checkbox" value="${c.key}" ${twin && (twin.civs || []).includes(c.key) ? 'checked' : ''}><span>${c.name}</span></label>`).join('');
     const html = `<div class="editor">
       <div class="ed-left">
         <div class="ed-img" id="ed-img">${card.image ? `<img src="${card.image}" alt="">` : '<p class="hint">画像なし</p>'}</div>
@@ -68,6 +76,16 @@
         <label class="f">能力の文章（1行に1つの能力。行頭の「■」はあってもなくてもよい）
           <textarea id="ed-text" rows="7" placeholder="■ブロッカー&#10;■このクリーチャーが出た時、カードを1枚引く。">${esc(card.text || '')}</textarea></label>
         <div class="ed-parse" id="ed-parse"></div>
+        <label class="chk ed-twin-toggle"><input type="checkbox" id="ed-twin" ${twin ? 'checked' : ''}> ツインパクト（このカードに呪文側もある）</label>
+        <div class="ed-twin" id="ed-twin-box" ${twin ? '' : 'hidden'}>
+          <div class="f-row">
+            <label class="f">呪文側の名前<input id="ed-tw-name" value="${esc(twin ? twin.name : '')}"></label>
+            <label class="f small">呪文側のコスト<input id="ed-tw-cost" type="number" min="0" max="99" value="${twin && twin.cost != null ? twin.cost : ''}"></label>
+          </div>
+          <div class="f">呪文側の文明（空ならクリーチャー側と同じ）<div class="civ-checks" id="ed-tw-civs">${twinCivChecks}</div></div>
+          <label class="f">呪文側の能力の文章<textarea id="ed-tw-text" rows="4">${esc(twin ? twin.text : '')}</textarea></label>
+          <div class="ed-parse" id="ed-tw-parse"></div>
+        </div>
         <details class="ed-help"><summary>対応している言い回しの例</summary><ul>${TextParser.EXAMPLES.map((e) => `<li>${esc(e)}</li>`).join('')}</ul>
           <p class="hint">赤い行は「対戦で動かない文」です。上の例に近い言い回しに書き換えると動くようになります（カードの意味が変わらない範囲で）。</p></details>
       </div>
@@ -85,10 +103,18 @@
           card.name = $('#ed-name', m).value.trim();
           card.type = $('#ed-type', m).value;
           card.cost = $('#ed-cost', m).value === '' ? null : Number($('#ed-cost', m).value);
-          card.power = card.type === 'spell' || $('#ed-power', m).value === '' ? null : Number($('#ed-power', m).value);
+          card.power = card.type === 'spell' || card.type === 'tamaseed' || $('#ed-power', m).value === '' ? null : Number($('#ed-power', m).value);
           card.civs = [...m.querySelectorAll('#ed-civs input:checked')].map((i) => i.value);
           card.races = $('#ed-races', m).value.split(/[\/／、,]/).map((s) => s.trim()).filter(Boolean);
           card.text = $('#ed-text', m).value;
+          if ($('#ed-twin', m).checked) {
+            card.spellSide = {
+              name: $('#ed-tw-name', m).value.trim(),
+              cost: $('#ed-tw-cost', m).value === '' ? null : Number($('#ed-tw-cost', m).value),
+              civs: [...m.querySelectorAll('#ed-tw-civs input:checked')].map((i) => i.value),
+              text: $('#ed-tw-text', m).value,
+            };
+          } else delete card.spellSide;
         };
         const fill = (c) => {
           $('#ed-name', m).value = c.name || '';
@@ -98,16 +124,27 @@
           m.querySelectorAll('#ed-civs input').forEach((i) => { i.checked = (c.civs || []).includes(i.value); });
           $('#ed-races', m).value = (c.races || []).join(' / ');
           $('#ed-text', m).value = c.text || '';
+          const tw = c.spellSide && c.spellSide.name ? c.spellSide : null;
+          $('#ed-twin', m).checked = !!tw;
+          $('#ed-tw-name', m).value = tw ? tw.name : '';
+          $('#ed-tw-cost', m).value = tw && tw.cost != null ? tw.cost : '';
+          m.querySelectorAll('#ed-tw-civs input').forEach((i) => { i.checked = !!tw && (tw.civs || []).includes(i.value); });
+          $('#ed-tw-text', m).value = tw ? tw.text || '' : '';
           refresh();
         };
         const refresh = () => {
           read();
-          $('#ed-power-wrap', m).style.visibility = card.type === 'spell' ? 'hidden' : '';
-          const ab = TextParser.parse(card.text || '', card.type);
-          const ok = TextParser.describe(ab);
-          $('#ed-parse', m).innerHTML = `<h4>対戦で動く効果</h4>
-            ${ok.length ? `<ul class="ab-list">${ok.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : '<p class="hint">（なし）</p>'}
-            ${ab.unparsed.length ? `<h4 class="ng">対戦で動かない文</h4><ul class="ab-list ng">${ab.unparsed.map((l) => `<li>⚠ ${esc(l)}</li>`).join('')}</ul>` : ''}`;
+          $('#ed-power-wrap', m).style.visibility = card.type === 'spell' || card.type === 'tamaseed' ? 'hidden' : '';
+          const show = (box, text, type) => {
+            const ab = TextParser.parse(text || '', type);
+            const ok = TextParser.describe(ab);
+            box.innerHTML = `<h4>対戦で動く効果</h4>
+              ${ok.length ? `<ul class="ab-list">${ok.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : '<p class="hint">（なし）</p>'}
+              ${ab.unparsed.length ? `<h4 class="ng">対戦で動かない文</h4><ul class="ab-list ng">${ab.unparsed.map((l) => `<li>⚠ ${esc(l)}</li>`).join('')}</ul>` : ''}`;
+          };
+          show($('#ed-parse', m), card.text, card.type);
+          $('#ed-twin-box', m).hidden = !$('#ed-twin', m).checked;
+          if (card.spellSide) show($('#ed-tw-parse', m), card.spellSide.text, 'spell');
         };
         const setImage = (url) => {
           card.image = url;
@@ -153,7 +190,13 @@
           read();
           if (!card.name) return UI.toast('名前を入力してください', 'bad');
           if (card.cost == null || Number.isNaN(card.cost)) return UI.toast('コストを入力してください', 'bad');
-          if (card.type !== 'spell' && (card.power == null || Number.isNaN(card.power))) return UI.toast('パワーを入力してください', 'bad');
+          if (card.type === 'tamaseed') card.power = null;
+          else if (card.type !== 'spell' && (card.power == null || Number.isNaN(card.power))) return UI.toast('パワーを入力してください', 'bad');
+          if (card.spellSide) {
+            if (card.type === 'spell') delete card.spellSide;
+            else if (!card.spellSide.name) return UI.toast('ツインパクトの呪文側の名前を入力してください', 'bad');
+            else if (card.spellSide.cost == null || Number.isNaN(card.spellSide.cost)) return UI.toast('呪文側のコストを入力してください', 'bad');
+          }
           if (!card.civs.length) return UI.toast('文明を1つ以上選んでください', 'bad');
           delete card._fullImage; delete card.ocrRaw; delete card.sample;
           await Library.saveCard(card);

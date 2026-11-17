@@ -42,6 +42,7 @@ class RandomAgent {
       }
       case 'yesno': return r() < 0.5;
       case 'number': return req.min + Math.floor(r() * (req.max - req.min + 1));
+      case 'option': return Math.floor(r() * req.options.length);
       default: return null;
     }
   }
@@ -257,12 +258,264 @@ function put(g, pi, id, zone, opts = {}) {
     assert.strictEqual(c.zone, 'grave');
   });
 
+
+  console.log('\n[3b] 新しい仕組み（選択・山札を見る・タマシード・ハイパー化・ヨビニオン・ツインパクト・ターンをとばす）');
+  const ans = (o) => new ScriptAgent(o);
+  const fresh = (a0, a1, first = 0) => freshGame([a0 || new CpuAgent(), a1 || new CpuAgent()], null, null, first);
+  const castNow = async (g, pi, id) => { const c = put(g, pi, id, 'hand'); await g.castSpell(pi, c, { fromHand: true }); return c; };
+  await check('選択（次のうちいずれか1つ）：手札を1枚捨ててから、選んだ方だけ実行する', async () => {
+    const g = fresh(ans({ option: () => 1 }));
+    const t = put(g, 1, 'golm', 'battle'); // 5000
+    const h = g.players[0].hand.length;
+    await castNow(g, 0, 'shatter');
+    assert.strictEqual(t.zone, 'grave', '2番目（破壊）を選んだ');
+    assert.strictEqual(g.players[0].hand.length, h - 1, '1枚捨てて、引いていない');
+  });
+  await check('山札を見て振り分ける：手札・マナ・墓地に1枚ずつ、残りは山札の下', async () => {
+    const g = fresh();
+    const P = g.players[0];
+    const [h, m, gr, d] = [P.hand.length, P.mana.length, P.grave.length, P.deck.length];
+    const bottomBefore = P.deck[0];
+    await castNow(g, 0, 'tune');
+    assert.strictEqual(P.hand.length, h + 1); assert.strictEqual(P.mana.length, m + 1); assert.strictEqual(P.grave.length, gr + 2, '振り分けた1枚＋唱えた呪文');
+    assert.strictEqual(P.deck.length, d - 3);
+    assert.notStrictEqual(P.deck[0], bottomBefore, '残りの1枚が山札の一番下に入った');
+  });
+  await check('山札を見て、条件に合うカードを手札に（なければ取らない）', async () => {
+    const g = fresh(ans({ target: (game, req) => req.purpose.op === 'look' ? req.candidates.slice(0, req.max) : undefined }));
+    const P = g.players[0];
+    const top = P.deck.slice(-5);
+    const creatures = top.filter((c) => c.def.type === 'creature').length;
+    const h = P.hand.length;
+    await castNow(g, 0, 'blueprint');
+    assert.strictEqual(P.hand.length, h + Math.min(1, creatures));
+  });
+  await check('墓地をシャッフルして山札の下へ → 2枚引く', async () => {
+    const g = fresh(ans({ option: () => 1 }));
+    const O = g.players[1];
+    put(g, 1, 'golm', 'grave'); put(g, 1, 'pipi', 'grave');
+    const od = O.deck.length;
+    await castNow(g, 0, 'farewell');
+    assert.strictEqual(O.grave.length, 0);
+    assert.strictEqual(O.deck.length, od + 2);
+  });
+  await check('手札を山札の下に置き、その枚数より1枚多く引く', async () => {
+    const g = fresh(ans({ option: () => 0, target: (game, req) => req.purpose.op === 'cycleHand' ? req.candidates.slice(0, 2) : undefined }));
+    const P = g.players[0];
+    const h = P.hand.length;
+    await castNow(g, 0, 'pact');
+    assert.strictEqual(P.hand.length, h - 2 + 3);
+  });
+  await check('条件付き：マナが5枚以下ならドロー（6枚以上なら引かない）', async () => {
+    const g = fresh();
+    const P = g.players[0];
+    while (P.mana.length > 2) g.move(P.mana[0], 'grave');
+    let h = P.hand.length;
+    await castNow(g, 0, 'harvest');
+    assert.strictEqual(P.hand.length, h + 1, 'マナ3枚なので引く');
+    while (P.mana.length < 7) put(g, 0, 'golm', 'mana');
+    h = P.hand.length;
+    await castNow(g, 0, 'harvest');
+    assert.strictEqual(P.hand.length, h, 'マナ8枚なので引かない');
+  });
+  await check('タマシード：クリーチャーではない（攻撃されない・クリーチャー除去で選ばれない）が、エレメント除去では選ばれる', async () => {
+    const g = fresh();
+    const t = put(g, 1, 'sigil', 'battle', { tapped: true });
+    const a = put(g, 0, 'golm', 'battle');
+    assert.ok(!g.attackTargets(a).includes(t.uid), 'タップしていても攻撃できない');
+    await castNow(g, 0, 'whisper'); // 相手のクリーチャーを1体破壊
+    assert.strictEqual(t.zone, 'battle');
+    await g.doEffect(0, TextParser.parseSentence('相手のコスト5以下のエレメントを1つ選び、破壊する'), a);
+    assert.strictEqual(t.zone, 'grave');
+  });
+  await check('タマシード：出た時の能力・手札からマナに置くとアンタップ・シンカライズで進化元になる', async () => {
+    const g = fresh(ans({ number: (game, req) => req.max }));
+    const P = g.players[0];
+    const h = P.hand.length;
+    const t = put(g, 0, 'sigil', 'hand');
+    await g.putCreature(0, t, null, '使った', { summoned: true });
+    assert.strictEqual(P.hand.length, h - 1 + 3 - 1, '1枚捨てて3枚引いて1枚捨てた');
+    const m = put(g, 0, 'sigil', 'hand');
+    g.move(m, 'mana');
+    assert.strictEqual(m.tapped, false, '多色でもアンタップで置ける');
+    const evo = Object.assign({}, byId.s_zelga, { id: 's_test_evo', text: '■進化－自分の《魔導紋》1体の上に置く。' });
+    assert.ok(g.evolutionBases(0, evo).includes(t));
+  });
+  await check('ハイパー化：他のクリーチャーをタップしてパワーとW・ブレイカーが上がり、次の自分のターンのはじめに戻る', async () => {
+    const g = fresh();
+    const L = put(g, 0, 'lunaris', 'battle');
+    const other = put(g, 0, 'golm', 'battle');
+    assert.ok(g.mainActions(0).some((a) => a.kind === 'hyper' && a.uid === L.uid));
+    assert.strictEqual(g.power(L), 5000);
+    await g.activateHyper(0, L);
+    assert.ok(other.tapped);
+    assert.strictEqual(g.power(L), 10000);
+    assert.strictEqual(g.kw(L, 'breaker'), 2);
+    g.turnNo++; g.active = 1; // 相手のターン（まだ続く）
+    assert.ok(L.hyper);
+    g.active = 0; L.hyper = L.hyper; // 自分のターンのはじめは playTurn が戻す
+  });
+  await check('ハイパーモード中：手札から呪文を唱えると、墓地からもう一度唱えられる（墓地からの分では誘発しない）', async () => {
+    const g = fresh(ans({ yesno: () => true }));
+    const L = put(g, 0, 'lunaris', 'battle'); put(g, 0, 'golm', 'battle');
+    await g.activateHyper(0, L);
+    const h = g.players[0].hand.length;
+    await castNow(g, 0, 'wisdom'); // 2枚引く
+    assert.strictEqual(g.players[0].hand.length, h + 4, '2回唱えて4枚引いた（3回目はない）');
+  });
+  await check('攻撃する時：手札の水のコスト5以下の呪文をタダで唱えられる', async () => {
+    let sp = null;
+    const g = fresh(ans({ target: (game, req) => req.purpose.op === 'castFree' ? [sp.uid] : undefined, yesno: () => false }));
+    const L = put(g, 0, 'lunaris', 'battle');
+    sp = put(g, 0, 'whirl', 'hand');
+    const t = put(g, 1, 'golm', 'battle');
+    for (const s of [...g.players[1].shields]) g.move(s, 'grave'); put(g, 1, 'golm', 'shield');
+    await g.attack(L, 'player');
+    assert.strictEqual(sp.zone, 'grave', '呪文を唱えた');
+    assert.strictEqual(t.zone, 'hand', '相手のクリーチャーが手札に戻った');
+  });
+  await check('ヨビニオン：召喚した時、コストが小さいクリーチャーが出るまでめくって出す', async () => {
+    const g = fresh();
+    const P = g.players[0];
+    const before = P.battle.length;
+    const deckBefore = P.deck.length;
+    put(g, 0, 'golm', 'deck'); // 山札の上（コスト4 < 5）
+    g.move(P.deck[0], 'deck'); // 一番下のカードを上へ（golm は山札の一番下に入るので、上に置き直す）
+    const G = put(g, 0, 'garmund', 'hand');
+    await g.putCreature(0, G, null, '召喚した', { summoned: true });
+    assert.ok(P.battle.length >= before + 2, 'ガルムンドと、めくったクリーチャーが出た');
+    assert.strictEqual(P.deck.length + P.battle.length + P.grave.length + P.hand.length + P.mana.length + P.shields.length, deckBefore + 5 + 5 + 2 + (before) , 'カードの数は変わらない');
+  });
+  await check('キーワードを与える：出たばかりのクリーチャーもスピードアタッカーで攻撃できる', async () => {
+    const g = fresh();
+    put(g, 0, 'garmund', 'battle');
+    const n = put(g, 0, 'golm', 'battle', { sick: true });
+    assert.ok(g.attackTargets(n).includes('player'));
+    assert.ok(g.kw(n, 'guardman'));
+  });
+  await check('ガードマン：自分の他のクリーチャーへの攻撃を、かわりに受ける', async () => {
+    const g = fresh(ans({ target: (game, req) => (req.purpose.op === 'guardman' ? [req.candidates[0]] : undefined) }), null, 1);
+    g.active = 1;
+    put(g, 0, 'garmund', 'battle', { tapped: true }); // ガードマンを与える（自分自身はタップ中）
+    const victim = put(g, 0, 'pipi', 'battle', { tapped: true });
+    const guard = put(g, 0, 'gardion', 'battle'); // 9000
+    const att = put(g, 1, 'golm', 'battle'); // 5000
+    g.agents[1] = new CpuAgent();
+    await g.attack(att, victim.uid);
+    assert.strictEqual(victim.zone, 'battle', '狙われたクリーチャーは無事');
+    assert.ok(guard.tapped);
+    assert.strictEqual(att.zone, 'grave', 'ガードマンとのバトルに負けた');
+  });
+  await check('アタック・チャンス：条件に合うクリーチャーの攻撃で、手札の呪文をタダで唱える（マナ1枚につき-1000）', async () => {
+    const g = fresh(ans({ yesno: (game, req) => req.purpose.op === 'attackChance' ? true : undefined }));
+    const P = g.players[0];
+    while (P.mana.length > 4) g.move(P.mana[0], 'grave');
+    while (P.mana.length < 4) put(g, 0, 'golm', 'mana');
+    const att = put(g, 0, 'chimera', 'battle');
+    const sp = put(g, 0, 'finale', 'hand');
+    const t = put(g, 1, 'gardion', 'battle', { tapped: false }); // 9000、ブロッカー
+    const tgt = put(g, 1, 'garo', 'battle', { tapped: true });
+    await g.attack(att, tgt.uid);
+    assert.strictEqual(sp.zone, 'grave');
+    assert.strictEqual(P.mana.length, 6, '2枚マナに置いた');
+  });
+  await check('アタック・チャンス：条件に合わないクリーチャーでは使えない', async () => {
+    const g = fresh(ans({ yesno: () => true }));
+    const att = put(g, 0, 'golm', 'battle');
+    const sp = put(g, 0, 'finale', 'hand');
+    for (const s of [...g.players[1].shields]) g.move(s, 'grave'); put(g, 1, 'golm', 'shield');
+    await g.attack(att, 'player');
+    assert.strictEqual(sp.zone, 'hand');
+  });
+  await check('2回選ぶ：同じものを2回選べる／すべての文明がそろっていれば全部を1回ずつ', async () => {
+    const g = fresh(ans({ option: () => 1 }));
+    const P = g.players[0];
+    let h = P.hand.length;
+    await castNow(g, 0, 'oath');
+    assert.strictEqual(P.hand.length, h + 4, '「2枚引く」を2回');
+    for (const id of ['alba', 'poppo', 'imp', 'garo', 'pipi']) put(g, 0, id, 'battle');
+    const sh = P.shields.length, m = P.mana.length;
+    h = P.hand.length;
+    await castNow(g, 0, 'oath');
+    assert.strictEqual(P.shields.length, sh + 1, 'シールド化');
+    assert.ok(P.hand.length >= h + 2, '2枚引いた');
+    assert.ok(P.mana.length >= m, 'マナに置いた');
+  });
+  await check('ツインパクト：手札から呪文側を唱えると、カードは墓地へ', async () => {
+    const g = fresh();
+    const P = g.players[0];
+    while (P.mana.length < 6) put(g, 0, 'whirl', 'mana');
+    for (const c of P.mana) c.tapped = false;
+    const c = put(g, 0, 'neptus', 'hand');
+    assert.ok(g.mainActions(0).some((a) => a.kind === 'cast' && a.uid === c.uid), '呪文側（コスト6）を唱えられる');
+    assert.ok(!g.mainActions(0).some((a) => a.kind === 'summon' && a.uid === c.uid), 'クリーチャー側（コスト9）は払えない');
+    put(g, 1, 'golm', 'battle');
+    await g.playCard(0, c, 'spell');
+    assert.strictEqual(c.zone, 'grave');
+  });
+  await check('ツインパクト：呪文側のS・トリガー／スマッシュ・バーストでクリーチャーを残したまま呪文側を唱える', async () => {
+    const g = fresh(ans({ yesno: () => true, option: () => 1 }), ans({ yesno: () => true }));
+    for (const s of [...g.players[1].shields]) g.move(s, 'grave');
+    put(g, 1, 'neptus', 'shield');
+    const a = put(g, 0, 'golm', 'battle');
+    await g.attack(a, 'player');
+    assert.strictEqual(a.zone, 'hand', 'S・トリガーの呪文側で手札に戻された');
+    const N = put(g, 0, 'neptus', 'battle');
+    const t1 = put(g, 1, 'pipi', 'battle');
+    put(g, 1, 'golm', 'shield'); // ダイレクトアタックにならないように
+    await g.attack(N, 'player');
+    assert.strictEqual(N.zone, 'battle', 'スマッシュ・バーストで唱えてもクリーチャーは残る');
+    assert.strictEqual(t1.zone, 'hand');
+  });
+  await check('手札から：相手のターンの終わりに、相手のクリーチャーが3体以上多ければタダで召喚できる', async () => {
+    const g = fresh(ans({ yesno: () => true }));
+    const n = put(g, 0, 'neptus', 'hand');
+    g.active = 1;
+    for (const id of ['golm', 'pipi', 'garo']) put(g, 1, id, 'battle');
+    await g.handTriggersAtTurnEnd(1);
+    assert.strictEqual(n.zone, 'battle');
+  });
+  await check('ターンをとばす：相手がクリーチャーを出したらターンの残りをとばせる（そのターンの攻撃はできない）', async () => {
+    const g = new Game({ decks: [deckOf(DECKS[1]), deckOf(DECKS[1])], agents: [new CpuAgent(), ans({ yesno: () => true })], seed: 4, first: 0 });
+    g.setup();
+    put(g, 1, 'vigil', 'battle');
+    const P = g.players[0];
+    for (let i = 0; i < 4; i++) put(g, 0, 'golm', 'mana');
+    put(g, 0, 'golm', 'hand');
+    let attacked = false, skipped = false;
+    g.on((ev) => { if (ev.kind === 'attack' && g.active === 0) attacked = true; if (ev.kind === 'skip') skipped = true; });
+    await g.playTurn();
+    assert.ok(skipped, 'ターンの残りがとばされた');
+    assert.ok(!attacked);
+    assert.strictEqual(g.phase, 'end');
+  });
+  await check('ターンをとばす：相手のターン中にマナを置いたら、すぐにターンの残りがとばされる', async () => {
+    const g = new Game({ decks: [deckOf(DECKS[1]), deckOf(DECKS[1])], agents: [new CpuAgent(), new CpuAgent()], seed: 5, first: 0 });
+    g.setup();
+    put(g, 1, 'observer', 'battle');
+    let summoned = false;
+    g.on((ev) => { if (ev.kind === 'summon' && g.active === 0) summoned = true; });
+    await g.playTurn();
+    assert.strictEqual(g.players[0].mana.length, 1, 'マナを置いた');
+    assert.ok(!summoned, 'その後は何もできない');
+  });
+  await check('ターンをとばす：相手のクリーチャーが攻撃したら、その攻撃の後にとばす（攻撃自体は通る）', async () => {
+    const g = new Game({ decks: [deckOf(DECKS[1]), deckOf(DECKS[1])], agents: [ans({ charge: () => null }), new CpuAgent()], seed: 6, first: 0 });
+    g.setup();
+    put(g, 1, 'observer', 'battle');
+    put(g, 0, 'golm', 'battle'); put(g, 0, 'garo', 'battle');
+    let attacks = 0;
+    g.on((ev) => { if (ev.kind === 'attack') attacks++; });
+    await g.playTurn();
+    assert.strictEqual(attacks, 1, '1回だけ攻撃できた');
+  });
+
   console.log(`\n[4] 大量の対戦（${GAMES}戦ずつ）`);
   for (const [label, mk] of [['CPU 対 CPU', () => new CpuAgent()], ['ランダム 対 ランダム', () => new RandomAgent()]]) {
     await check(label + '：エラー・無限ループ・カードの消失なし', async () => {
       const wins = [0, 0, 0]; let turns = 0;
       for (let i = 0; i < GAMES; i++) {
-        const da = DECKS[i % 3], db = DECKS[(i + 1) % 3];
+        const da = DECKS[i % DECKS.length], db = DECKS[(i + 1) % DECKS.length];
         const g = new Game({ decks: [deckOf(da), deckOf(db)], agents: [mk(), mk()], seed: 1000 + i });
         const before = 80;
         const res = await g.run();
@@ -274,7 +527,7 @@ function put(g, pi, id, zone, opts = {}) {
     });
   }
   await check('デッキ同士の勝率（CPU 対 CPU）', async () => {
-    for (let a = 0; a < 3; a++) for (let b = a + 1; b < 3; b++) {
+    for (let a = 0; a < DECKS.length; a++) for (let b = a + 1; b < DECKS.length; b++) {
       let wa = 0; const N = Math.max(20, GAMES / 5);
       for (let i = 0; i < N; i++) {
         const g = new Game({ decks: [deckOf(DECKS[a]), deckOf(DECKS[b])], agents: [new CpuAgent(), new CpuAgent()], seed: 5000 + i });

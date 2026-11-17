@@ -69,6 +69,7 @@
       case 'battle': addFx(ev.a, 'fx-clash'); addFx(ev.b, 'fx-clash'); break;
       case 'destroy': for (const u of ev.uids || []) addFx(u, 'fx-destroy'); break;
       case 'break': flash('シールドブレイク！', 'break'); break;
+      case 'skip': flash('ターンの残りをとばす！', 'break'); break;
       case 'direct': flash('ダイレクトアタック！', 'break'); break;
       default:
     }
@@ -84,7 +85,8 @@
   function showCasting(uid) {
     const c = game.card(uid);
     const box = $('#bt-casting');
-    box.innerHTML = `<div class="casting-label">${c.owner === 0 ? 'あなた' : 'CPU'}の呪文</div>${UI.cardHTML(c.def)}`;
+    const def = Engine.spellView(c.def) || c.def; // ツインパクトは呪文側を見せる
+    box.innerHTML = `<div class="casting-label">${c.owner === 0 ? 'あなた' : 'CPU'}の呪文</div>${UI.cardHTML(def)}`;
     box.className = 'bt-casting show';
     clearTimeout(showCasting.t);
     showCasting.t = setTimeout(() => { box.className = 'bt-casting'; }, 1100 * Math.max(0.6, ui.speed));
@@ -110,7 +112,8 @@
       case 'main': {
         for (const a of req.actions) if (a.uid) out.selectable.add(a.uid);
         const n = req.actions.length - 1;
-        out.prompt = n ? 'メイン：光っているカードを使えます（クリックで召喚／呪文）' : 'メイン：今使えるカードはありません';
+        const hyper = req.actions.some((a) => a.kind === 'hyper');
+        out.prompt = n ? `メイン：光っているカードを使えます（クリックで召喚／呪文${hyper ? '／バトルゾーンのクリーチャーはハイパー化' : ''}）` : 'メイン：今使えるカードはありません';
         out.buttons.push({ label: '攻撃へ進む ▶', act: 'toAttack', cls: 'primary' });
         break;
       }
@@ -163,10 +166,11 @@
     const cls = [extra.cls || ''];
     if (it.selectable.has(c.uid)) cls.push('sel');
     if (it.picked.has(c.uid)) cls.push('picked');
-    if (c.zone === 'battle' && c.enteredTurn === game.turnNo && c.owner === game.active && !game.kw(c, 'speedAttacker') && c.def.type !== 'evolution') cls.push('sick');
+    if (c.zone === 'battle' && game.isCreature(c) && c.enteredTurn === game.turnNo && c.owner === game.active && !game.kw(c, 'speedAttacker') && c.def.type !== 'evolution') cls.push('sick');
+    if (c.zone === 'battle' && !game.isCreature(c)) cls.push('element');
     if (c.jdProtected) cls.push('protected');
-    const pw = c.zone === 'battle' ? game.power(c) : undefined;
-    return UI.cardHTML(c.def, { uid: c.uid, tapped: c.tapped, power: pw, under: c.under.length, cls: cls.join(' '), back: extra.back, small: extra.small });
+    const pw = c.zone === 'battle' && game.isCreature(c) ? game.power(c) : undefined;
+    return UI.cardHTML(c.def, { uid: c.uid, tapped: c.tapped, power: pw, under: c.under.length, cls: cls.join(' '), back: extra.back, small: extra.small, hyper: c.hyper });
   }
 
   function renderZone(sel, cards, it, extra) {
@@ -220,7 +224,15 @@
   // ───────────── ダイアログで答える質問 ─────────────
   async function openModalIfNeeded(req) {
     const g = game;
-    if (req.type === 'yesno') {
+    if (req.type === 'option') {
+      const v = await UI.modal({
+        title: '選んでください', wide: true, dismissable: false,
+        html: `<p>${esc(req.prompt)}</p><div class="opt-list">${req.options.map((o, i) => `<button class="btn opt" data-i="${i}">${esc(o)}</button>`).join('')}</div>`,
+        buttons: [],
+        onOpen(m, close) { m.addEventListener('click', (e) => { const b = e.target.closest('.opt'); if (b) close(+b.dataset.i); }); },
+      });
+      if (ui.req === req) answer(v);
+    } else if (req.type === 'yesno') {
       const p = req.purpose || {};
       const c = p.uid ? g.card(p.uid) : null;
       const v = await UI.modal({
@@ -240,7 +252,7 @@
       const single = req.min === 1 && req.max === 1;
       const v = await UI.modal({
         title: 'カードを選ぶ', wide: true, dismissable: false,
-        html: `<p>${esc(req.prompt)}（${req.min === req.max ? req.max : `${req.min}〜${req.max}`}枚）</p>
+        html: `<p>${esc(req.prompt)}${/（/.test(req.prompt) ? '' : `（${req.min === req.max ? req.max : `${req.min}〜${req.max}`}枚）`}</p>
           <div class="picker">${req.candidates.map((u) => { const c = g.card(u); return `<button class="pick" data-u="${u}">${UI.cardHTML(c.def)}<span>${esc(c.def.name)}</span></button>`; }).join('')}</div>`,
         buttons: single ? [] : [{ label: '決定', value: 'ok', cls: 'primary' }],
         onOpen(m, close) {
@@ -280,8 +292,9 @@
         if (it.selectable.has(uid)) answer(uid);
         break;
       case 'main': {
-        const a = req.actions.find((x) => x.uid === uid);
-        if (a) answer(a);
+        const acts = req.actions.filter((x) => x.uid === uid);
+        if (acts.length === 1) answer(acts[0]);
+        else if (acts.length > 1) chooseAction(req, game.card(uid), acts);
         else if (game.card(uid).zone === 'hand' && game.card(uid).owner === 0) UI.toast(whyNot(game.card(uid)), 'bad');
         break;
       }
@@ -305,10 +318,24 @@
       default:
     }
   }
+  /** 同じカードで複数の使い方がある時（ツインパクトの両面）に選んでもらう */
+  async function chooseAction(req, c, acts) {
+    const sv = Engine.spellSideDef(c.def);
+    const qn = (n) => (/^「.*」$/.test(n) ? n : `「${n}」`);
+    const label = (a) => (a.kind === 'cast' ? `呪文側${qn(sv ? sv.name : c.def.name)}を唱える（コスト${(sv || c.def).cost}）` : a.kind === 'hyper' ? 'ハイパー化する' : `${qn(c.def.name)}を召喚する（コスト${c.def.cost}）`);
+    const v = await UI.modal({
+      title: 'どちらで使いますか？', wide: true,
+      html: `<div class="detail">${UI.detailHTML(c.def)}</div>`,
+      buttons: [{ label: 'やめる', value: null }, ...acts.map((a, i) => ({ label: label(a), value: i, cls: 'primary' }))],
+    });
+    if (v != null && ui.req === req) answer(acts[v]);
+  }
   function whyNot(c) {
     const P = game.players[0];
     const untapped = P.mana.filter((m) => !m.tapped).length;
-    if (untapped < c.def.cost) return `マナが足りません（コスト${c.def.cost}、使えるマナ${untapped}）`;
+    const sv = Engine.spellSideDef(c.def);
+    const minCost = Math.min(c.def.cost, sv ? sv.cost : Infinity);
+    if (untapped < minCost) return `マナが足りません（コスト${sv ? `${c.def.cost}／呪文側${sv.cost}` : c.def.cost}、使えるマナ${untapped}）`;
     if (c.def.type === 'evolution' && !game.evolutionBases(0, c.def).length) return '進化元になるクリーチャーがいません';
     return `${c.def.civs.map(UI.civName).join('と')}の文明のマナが必要です`;
   }
@@ -330,8 +357,9 @@
     if (!c) return;
     // 見えないカード（相手の手札・シールド・山札）は表示しない
     if ((c.zone === 'hand' && c.owner !== 0 && !(ui.req && ui.req.candidates && ui.req.candidates.includes(uid))) || c.zone === 'shield' || c.zone === 'deck') return;
-    const pw = c.zone === 'battle' ? game.power(c) : undefined;
+    const pw = c.zone === 'battle' && game.isCreature(c) ? game.power(c) : undefined;
     const notes = [];
+    if (c.hyper) notes.push('ハイパーモード中（次の自分のターンのはじめまで）');
     if (c.zone === 'battle') {
       if (c.tapped) notes.push('タップしている');
       if (c.enteredTurn === game.turnNo && c.owner === game.active) notes.push('このターンに出た');
@@ -339,7 +367,7 @@
       if (c.jdProtected) notes.push('ジャストダイバーで守られている');
       if (c.cantAttackTurn === game.turnNo) notes.push('このターン攻撃できない');
     }
-    $('#bt-detail').innerHTML = UI.detailHTML(c.def, { power: pw, note: notes.join('・') });
+    $('#bt-detail').innerHTML = UI.detailHTML(c.def, { power: pw, note: notes.join('・'), hyper: c.hyper });
   }
   function showGrave(pi) {
     const P = game.players[pi];
@@ -380,7 +408,8 @@
       if (g !== game) return;
       if (ev.kind === 'log') addLog(ev);
       if (ev.kind === 'shieldTrigger') { flash('S・トリガー！', 'trigger'); }
-      if (ev.kind === 'move' || ev.kind === 'tap' || ev.kind === 'pay' || ev.kind === 'turn') render();
+      if (ev.kind === 'hyper') flash('ハイパー化！', 'trigger');
+      if (ev.kind === 'move' || ev.kind === 'tap' || ev.kind === 'pay' || ev.kind === 'turn' || ev.kind === 'hyper') render();
     });
     UI.showScreen('battle');
     try {

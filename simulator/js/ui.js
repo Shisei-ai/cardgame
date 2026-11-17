@@ -46,7 +46,10 @@
     if (k.breaker) out.push({ 2: 'W・ブレイカー', 3: 'T・ブレイカー', 4: 'Q・ブレイカー', 99: 'ワールド' }[k.breaker]);
     if (k.slayer) out.push('スレイヤー');
     if (k.gStrike) out.push('G・ストライク');
-    if (ab.triggers.length) out.push('能力あり');
+    if (k.guardman) out.push('ガードマン');
+    if (ab.hyper) out.push('ハイパー化');
+    if (def.spellSide && def.spellSide.name) out.push('ツインパクト');
+    if (ab.triggers.length || ab.handTriggers.length) out.push('能力あり');
     if (ab.spell.length && !k.shieldTrigger) out.push('呪文');
     return out;
   }
@@ -54,7 +57,7 @@
   /**
    * カード1枚のHTML。
    * @param def   カード定義
-   * @param opts  { uid, power（今のパワー）, tapped, cls（追加のクラス）, back（裏向き）, small }
+   * @param opts  { uid, power（今のパワー）, tapped, cls（追加のクラス）, back（裏向き）, small, hyper（ハイパーモード中） }
    */
   function cardHTML(def, opts = {}) {
     const attrs = `${opts.uid != null ? ` data-uid="${opts.uid}"` : ''}${def && def.id ? ` data-id="${esc(def.id)}"` : ''}`;
@@ -62,17 +65,18 @@
     if (opts.back || !def) return `<div class="${cls} back"${attrs}><div class="back-face"></div></div>`;
     const pw = opts.power != null ? opts.power : def.power;
     const pwCls = opts.power != null && def.power != null && opts.power !== def.power ? (opts.power > def.power ? ' up' : ' down') : '';
-    const badges = `${opts.under ? `<span class="under-badge" title="下に重なっているカード">+${opts.under}</span>` : ''}`;
+    const badges = `${opts.under ? `<span class="under-badge" title="下に重なっているカード">+${opts.under}</span>` : ''}${opts.hyper ? '<span class="hyper-badge" title="ハイパーモード中">HYPER</span>' : ''}`;
+    const hasPower = def.type !== 'spell' && def.type !== 'tamaseed';
     if (def.image) {
       return `<div class="${cls} has-img"${attrs}><img src="${def.image}" alt="${esc(def.name)}" draggable="false">
-        ${def.type !== 'spell' && pwCls ? `<span class="pw-badge${pwCls}">${pw}</span>` : ''}${badges}</div>`;
+        ${hasPower && pwCls ? `<span class="pw-badge${pwCls}">${pw}</span>` : ''}${badges}</div>`;
     }
     return `<div class="${cls}"${attrs} style="--civ:${civBackground(def.civs)}">
       <div class="cf">
         <div class="cf-top"><span class="cost">${def.cost != null ? def.cost : '?'}</span><span class="nm">${esc(def.name)}</span></div>
         <div class="cf-type">${esc(SimData.TYPE_BY_KEY[def.type] ? SimData.TYPE_BY_KEY[def.type].name : '')}${def.races && def.races.length ? ' / ' + esc(def.races.join('・')) : ''}</div>
         <div class="cf-kw">${shortKeywords(def).map((k) => `<span>${esc(k)}</span>`).join('')}</div>
-        ${def.type !== 'spell' ? `<div class="pw${pwCls}">${pw != null ? pw : ''}</div>` : '<div class="pw spell">呪文</div>'}
+        ${hasPower ? `<div class="pw${pwCls}">${pw != null ? pw : ''}</div>` : `<div class="pw spell">${def.type === 'tamaseed' ? 'タマシード' : '呪文'}</div>`}
       </div>${badges}</div>`;
   }
 
@@ -81,14 +85,19 @@
     if (!def) return '';
     const ab = TextParser.parse(def.text || '', def.type);
     const lines = TextParser.describe(ab);
-    return `<div class="detail-card">${cardHTML(def, { power: extra.power })}</div>
+    const twin = def.spellSide && def.spellSide.name ? def.spellSide : null;
+    const tab = twin ? TextParser.parse(twin.text || '', 'spell') : null;
+    return `<div class="detail-card">${cardHTML(def, { power: extra.power, hyper: extra.hyper })}</div>
       <div class="detail-info">
         <h3>${esc(def.name)}</h3>
         <p class="meta">${civDots(def.civs)} ${esc((def.civs || []).map(civName).join('/'))}　コスト${def.cost}　${esc((SimData.TYPE_BY_KEY[def.type] || {}).name || '')}
-          ${def.type !== 'spell' ? `　パワー${extra.power != null && extra.power !== def.power ? `<b class="${extra.power > def.power ? 'up' : 'down'}">${extra.power}</b>（元${def.power}）` : def.power}` : ''}</p>
+          ${def.type !== 'spell' && def.type !== 'tamaseed' ? `　パワー${extra.power != null && extra.power !== def.power ? `<b class="${extra.power > def.power ? 'up' : 'down'}">${extra.power}</b>（元${def.power}）` : def.power}` : ''}</p>
         ${def.races && def.races.length ? `<p class="meta">種族：${esc(def.races.join(' / '))}</p>` : ''}
         ${lines.length ? `<ul class="ab-list">${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : '<p class="hint">能力なし</p>'}
         ${ab.unparsed.length ? `<ul class="ab-list ng">${ab.unparsed.map((l) => `<li title="この行は対戦で動きません">⚠ ${esc(l)}</li>`).join('')}</ul>` : ''}
+        ${twin ? `<h4 class="twin-h">呪文側：${esc(twin.name)}（${esc((twin.civs && twin.civs.length ? twin.civs : def.civs).map(civName).join('/'))}・コスト${twin.cost}）</h4>
+          <ul class="ab-list">${TextParser.describe(tab).map((l) => `<li>${esc(l)}</li>`).join('')}</ul>
+          ${tab.unparsed.length ? `<ul class="ab-list ng">${tab.unparsed.map((l) => `<li>⚠ ${esc(l)}</li>`).join('')}</ul>` : ''}` : ''}
         ${extra.note ? `<p class="hint">${esc(extra.note)}</p>` : ''}
       </div>`;
   }

@@ -102,6 +102,8 @@ textarea { resize: vertical; line-height: 1.6; }
 .card.has-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .pw-badge { position: absolute; right: 3cqw; bottom: 3cqw; font-weight: 800; font-size: 14cqw; background: #000c; padding: 0 4cqw; border-radius: 4cqw; }
 .pw-badge.up { color: var(--good); } .pw-badge.down { color: var(--bad); }
+.hyper-badge { position: absolute; right: -4px; top: -7px; background: linear-gradient(90deg, #ff5fd2, #5fd4ff); color: #08101f; font-weight: 800; font-size: 9.5px; letter-spacing: .05em; border-radius: 9px; padding: 0 6px; box-shadow: 0 0 10px #ff5fd2aa; }
+.twin-h { margin: 10px 0 2px; font-size: 13.5px; color: var(--accent2); }
 .under-badge { position: absolute; left: -4px; top: -6px; background: var(--accent2); color: #221500; font-weight: 800; font-size: 11px; border-radius: 9px; padding: 0 6px; box-shadow: 0 1px 3px #000; }
 .card.back { background: linear-gradient(145deg, #23407a, #0f1d3d); padding: calc(var(--cw) * .05); }
 .card .back-face { height: 100%; border-radius: 5cqw; border: 1.5px solid #6fb4ff66;
@@ -145,6 +147,8 @@ textarea { resize: vertical; line-height: 1.6; }
 .ed-parse { background: #0b1324; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; }
 .ed-parse h4 { margin: 2px 0; font-size: 12.5px; color: var(--good); }
 .ed-parse h4.ng { color: var(--bad); }
+.ed-twin-toggle { margin: 4px 0 8px; }
+.ed-twin { border: 1px solid #ffd16655; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: #ffd16608; }
 .ed-help summary { cursor: pointer; color: var(--accent); font-size: 13px; }
 .ed-help ul { font-size: 12.5px; color: var(--muted); padding-left: 18px; }
 .ed-btns { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
@@ -309,6 +313,9 @@ body[data-screen="battle"] { overflow: hidden; }
 .modal-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
 .modal-btns:empty { display: none; }
 .result { font-size: 18px; font-weight: 700; } .result.win { color: var(--good); } .result.lose { color: var(--bad); }
+.opt-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.opt-list .btn.opt { text-align: left; white-space: normal; line-height: 1.5; padding: 10px 14px; }
+.battlezone .card.element { outline: 1px dashed #ffffff55; outline-offset: 2px; }
 .picker { display: flex; flex-wrap: wrap; gap: 10px; max-height: 60vh; overflow: auto; padding: 4px; }
 .pick { background: none; border: 2px solid transparent; border-radius: 10px; padding: 4px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; width: 104px; }
 .pick span { font-size: 11px; text-align: center; line-height: 1.3; }

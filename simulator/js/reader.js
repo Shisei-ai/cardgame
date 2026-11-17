@@ -82,15 +82,25 @@
   const CARD_SCHEMA = {
     type: 'object',
     additionalProperties: false,
-    required: ['name', 'type', 'civs', 'cost', 'power', 'races', 'text', 'box'],
+    required: ['name', 'type', 'civs', 'cost', 'power', 'races', 'text', 'spellSide', 'box'],
     properties: {
       name: { type: 'string', description: 'カード名' },
-      type: { type: 'string', enum: ['creature', 'evolution', 'spell'] },
+      type: { type: 'string', enum: ['creature', 'evolution', 'spell', 'tamaseed'] },
       civs: { type: 'array', items: { type: 'string', enum: ['light', 'water', 'darkness', 'fire', 'nature', 'zero'] } },
       cost: { type: 'integer' },
       power: { type: 'integer', description: '呪文は0' },
       races: { type: 'array', items: { type: 'string' } },
       text: { type: 'string', description: '能力の文章。能力ごとに改行し、行頭に■を付ける' },
+      spellSide: {
+        type: 'object', additionalProperties: false, required: ['name', 'civs', 'cost', 'text'],
+        description: 'ツインパクトの呪文側。ツインパクトでなければ name を空文字にする',
+        properties: {
+          name: { type: 'string' },
+          civs: { type: 'array', items: { type: 'string', enum: ['light', 'water', 'darkness', 'fire', 'nature', 'zero'] } },
+          cost: { type: 'integer' },
+          text: { type: 'string' },
+        },
+      },
       box: {
         type: 'object', additionalProperties: false, required: ['x', 'y', 'w', 'h'],
         description: '画像の中でそのカードが写っている範囲（左上が0,0、右下が1,1の割合）',
@@ -117,14 +127,18 @@
 
 各項目の決まり：
 - name：カード名を正確に。
-- type：クリーチャーは "creature"、進化クリーチャーは "evolution"、呪文は "spell"。
+- type：クリーチャーは "creature"、進化クリーチャーは "evolution"、呪文は "spell"、タマシードは "tamaseed"。
+  ツインパクト（上半分がクリーチャー、下半分が呪文の1枚のカード）は、クリーチャー側をこの項目に、呪文側を spellSide に入れる。
 - civs：文明。光="light"（黄色）、水="water"（青）、闇="darkness"（黒・紫）、火="fire"（赤）、自然="nature"（緑）、無色="zero"。多色カードはすべて入れる。
 - cost：左上などに書かれたコストの数字。
-- power：パワーの数字（例：5000）。呪文や読めない場合は0。
+- power：パワーの数字（例：5000）。呪文・タマシードや読めない場合は0。ハイパー化を持つカードは、左側（通常時）のパワー。
 - races：種族名の配列（カードに書かれている表記のまま）。無ければ空の配列。
 - text：能力の文章を、カードに書かれている通りに書き写す。能力ごとに改行し、各行の先頭に「■」を付ける。
   「ブロッカー」「W・ブレイカー」「S・トリガー」などのキーワード能力も1行ずつ書く。
   キーワードの後ろにある（ ）の注釈文は省略してよい。フレーバーテキスト（物語の文）やイラストレーター名、カード番号は含めない。
+  「次のうちいずれか1つを選ぶ」「次の中から2回選ぶ」の選択肢は、1つずつ改行して行頭に「▶」を付ける。
+  ハイパー化を持つカードは、ハイパーモード中だけの能力の前に「■ハイパーモード パワー11000」（右側のパワー）の1行を入れ、その下にハイパーモードの能力を書く。
+- spellSide：ツインパクトの呪文側（名前・文明・コスト・能力の文章。書き方は text と同じ）。ツインパクトでなければ name を空文字、civs を空配列、cost を0、text を空文字にする。
 - box：画像の中でそのカードが写っている範囲を、画像全体を幅1・高さ1とした割合で（x,y は左上）。
 読めない文字は推測せず、読める範囲で書いてください。カードが写っていなければ cards を空にしてください。`;
 
@@ -242,7 +256,9 @@
     const out = await askClaude(big, CARD_PROMPT, CARDS_SCHEMA);
     const cards = out.cards || [];
     for (const c of cards) {
-      if (c.type === 'spell' || !c.power) c.power = c.type === 'spell' ? null : c.power || 0;
+      if (c.type === 'spell' || c.type === 'tamaseed') c.power = null;
+      else c.power = c.power || 0;
+      if (!c.spellSide || !c.spellSide.name) delete c.spellSide;
       // 1枚だけなら画像全体、複数なら写っている範囲を切り出してカードの画像にする
       c.image = cards.length === 1 ? await resize(imageDataURL, 480) : (c.box && (await crop(imageDataURL, c.box, 480))) || null;
       delete c.box;

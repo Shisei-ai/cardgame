@@ -31,6 +31,7 @@
     { key: 'creature', name: 'クリーチャー' },
     { key: 'evolution', name: '進化クリーチャー' },
     { key: 'spell', name: '呪文' },
+    { key: 'tamaseed', name: 'タマシード' },
   ];
   const TYPE_BY_KEY = Object.fromEntries(TYPES.map((t) => [t.key, t]));
 

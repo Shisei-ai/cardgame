@@ -7,11 +7,12 @@
  * ※ CPUは、見えないはずの情報（相手の手札・シールドの中身・山札の順番）は見ないように作っています。
  */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.CpuAgent = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(typeof self !== 'undefined' ? self : this);
+  else root.CpuAgent = factory(root);
+})(typeof self !== 'undefined' ? self : this, function (root) {
   'use strict';
 
+  const Eng = () => root.Engine || require('./engine.js');
   // 相手にとって「嫌な」効果（相手のカードを選ぶ時は強いものを、自分のカードを選ぶ時は弱いものを選ぶ）
   const HARMFUL = new Set(['destroy', 'toGrave', 'bounce', 'toMana', 'tap', 'lockAttack', 'discard', 'breakShield', 'shieldToGrave', 'manaToGrave', 'manaToHand', 'discardOwn']);
 
@@ -63,7 +64,9 @@
     spellUseful(game, pi, c) {
       const O = game.players[1 - pi];
       const P = game.players[pi];
-      const effects = game.ab(c).spell;
+      const sv = Eng().spellView(c.def);
+      if (!sv) return false;
+      const effects = Eng().abilitiesOf(sv).spell;
       if (!effects.length) return true;
       return effects.some((e) => {
         if (['destroy', 'toGrave', 'bounce', 'toMana', 'tap', 'lockAttack'].includes(e.op) && e.target && e.target.side !== 'self') {
@@ -74,7 +77,8 @@
         if (e.op === 'recover') return (e.from === 'grave' ? P.grave : P.mana).length > 0;
         if (e.op === 'putToBattle') return (e.from === 'grave' ? P.grave : e.from === 'hand' ? P.hand : P.mana).some((x) => x.def.type === 'creature');
         if (e.op === 'manaToGrave' || e.op === 'manaToHand') return O.mana.length > 0;
-        if (e.op === 'draw' || e.op === 'search') return P.deck.length > 5;
+        if (e.op === 'draw' || e.op === 'search' || e.op === 'look' || e.op === 'cycleHand') return P.deck.length > 10;
+        if (e.op === 'choose') return true;
         return true;
       });
     }
@@ -85,7 +89,14 @@
       for (const a of req.actions) {
         if (a.kind === 'toAttack') continue;
         const c = game.card(a.uid);
-        let s = (c.def.cost || 0) * 10 + 5;
+        if (a.kind === 'hyper') {
+          // ハイパー化：タップしても困らない（召喚酔い・攻撃できない）クリーチャーがいる時だけ
+          const spare = game.hyperCandidates(pi, c).filter((x) => x.enteredTurn === game.turnNo || game.kw(x, 'cantAttack'));
+          if (spare.length) { const sh = 4 + game.rng(); if (sh > bestScore) { bestScore = sh; best = a; } }
+          continue;
+        }
+        const useDef = a.kind === 'cast' && c.def.type !== 'spell' ? Eng().spellSideDef(c.def) : c.def;
+        let s = (useDef.cost || 0) * 10 + 5;
         if (a.kind === 'cast' && !this.spellUseful(game, pi, c)) continue;
         if (a.kind === 'summon') s += 3;
         if (c.def.type === 'evolution') s += 6;
@@ -159,6 +170,11 @@
         const mine = c.owner === pi;
         let v = this.value(game, c);
         if (op === 'evoBase') return -v + (c.tapped ? -50 : 0); // 弱く、アンタップしている進化元を選ぶ
+        if (op === 'hyperCost') return -v + (c.enteredTurn === game.turnNo ? 100 : 0); // 召喚酔いのものをタップ
+        if (op === 'cycleHand') return (c.def.cost || 0) - game.players[pi].mana.length; // 重すぎるカードを戻す
+        if (op === 'look') return req.purpose.to === 'hand' ? v : req.purpose.to === 'mana' ? -v + (c.def.civs.length > 1 ? 5 : 0) : -v;
+        if (op === 'castFree') return v;
+        if (op === 'guardman') return -v;
         if (op === 'discardOwn') return -v;                     // 捨てるのは安いカード
         if (op === 'breakShield' || op === 'shieldToGrave') return game.rng(); // シールドの中身は見えない
         if (harmful) return mine ? -v : v;                       // 相手には強いものを、自分には弱いものを
@@ -167,7 +183,15 @@
       const sorted = [...cands].sort((a, b) => score(b) - score(a));
       // 「まで」で選ばなくてもよい時、自分に害がある場合は選ばない
       let n = req.max;
-      if (harmful && req.min === 0) n = sorted.filter((c) => c.owner !== pi).length ? req.max : 0;
+      // 害のある効果で「〜まで」選ぶ時は、相手のカードだけを選ぶ（自分のカードは選ばない）
+      if (harmful && req.min < req.max && op !== 'discardOwn' && op !== 'cycleHand') n = Math.max(req.min, Math.min(req.max, sorted.filter((c) => c.owner !== pi).length));
+      if (op === 'cycleHand') n = sorted.filter((c) => (c.def.cost || 0) > game.players[pi].mana.length + 1).length;
+      if (op === 'guardman') {
+        // ガードマン：攻撃を受けても勝てる（または狙われたクリーチャーの方が大事な）時だけ
+        const att = game.card(req.purpose.attacker), tgt = game.card(req.purpose.target);
+        const g = sorted[0];
+        n = g && (game.power(g) > game.power(att) || this.value(game, tgt) > this.value(game, g) + 10) ? 1 : 0;
+      }
       return sorted.slice(0, Math.max(req.min, n)).map((c) => c.uid);
     }
 
@@ -175,18 +199,70 @@
     on_yesno(game, pi, req) {
       const p = req.purpose || {};
       if (p.op === 'shieldTrigger' || p.op === 'gStrike') return true;
+      if (p.op === 'smashBurst' || p.op === 'attackChance') {
+        const c = game.card(p.uid);
+        return this.spellUseful(game, pi, c);
+      }
       const e = p.effect || {};
       const P = game.players[pi];
-      if (e.op === 'draw' || e.op === 'search') return P.deck.length > 6;
-      if (e.op === 'manaBoost' || e.op === 'addShield') return P.deck.length > 6;
+      if (e.op === 'skipTurn') return game.active !== pi; // 相手のターンだけとばす
+      if (e.op === 'summonSelf') return true;
+      // 山札が少ない時は、引く・マナに置く効果を使わない（山札切れで負けないように）
+      if (e.op === 'draw' || e.op === 'search' || e.op === 'look') return P.deck.length > 10 && P.hand.length < 9;
+      if (e.op === 'manaBoost' || e.op === 'addShield') return P.deck.length > 8;
+      if (e.op === 'recastEvent') return P.deck.length > 10;
       if (e.op === 'discard' && e.side === 'self') return P.hand.length >= 5;
       if (e.target && e.target.side === 'self' && HARMFUL.has(e.op)) return false;
       return true;
     }
 
+    /** 効果の並び（選択肢1つ分）の「うれしさ」 */
+    effectsScore(game, pi, effects) {
+      const P = game.players[pi], O = game.players[1 - pi];
+      let s = 0;
+      for (const e of effects) {
+        switch (e.op) {
+          case 'draw': s += P.deck.length > 14 ? 10 + Math.max(0, 5 - P.hand.length) * 3 : P.deck.length > 8 ? Math.max(0, 4 - P.hand.length) * 3 : -25; break;
+          case 'destroy': case 'bounce': case 'toMana': case 'toGrave': {
+            const f = Object.assign({ type: 'creature' }, (e.target && e.target.filter) || {});
+            const t = O.battle.filter((c) => game.matches(c, f));
+            s += t.length ? 15 + Math.max(...t.map((c) => this.value(game, c))) / 4 : -5;
+            break;
+          }
+          case 'discard': s += e.side === 'opp' ? (O.hand.length ? 9 : 0) : -6; break;
+          case 'addShield': s += P.deck.length < 8 ? -15 : 9; break;
+          case 'manaBoost': s += P.deck.length < 8 ? -15 : P.mana.length < 7 ? 10 : 3; break;
+          case 'recover': s += 3; break;
+          case 'cycleHand': s += 7; break;
+          default: s += 4;
+        }
+      }
+      return s;
+    }
+
+    on_option(game, pi, req) {
+      const p = req.purpose || {};
+      if (p.op === 'choosePlayer') {
+        // 自分の山札が少なければ自分の墓地を戻して山札切れを防ぐ。そうでなければ相手の墓地を消す
+        const me = game.players[pi], op = game.players[1 - pi];
+        if (me.grave.length && (me.deck.length < 10 || !op.grave.length)) return 0;
+        return 1;
+      }
+      if (p.op === 'twinSide') return 1;
+      if (p.op === 'choose' && p.effect) {
+        let best = 0, bestS = -Infinity;
+        p.avail.forEach((optIdx, i) => {
+          const sc = this.effectsScore(game, pi, p.effect.options[optIdx]) + game.rng();
+          if (sc > bestS) { bestS = sc; best = i; }
+        });
+        return best;
+      }
+      return 0;
+    }
+
     on_number(game, pi, req) {
       const P = game.players[pi];
-      return Math.max(req.min, Math.min(req.max, P.deck.length - 6));
+      return Math.max(req.min, Math.min(req.max, P.deck.length - 10, 9 - P.hand.length));
     }
   }
 
