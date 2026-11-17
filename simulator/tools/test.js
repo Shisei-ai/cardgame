@@ -12,7 +12,8 @@
 'use strict';
 const assert = require('assert');
 const TextParser = require('../js/textparser.js');
-const { Game, validateDeck } = require('../js/engine.js');
+const Engine = require('../js/engine.js');
+const { Game, validateDeck } = Engine;
 const CpuAgent = require('../js/ai.js');
 const { CARDS, DECKS } = require('../js/sample-cards.js');
 
@@ -263,6 +264,19 @@ function put(g, pi, id, zone, opts = {}) {
   const ans = (o) => new ScriptAgent(o);
   const fresh = (a0, a1, first = 0) => freshGame([a0 || new CpuAgent(), a1 || new CpuAgent()], null, null, first);
   const castNow = async (g, pi, id) => { const c = put(g, pi, id, 'hand'); await g.castSpell(pi, c, { fromHand: true }); return c; };
+  await check('言い回し：「〜してもよい」は使うか選べる（任意）、言い切りは必ず使う（強制）', async () => {
+    const opt = TextParser.parse('■このクリーチャーが出た時、相手のクリーチャーを1体選び、破壊してもよい。', 'creature').triggers[0].effects[0];
+    const must = TextParser.parse('■このクリーチャーが出た時、相手のクリーチャーを1体選び、破壊する。', 'creature').triggers[0].effects[0];
+    assert.strictEqual(opt.optional, true); assert.ok(!must.optional);
+    // 強制のターン飛ばしは質問せずに実行、任意のものは使うかどうか聞かれる
+    let asked = 0;
+    const g = fresh(ans({ yesno: () => { asked++; return false; } }));
+    const watcher = put(g, 0, 'vigil', 'battle');
+    await assert.rejects(g.resolveEffects(0, TextParser.parse(byId.s_observer.text, 'creature').triggers[0].effects, watcher), (e) => e instanceof Engine.SkipTurn);
+    assert.strictEqual(asked, 0, '強制なので聞かれない');
+    await g.resolveEffects(0, TextParser.parse(byId.s_vigil.text, 'creature').triggers.find((t) => t.when === 'oppCastSpell').effects, watcher);
+    assert.strictEqual(asked, 1, '任意なので聞かれ、「いいえ」ならとばさない');
+  });
   await check('選択（次のうちいずれか1つ）：手札を1枚捨ててから、選んだ方だけ実行する', async () => {
     const g = fresh(ans({ option: () => 1 }));
     const t = put(g, 1, 'golm', 'battle'); // 5000
@@ -341,16 +355,19 @@ function put(g, pi, id, zone, opts = {}) {
     const evo = Object.assign({}, byId.s_zelga, { id: 's_test_evo', text: '■進化－自分の《魔導紋》1体の上に置く。' });
     assert.ok(g.evolutionBases(0, evo).includes(t));
   });
-  await check('ハイパー化：他のクリーチャーをタップしてパワーとW・ブレイカーが上がり、次の自分のターンのはじめに戻る', async () => {
+  await check('ハイパー化：他のクリーチャーをタップするとパワーが上がり、ハイパーモードの能力が加わる（W・ブレイカーは元から）', async () => {
     const g = fresh();
     const L = put(g, 0, 'lunaris', 'battle');
     const other = put(g, 0, 'golm', 'battle');
     assert.ok(g.mainActions(0).some((a) => a.kind === 'hyper' && a.uid === L.uid));
     assert.strictEqual(g.power(L), 5000);
+    assert.strictEqual(g.kw(L, 'breaker'), 2, 'ハイパーモードでなくてもW・ブレイカー');
+    assert.ok(!g.ab(L).triggers.some((t) => t.when === 'selfCastFromHand'), '再詠唱はハイパーモード中だけ');
     await g.activateHyper(0, L);
     assert.ok(other.tapped);
     assert.strictEqual(g.power(L), 10000);
     assert.strictEqual(g.kw(L, 'breaker'), 2);
+    assert.ok(g.ab(L).triggers.some((t) => t.when === 'selfCastFromHand'));
     g.turnNo++; g.active = 1; // 相手のターン（まだ続く）
     assert.ok(L.hyper);
     g.active = 0; L.hyper = L.hyper; // 自分のターンのはじめは playTurn が戻す
