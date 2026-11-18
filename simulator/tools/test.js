@@ -688,6 +688,187 @@ function put(g, pi, id, zone, opts = {}) {
     assert.strictEqual(g.winner, null);
   });
 
+
+  console.log('\n[3d] NEO進化・超魂・コストの変化・相手の行動の禁止など（テスト用の架空カード）');
+  const T = (id, name, type, civs, cost, power, races, text, extra) => { const d = Object.assign({ id: 's_t_' + id, name, type, civs, cost, power, races, text }, extra || {}); byId[d.id] = d; return d; };
+  T('neo', '試験のNEO天使', 'creature', ['light'], 7, 10000, ['エンジェル・コマンド'], '■NEO進化：光のクリーチャー1体の上に置いてもよい。\n■超魂レイド\n■W・ブレイカー\n■相手は光ではない呪文を唱えられない。\n■このクリーチャーが攻撃する時、このクリーチャーに含まれるカード1枚につき、カードを1枚引いてもよい。');
+  T('double', '試験の二重共鳴', 'creature', ['light'], 11, 15000, ['エンジェル・コマンド'], '■ダブル・シンパシー：エンジェル・コマンド\n■自分のマナゾーンにエンジェル・コマンド・カードが3枚以上あれば、このクリーチャーを9支払って召喚してもよい。');
+  T('seed', '試験の天宝', 'tamaseed', ['light'], 2, null, ['エンジェル・コマンド・ドラゴン'], '■シンカライズ\n■各ターンに一度、自分のコマンド・カードを実行するコストを1少なくしてもよい。ただし、コストは0以下にはならない。');
+  T('soul', '試験の魂', 'creature', ['nature'], 5, 5000, ['妖精'], '■超魂X\n■自分のターンに一度、クリーチャーを1体、自分のマナゾーンから召喚してもよい。');
+  T('mana', '試験のマナ竜', 'evolution', ['light', 'nature'], 6, 12000, ['エンジェル・コマンド・ドラゴン'], '■このクリーチャーを、自分のマナゾーンから召喚してもよい。\n■進化：光または自然のクリーチャー1体の上に置く。\n■このクリーチャーが出た時、エレメントを1つ選び、シールド化してもよい。\n■自分の他のクリーチャーすべてのパワーを+6000し、「パワード・ブレイカー」を与える。');
+  T('lord', '試験の支配者', 'creature', ['light'], 7, 9000, ['エンジェル・コマンド'], '■相手は各ターン合計2回までしか、クリーチャーを召喚したり呪文を唱えたりできない。\n■このクリーチャーが離れる時、そのパワーが0より大きければ、離れるかわりにとどまる。',
+    { spellSide: { name: '試験の充填', civs: ['light'], cost: 3, text: '■自分の山札の上から3枚を表向きにする。その中から、エンジェル・コマンドをすべて手札に加え、残りを好きな順序で山札の下に置く。\n■チャージャー' } });
+  T('thunder', '試験の雷王', 'creature', ['light'], 7, 8000, ['エンジェル・コマンド'], '■クリーチャーがバトルゾーンに出た時、バトルゾーンにある自分のクリーチャーを好きな数アンタップしてもよい。こうしてアンタップしたクリーチャーはそのターン、「ブロッカー」を得る。');
+  T('stella', '試験の騎令嬢', 'creature', ['water'], 6, 8000, ['エンジェル・コマンド'], '■相手がカードを実行した時、自分はカードを1枚引いてもよい。このターン、相手のクリーチャーは攻撃できない。');
+  T('ban', '試験の封印竜', 'creature', ['light', 'water'], 7, 7000, ['エンジェル・コマンド・ドラゴン'], '■このクリーチャーが出た時、次の相手のターンの終わりまで、相手は呪文を唱えられない。');
+  T('uniq', '試験の唯一', 'creature', ['light'], 3, 3000, ['天使'], '■自分の同名のDMRは2つ以上出せない。');
+  T('peek', '試験のおつかい', 'spell', ['water'], 3, null, [], '■自分の山札の上から3枚を、すべてのプレイヤーに見せる。その中から光と闇のカードをすべて自分の手札に加え、残りを墓地に置く。');
+  T('fairy', '試験の妖精', 'creature', ['light'], 2, 3000, ['妖精'], '■各ターンに一度、自分の光、水、または自然のクリーチャーの召喚コストを1少なくしてもよい。ただし、コストは0以下にはならない。');
+  await check('テスト用カードの文章がすべて読める', () => {
+    for (const d of Object.values(byId).filter((x) => x.id.startsWith('s_t_'))) {
+      for (const side of [d, d.spellSide && Object.assign({ type: 'spell' }, d.spellSide)].filter(Boolean)) assert.deepStrictEqual(TextParser.parse(side.text, side.type).unparsed, [], side.name);
+    }
+  });
+  await check('NEO進化：普通に出すと召喚酔い／光のクリーチャーの上に重ねるとすぐ攻撃できる', async () => {
+    const g = fresh(ans({ yesno: (game, req) => (req.purpose.op === 'neo' ? false : undefined), target: (game, req) => (req.purpose.op === 'soulRaid' ? [] : undefined) }));
+    const a = put(g, 0, 't_neo', 'hand');
+    await g.putCreature(0, a, await g.askNeoBase(0, a), '召喚した', { summoned: true });
+    assert.deepStrictEqual(g.attackTargets(a), [], '重ねなければ召喚酔い');
+    const g2 = fresh(ans({ yesno: () => true, target: (game, req) => (req.purpose.op === 'soulRaid' ? [] : [req.candidates[0]]) }));
+    const base = put(g2, 0, 'alba', 'battle');
+    const b = put(g2, 0, 't_neo', 'hand');
+    await g2.putCreature(0, b, await g2.askNeoBase(0, b), '召喚した', { summoned: true });
+    assert.deepStrictEqual(b.under, [base]);
+    assert.ok(g2.attackTargets(b).includes('player'));
+  });
+  await check('超魂レイド：山札の上3枚から進化元になれるカードを下に置き、すぐ攻撃できる／含まれるカードの数だけ引ける', async () => {
+    const g = fresh(ans({ yesno: () => true, target: (game, req) => (req.purpose.op === 'soulRaid' ? req.candidates.slice(0, 1) : undefined) }));
+    const P = g.players[0];
+    for (let i = 0; i < 3; i++) put(g, 0, 'alba', 'deck'); // 山札の上に置く
+    const a = put(g, 0, 't_neo', 'hand');
+    await g.putCreature(0, a, null, '出した');
+    assert.strictEqual(a.under.length, 1);
+    assert.ok(g.attackTargets(a).includes('player'));
+    for (const s of [...g.players[1].shields]) g.move(s, 'grave'); put(g, 1, 'golm', 'shield'); put(g, 1, 'golm', 'shield'); put(g, 1, 'golm', 'shield');
+    const h = P.hand.length;
+    await g.attack(a, 'player');
+    assert.strictEqual(P.hand.length, h + 2, '自分＋下の1枚＝2枚引いた');
+  });
+  await check('超魂X：下にあるカードの能力を上のクリーチャーが得る（マナゾーンから召喚、自分のターンに一度）', async () => {
+    const g = fresh();
+    const P = g.players[0];
+    const top = put(g, 0, 'alba', 'battle');
+    assert.ok(!g.mainActions(0).some((x) => x.fromMana));
+    const soul = put(g, 0, 't_soul', 'grave'); g.move(soul, 'grave');
+    const arr = P.grave; arr.splice(arr.indexOf(soul), 1); soul.zone = 'under'; top.under.push(soul);
+    while (P.mana.length < 6) put(g, 0, 'pipi', 'mana');
+    for (const m of P.mana) m.tapped = false;
+    const golm = put(g, 0, 'golm', 'mana'); golm.tapped = false;
+    const acts = g.mainActions(0).filter((x) => x.fromMana);
+    assert.ok(acts.some((x) => x.uid === golm.uid));
+    await g.playCard(0, golm, 'main', acts.find((x) => x.uid === golm.uid));
+    assert.strictEqual(golm.zone, 'battle');
+    assert.ok(!g.mainActions(0).some((x) => x.fromMana && x.via !== 'self'), 'このターンはもう使えない');
+  });
+  await check('自分の能力でマナゾーンから召喚（進化）／出た時にエレメントをシールド化／他のクリーチャーのパワー+6000とパワード・ブレイカー', async () => {
+    const g = fresh(ans({ yesno: () => true, target: (game, req) => [req.candidates.find((u) => game.card(u).owner === 1) || req.candidates[0]] }));
+    const P = g.players[0];
+    const base = put(g, 0, 'golm', 'battle'); // 自然のクリーチャー
+    const ally = put(g, 0, 'alba', 'battle');
+    const m = put(g, 0, 't_mana', 'mana'); m.tapped = false;
+    for (const x of [...P.mana]) if (x !== m) g.move(x, 'grave');
+    for (let i = 0; i < 6; i++) { const x = put(g, 0, i % 2 ? 'pipi' : 'alba', 'mana'); x.tapped = false; }
+    const act = g.mainActions(0).find((x) => x.uid === m.uid && x.fromMana);
+    assert.ok(act);
+    const t = put(g, 1, 'garo', 'battle');
+    await g.playCard(0, m, 'main', act);
+    assert.strictEqual(m.zone, 'battle'); assert.deepStrictEqual(m.under, [base]);
+    assert.strictEqual(t.zone, 'shield', '相手のクリーチャーをシールド化');
+    assert.strictEqual(g.power(ally), 9000);
+    for (const s of [...g.players[1].shields]) g.move(s, 'grave'); for (let i = 0; i < 4; i++) put(g, 1, 'golm', 'shield');
+    ally.enteredTurn = 0;
+    await g.attack(ally, 'player');
+    assert.strictEqual(g.players[1].shields.length, 2, 'パワー9000：パワード・ブレイカーで2枚');
+  });
+  await check('ダブル・シンパシー（エレメント1つにつき2少なく、タマシードも数える）と、条件つきの別のコスト', async () => {
+    const g = fresh();
+    const P = g.players[0];
+    for (const m of [...P.mana]) g.move(m, 'grave');
+    const d = put(g, 0, 't_double', 'hand');
+    assert.strictEqual(g.costOf(0, d), 11);
+    put(g, 0, 't_seed', 'battle'); put(g, 0, 't_neo', 'battle');
+    assert.strictEqual(g.costOf(0, d), 6, '11 - 2×2 - 1（天宝の軽減）');
+    for (let i = 0; i < 3; i++) put(g, 0, 't_neo', 'mana');
+    assert.strictEqual(g.costOf(0, d), 4, '別のコスト9 - 4 - 1');
+  });
+  await check('各ターンに一度のコスト軽減：使ったら、そのターンの2枚目には掛からない', async () => {
+    const g = fresh();
+    const P = g.players[0];
+    put(g, 0, 't_fairy', 'battle');
+    while (P.mana.length < 10) put(g, 0, 'alba', 'mana');
+    for (const m of P.mana) m.tapped = false;
+    const a = put(g, 0, 'serafina', 'hand'), b = put(g, 0, 'serafina', 'hand');
+    assert.strictEqual(g.costOf(0, a), 3);
+    await g.playCard(0, a);
+    assert.strictEqual(g.costOf(0, b), 4);
+    g.turnNo++;
+    assert.strictEqual(g.costOf(0, b), 3, '次のターンはまた使える');
+  });
+  await check('相手は光ではない呪文を唱えられない／出た時から次の相手のターンの終わりまで呪文を唱えられない', async () => {
+    const g = fresh();
+    put(g, 0, 't_neo', 'battle');
+    assert.ok(!g.canCast(1, byId.s_whirl), '水の呪文は唱えられない');
+    assert.ok(g.canCast(1, byId.s_flashpray), '光の呪文は唱えられる');
+    const g2 = fresh();
+    await g2.putCreature(0, put(g2, 0, 't_ban', 'hand'), null, '召喚した', { summoned: true });
+    assert.ok(!g2.canCast(1, byId.s_flashpray));
+    g2.turnNo += 1; assert.ok(!g2.canCast(1, byId.s_flashpray), '次の相手のターンも');
+    g2.turnNo += 1; assert.ok(g2.canCast(1, byId.s_flashpray), 'その次からは唱えられる');
+  });
+  await check('相手は各ターン合計N回までしか召喚・呪文を使えない', async () => {
+    const g = fresh(null, null, 1);
+    g.active = 1;
+    put(g, 0, 't_lord', 'battle');
+    const O = g.players[1];
+    while (O.mana.length < 12) put(g, 1, 'pipi', 'mana');
+    for (const m of O.mana) m.tapped = false;
+    O.usesThisTurn = 0;
+    await g.playCard(1, put(g, 1, 'pipi', 'hand'));
+    await g.playCard(1, put(g, 1, 'pipi', 'hand'));
+    assert.ok(!g.mainActions(1).some((a) => a.kind === 'summon' || a.kind === 'cast'), '3回目はできない');
+  });
+  await check('離れるかわりにとどまる（パワーが0より大きい間）／パワーが0以下なら破壊される', async () => {
+    const g = fresh();
+    const L = put(g, 0, 't_lord', 'battle');
+    await g.destroyCards([L]); assert.strictEqual(L.zone, 'battle');
+    await g.doEffect(1, TextParser.parseSentence('相手のクリーチャーを1体選び、持ち主の手札に戻す'), put(g, 1, 'golm', 'battle'));
+    assert.strictEqual(L.zone, 'battle');
+    L.tempPower = -9000; await g.checkState();
+    assert.strictEqual(L.zone, 'grave');
+  });
+  await check('表向きにして条件に合うカードをすべて手札に（種族・文明）／チャージャーで唱えた後マナへ', async () => {
+    const g = fresh();
+    const P = g.players[0];
+    const c = put(g, 0, 't_lord', 'hand');
+    for (const id of ['t_neo', 'golm', 't_neo']) put(g, 0, id, 'deck');
+    const h = P.hand.length, m = P.mana.length;
+    await g.castSpell(0, c, { fromHand: true });
+    assert.strictEqual(P.hand.length, h - 1 + 2, '唱えた1枚が出て、エンジェル・コマンド2枚が入る');
+    assert.strictEqual(c.zone, 'mana'); assert.strictEqual(P.mana.length, m + 1);
+    const g2 = fresh();
+    const P2 = g2.players[0];
+    for (const id of ['alba', 'imp', 'golm']) put(g2, 0, id, 'deck');
+    const h2 = P2.hand.length, gr = P2.grave.length;
+    await castNow(g2, 0, 't_peek');
+    assert.strictEqual(P2.hand.length, h2 + 2, '光と闇の2枚'); assert.strictEqual(P2.grave.length, gr + 2, '残り1枚と呪文');
+  });
+  await check('クリーチャーが出た時（自分も含む・相手のでも）：好きな数アンタップし、そのターン「ブロッカー」を得る', async () => {
+    const g = fresh();
+    const a = put(g, 0, 'golm', 'battle', { tapped: true });
+    assert.ok(!g.kw(a, 'blocker'));
+    await g.putCreature(0, put(g, 0, 't_thunder', 'hand'), null, '召喚した', { summoned: true });
+    assert.ok(!a.tapped); assert.ok(g.kw(a, 'blocker'));
+    g.turnNo++; assert.ok(!g.kw(a, 'blocker'), '次のターンには消える');
+  });
+  await check('相手がカードを使った時：カードを引け、そのターン相手のクリーチャーは攻撃できない', async () => {
+    const g = fresh(null, ans({ yesno: () => true }), 0);
+    put(g, 1, 't_stella', 'battle');
+    const a = put(g, 0, 'golm', 'battle');
+    assert.ok(g.attackTargets(a).length);
+    const h = g.players[1].hand.length;
+    await g.putCreature(0, put(g, 0, 'pipi', 'hand'), null, '召喚した', { summoned: true });
+    assert.strictEqual(g.players[1].hand.length, h + 1);
+    assert.deepStrictEqual(g.attackTargets(a), []);
+  });
+  await check('同名は2つ以上出せない', async () => {
+    const g = fresh();
+    await g.putCreature(0, put(g, 0, 't_uniq', 'hand'), null, '召喚した', { summoned: true });
+    const b = put(g, 0, 't_uniq', 'hand');
+    assert.ok(!g.canEnter(0, b));
+    await g.putCreature(0, b, null, '召喚した', { summoned: true });
+    assert.strictEqual(b.zone, 'hand');
+  });
+
   console.log(`\n[4] 大量の対戦（${GAMES}戦ずつ）`);
   for (const [label, mk] of [['CPU 対 CPU', () => new CpuAgent()], ['ランダム 対 ランダム', () => new RandomAgent()]]) {
     await check(label + '：エラー・無限ループ・カードの消失なし', async () => {

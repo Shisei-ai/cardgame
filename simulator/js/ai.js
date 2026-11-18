@@ -171,6 +171,7 @@
         let v = this.value(game, c);
         if (op === 'evoBase') return -v + (c.tapped ? -50 : 0); // 弱く、アンタップしている進化元を選ぶ
         if (op === 'hyperCost') return -v + (c.enteredTurn === game.turnNo ? 100 : 0); // 召喚酔いのものをタップ
+        if (op === 'untapBlocker') return v;
         if (op === 'cycleHand') return (c.def.cost || 0) - game.players[pi].mana.length; // 重すぎるカードを戻す
         if (op === 'look') return req.purpose.to === 'hand' ? v : req.purpose.to === 'mana' ? -v + (c.def.civs.length > 1 ? 5 : 0) : -v;
         if (op === 'castFree') return v;
@@ -203,7 +204,7 @@
     // ── 「〜してもよい」
     on_yesno(game, pi, req) {
       const p = req.purpose || {};
-      if (p.op === 'shieldTrigger' || p.op === 'gStrike' || p.op === 'ninjaStrike' || p.op === 'rev0') return true;
+      if (p.op === 'shieldTrigger' || p.op === 'gStrike' || p.op === 'ninjaStrike' || p.op === 'rev0' || p.op === 'neo') return true;
       if (p.op === 'escape') return game.players[pi].shields.length >= 3 || this.value(game, game.card(p.uid)) >= 60;
       if (p.op === 'smashBurst' || p.op === 'attackChance') {
         const c = game.card(p.uid);

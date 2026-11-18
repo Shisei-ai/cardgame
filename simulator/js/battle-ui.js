@@ -113,8 +113,10 @@
         for (const a of req.actions) if (a.uid) out.selectable.add(a.uid);
         const n = req.actions.length - 1;
         const hyper = req.actions.some((a) => a.kind === 'hyper');
-        out.prompt = n ? `メイン：光っているカードを使えます（クリックで召喚／呪文${hyper ? '／バトルゾーンのクリーチャーはハイパー化' : ''}）` : 'メイン：今使えるカードはありません';
+        const fromMana = req.actions.filter((a) => a.fromMana);
+        out.prompt = n ? `メイン：光っているカードを使えます（クリックで召喚／呪文${hyper ? '／バトルゾーンのクリーチャーはハイパー化' : ''}${fromMana.length ? '／「マナから召喚」も使えます' : ''}）` : 'メイン：今使えるカードはありません';
         out.buttons.push({ label: '攻撃へ進む ▶', act: 'toAttack', cls: 'primary' });
+        if (fromMana.length) out.buttons.push({ label: `マナから召喚（${fromMana.length}）`, act: 'manaSummon' });
         break;
       }
       case 'attack': {
@@ -166,7 +168,7 @@
     const cls = [extra.cls || ''];
     if (it.selectable.has(c.uid)) cls.push('sel');
     if (it.picked.has(c.uid)) cls.push('picked');
-    if (c.zone === 'battle' && game.isCreature(c) && c.enteredTurn === game.turnNo && c.owner === game.active && !game.kw(c, 'speedAttacker') && c.def.type !== 'evolution') cls.push('sick');
+    if (c.zone === 'battle' && game.isCreature(c) && c.enteredTurn === game.turnNo && c.owner === game.active && !game.kw(c, 'speedAttacker') && !game.isEvolvedNow(c)) cls.push('sick');
     if (c.zone === 'battle' && !game.isCreature(c)) cls.push('element');
     if (c.jdProtected) cls.push('protected');
     if (c.equippedTo) cls.push('equipped');
@@ -356,6 +358,19 @@
       default:
     }
   }
+  /** マナゾーンから召喚できるカードを一覧から選んでもらう */
+  async function chooseManaSummon(req) {
+    const acts = req.actions.filter((a) => a.fromMana);
+    let picked = null;
+    await UI.modal({
+      title: 'マナゾーンから召喚', wide: true,
+      html: `<p>マナゾーンから召喚するクリーチャーを選んでください（コストは残りのマナで払います）。</p>
+        <div class="picker">${acts.map((a, i) => { const c = game.card(a.uid); return `<button class="pick" data-i="${i}">${UI.cardHTML(c.def)}<span>${esc(c.def.name)}（コスト${game.costOf(0, c)}）</span></button>`; }).join('')}</div>`,
+      buttons: [{ label: 'やめる', value: null }],
+      onOpen(m, close) { m.addEventListener('click', (e) => { const b = e.target.closest('.pick'); if (b) { picked = acts[+b.dataset.i]; close(true); } }); },
+    });
+    if (picked && ui.req === req) answer(picked);
+  }
   /** 同じカードで複数の使い方がある時（ツインパクトの両面）に選んでもらう */
   async function chooseAction(req, c, acts) {
     const sv = Engine.spellSideDef(c.def);
@@ -389,6 +404,7 @@
     else if (act === 'confirmSel') answer([...ui.sel]);
     else if (act === 'emptySel') answer([]);
     else if (act === 'autoSel') answer(req.candidates.slice(0, req.max));
+    else if (act === 'manaSummon') chooseManaSummon(req);
   }
 
   function showDetail(uid) {

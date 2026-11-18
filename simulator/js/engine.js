@@ -192,18 +192,24 @@
      */
     ab(c) {
       const base = abilitiesOf(c.def);
-      if (!c.hyper || !base.hyper) return base;
-      const h = base.hyper;
+      const extra = [];
+      if (c.hyper && base.hyper) extra.push(base.hyper);
+      // 超魂X：下に重なっているカードの「超魂X」の能力も、このクリーチャーが持つ
+      if (c.zone === 'battle') for (const u of c.under || []) { const sx = abilitiesOf(u.def).soulX; if (sx) extra.push(sx); }
+      if (!extra.length) return base;
       return Object.assign({}, base, {
-        keywords: Object.assign({}, base.keywords, h.keywords),
-        triggers: [...base.triggers, ...h.triggers],
-        statics: [...base.statics, ...h.statics],
+        keywords: Object.assign({}, base.keywords, ...extra.map((x) => x.keywords)),
+        triggers: [...base.triggers, ...extra.flatMap((x) => x.triggers)],
+        statics: [...base.statics, ...extra.flatMap((x) => x.statics)],
       });
     }
+    /** 進化クリーチャーとして扱うか（進化クリーチャー、または下にカードがあるNEOクリーチャーなど）。召喚酔いしない */
+    isEvolvedNow(c) { return c.def.type === 'evolution' || (c.under && c.under.length > 0); }
     /** キーワード能力（他のカードから与えられたものも含む） */
     kw(c, name) {
       const own = this.ab(c).keywords[name];
       if (own) return own;
+      if (name === 'blocker' && c.tempBlockerTurn === this.turnNo) return true;
       if (c.zone !== 'battle' || this._granting) return own;
       this._granting = true; // 与える効果の条件を調べる間に、もう一度ここが呼ばれて止まらなくなるのを防ぐ
       try {
@@ -320,9 +326,9 @@
      * そのカードを使うためにタップするマナを探す。払えなければ null。
      * まず「必要な文明」を1枚ずつ割り当て（多色カードはなるべく温存）、残りを他のカードで埋める。
      */
-    findPayment(pi, def, costOverride) {
+    findPayment(pi, def, costOverride, exclude) {
       const P = this.players[pi];
-      const untapped = P.mana.filter((c) => !c.tapped);
+      const untapped = P.mana.filter((c) => !c.tapped && c !== exclude);
       const need = (def.civs || []).filter((k) => k !== 'zero');
       let cost = costOverride != null ? costOverride : def.cost || 0;
       if (cost > 0 && need.length > cost) cost = need.length; // 文明の数より少なくはタップできない
@@ -350,38 +356,93 @@
       const pay = [...used, ...rest.slice(0, cost - used.size)];
       return pay.length === cost ? pay : null;
     }
-    canPay(pi, def, card) { return !!this.findPayment(pi, def, card ? this.costOf(pi, card, def) : undefined); }
+    canPay(pi, def, card) { return !!this.findPayment(pi, def, card ? this.costOf(pi, card, def) : undefined, card && card.zone === 'mana' ? card : undefined); }
 
     /**
      * 実際に払うコスト（コストを減らす・増やす効果を反映）。
      * 減らす効果ではコストは1より少なくならない（元が0のものは0のまま）
      */
-    costOf(pi, c, useDef = c.def) {
-      const base = useDef.cost || 0;
-      let reduce = 0, add = 0;
+    costOf(pi, c, useDef = c.def) { return this.costDetail(pi, c, useDef).cost; }
+    /**
+     * 実際に払うコストと、使った「各ターンに一度」の軽減の元のカード
+     *   ・別のコスト（「〜あれば、5支払って召喚してもよい」）が安ければそちら
+     *   ・シンパシー（自分の〜1体／1つにつき少なく）、コストを減らす・増やす常在効果
+     *   ・減らす効果ではコストは1より少なくならない（元が0のものは0のまま）
+     */
+    costDetail(pi, c, useDef = c.def) {
       const ab = abilitiesOf(useDef);
-      if (ab.selfCost) reduce += ab.selfCost.amount * this.players[pi].battle.filter((x) => this.isCreature(x) && this.matches(x, ab.selfCost.filter)).length;
+      let base = useDef.cost || 0;
+      if (ab.altCost && useDef === c.def && this.checkCond(pi, ab.altCost.cond, c)) base = Math.min(base, ab.altCost.cost);
+      let reduce = 0, add = 0;
+      const once = [];
+      if (ab.selfCost) {
+        const els = this.players[pi].battle.filter((x) => (ab.selfCost.unit === 'element' || this.isCreature(x)) && this.matches(x, Object.assign({}, ab.selfCost.filter, { type: null })));
+        reduce += ab.selfCost.amount * els.length;
+      }
       for (const Q of this.players) {
         for (const src of Q.battle) {
           for (const st of this.ab(src).statics) {
             if (st.kind !== 'costMod') continue;
             if ((st.side === 'self') !== (src.owner === pi)) continue;
+            if (st.once && src.costOnceTurn === this.turnNo) continue; // 「各ターンに一度」はもう使った
             const f = st.filter || {};
             if (f.type === 'spell' && useDef.type !== 'spell') continue;
             if (f.type === 'creature' && !isCreatureDef(useDef)) continue;
             if (!this.defMatches(useDef, f)) continue;
-            if (st.amount < 0) reduce -= st.amount; else add += st.amount;
+            if (st.amount < 0) { reduce -= st.amount; if (st.once) once.push(src); } else add += st.amount;
           }
         }
       }
       let cost = base - reduce;
       if (reduce && base > 0) cost = Math.max(1, cost);
-      return Math.max(0, cost + add);
+      return { cost: Math.max(0, cost + add), once };
+    }
+
+    // ───────────── 相手の行動の禁止 ─────────────
+    /** その呪文を唱えられるか（相手の「呪文を唱えられない」・回数の制限） */
+    canCast(pi, sdef) {
+      const P = this.players[pi];
+      if (P.banSpellsUntil != null && this.turnNo <= P.banSpellsUntil) return false;
+      for (const src of this.players[this.opp(pi)].battle) {
+        for (const st of this.ab(src).statics) {
+          if (st.kind !== 'banSpells') continue;
+          if (st.exceptCivs.length && st.exceptCivs.some((k) => (sdef.civs || []).includes(k))) continue;
+          return false;
+        }
+      }
+      return this.canUseMore(pi);
+    }
+    /** 「相手は各ターン合計N回までしか、召喚したり呪文を唱えたりできない」の残り */
+    canUseMore(pi) {
+      let limit = Infinity;
+      for (const src of this.players[this.opp(pi)].battle) for (const st of this.ab(src).statics) if (st.kind === 'useLimit') limit = Math.min(limit, st.n);
+      return (this.players[pi].usesThisTurn || 0) < limit;
+    }
+    /** バトルゾーンに出せるか（「同名は2つ以上出せない」） */
+    canEnter(pi, c) {
+      if (!abilitiesOf(c.def).keywords.unique) return true;
+      return !this.players[pi].battle.some((x) => x !== c && x.def.name === c.def.name);
+    }
+    /** マナゾーンから召喚できるか（そのカード自身の能力、または「自分のターンに一度」の能力を持つクリーチャー） */
+    manaSummonSource(pi, c) {
+      if (!isCreatureDef(c.def) || isHyperDef(c.def) || isGrDef(c.def)) return null;
+      if (abilitiesOf(c.def).manaSummonSelf) return 'self';
+      if (this.active !== pi) return null;
+      return this.players[pi].battle.find((src) => src.manaSummonTurn !== this.turnNo && this.ab(src).statics.some((st) => st.kind === 'manaSummon')) || null;
+    }
+    /** NEO進化：進化元にできるクリーチャーがいれば、上に置くかどうか聞く。置く進化元（置かなければ null）を返す */
+    async askNeoBase(pi, c) {
+      if (!abilitiesOf(c.def).neo) return null;
+      const bases = this.evolutionBases(pi, c.def);
+      if (!bases.length) return null;
+      if (!(await this.askYesNo(pi, `NEO進化：${c.def.name}をクリーチャーの上に重ねて出しますか？（重ねると召喚酔いせず、すぐ攻撃できる）`, { op: 'neo', uid: c.uid }))) return null;
+      const [b] = await this.chooseCards(pi, bases, 1, 1, `${c.def.name}の進化元を選んでください`, { op: 'evoBase' });
+      return b || null;
     }
 
     /** 進化元にできる自分のクリーチャー（シンカライズを持つタマシードも） */
     evolutionBases(pi, def) {
-      const evo = abilitiesOf(def).evolution || { civs: [], races: [] };
+      const evo = abilitiesOf(def).evolution || abilitiesOf(def).neo || { civs: [], races: [] };
       return this.players[pi].battle.filter((c) => {
         if (!this.isCreature(c) && !this.kw(c, 'sinkarize')) return false;
         if (evo.civs.length && !evo.civs.some((k) => c.def.civs.includes(k))) return false;
@@ -458,7 +519,7 @@
       for (const P of this.players) for (const c of P.battle) if (this.isCreature(c) && this.power(c) <= 0) dead.push(c);
       if (dead.length) {
         for (const c of dead) this.say(`${this.nameOf(c)}はパワーが0以下になり破壊された`, c.owner);
-        await this.destroyCards(dead);
+        await this.destroyCards(dead, 'rule');
       }
     }
 
@@ -477,6 +538,7 @@
       const pi = this.active;
       const P = this.players[pi];
       P.charged = false;
+      for (const Q of this.players) Q.usesThisTurn = 0; // 「各ターン合計N回まで」の数え直し
       this.skipAfterAttack = false;
       let skipped = false;
       try {
@@ -515,7 +577,7 @@
           const act = actions.find((a) => ans && a.kind === ans.kind && a.uid === ans.uid) || { kind: 'toAttack' };
           if (act.kind === 'toAttack') break;
           if (act.kind === 'hyper') await this.activateHyper(pi, this.card(act.uid));
-          else await this.playCard(pi, this.card(act.uid), act.kind === 'cast' ? 'spell' : 'main', { free: !!act.free });
+          else await this.playCard(pi, this.card(act.uid), act.kind === 'cast' ? 'spell' : 'main', { free: !!act.free, fromMana: !!act.fromMana, via: act.via });
           await this.settle();
         }
         // ── 攻撃
@@ -560,9 +622,11 @@
     mainActions(pi) {
       const P = this.players[pi];
       const acts = [];
+      const canSummon = this.canUseMore(pi);
       for (const c of P.hand) {
         const d = c.def;
-        const usable = d.type !== 'evolution' || this.evolutionBases(pi, d).length > 0;
+        let usable = d.type !== 'evolution' || this.evolutionBases(pi, d).length > 0;
+        if (d.type === 'spell' ? !this.canCast(pi, d) : !canSummon || !this.canEnter(pi, c)) usable = false;
         if (this.canPay(pi, d, c) && usable) {
           if (d.type === 'creature' || d.type === 'tamaseed' || d.type === 'evolution') acts.push({ kind: 'summon', uid: c.uid });
           else if (d.type === 'spell') acts.push({ kind: 'cast', uid: c.uid });
@@ -571,7 +635,16 @@
           acts.push({ kind: d.type === 'spell' ? 'cast' : 'summon', uid: c.uid, free: true });
         }
         const sv = d.type !== 'spell' && spellSideDef(d);
-        if (sv && this.canPay(pi, sv, c)) acts.push({ kind: 'cast', uid: c.uid });
+        if (sv && this.canPay(pi, sv, c) && this.canCast(pi, sv)) acts.push({ kind: 'cast', uid: c.uid });
+      }
+      // マナゾーンから召喚（メルヴェイユのような自分の能力、またはアカネの超魂Xのような能力）
+      if (canSummon) {
+        for (const c of P.mana) {
+          const via = this.manaSummonSource(pi, c);
+          if (!via || !this.canEnter(pi, c)) continue;
+          if (c.def.type === 'evolution' && !this.evolutionBases(pi, c.def).length) continue;
+          if (this.canPay(pi, c.def, c)) acts.push({ kind: 'summon', uid: c.uid, fromMana: true, via: via === 'self' ? 'self' : via.uid });
+        }
       }
       for (const c of P.battle) if (this.canHyper(pi, c)) acts.push({ kind: 'hyper', uid: c.uid });
       acts.push({ kind: 'toAttack' });
@@ -598,8 +671,8 @@
     /** そのクリーチャーが今攻撃できる相手（'player' か クリーチャーの uid）の一覧 */
     attackTargets(c) {
       if (c.zone !== 'battle' || c.owner !== this.active || c.tapped || !this.isCreature(c)) return [];
-      if (this.kw(c, 'cantAttack') || c.cantAttackTurn === this.turnNo) return [];
-      const sick = c.enteredTurn === this.turnNo && !this.kw(c, 'speedAttacker') && c.def.type !== 'evolution';
+      if (this.kw(c, 'cantAttack') || c.cantAttackTurn === this.turnNo || this.players[c.owner].lockAttackTurn === this.turnNo) return [];
+      const sick = c.enteredTurn === this.turnNo && !this.kw(c, 'speedAttacker') && !this.isEvolvedNow(c);
       const mach = this.kw(c, 'machFighter') && c.enteredTurn === this.turnNo;
       if (sick && !mach) return [];
       const targets = [];
@@ -623,18 +696,24 @@
      */
     async playCard(pi, c, side = 'main', opts = {}) {
       const P = this.players[pi];
-      if (!c || c.zone !== 'hand') return;
+      if (!c || (c.zone !== 'hand' && !(opts.fromMana && c.zone === 'mana'))) return;
       const useDef = side === 'spell' ? spellView(c.def) : c.def;
       if (!useDef) return;
-      const pay = opts.free ? [] : this.findPayment(pi, useDef, this.costOf(pi, c, useDef));
+      const detail = this.costDetail(pi, c, useDef);
+      const pay = opts.free ? [] : this.findPayment(pi, useDef, detail.cost, c.zone === 'mana' ? c : undefined);
       if (!pay) return;
+      if (!opts.free) for (const src of detail.once) src.costOnceTurn = this.turnNo; // 「各ターンに一度」の軽減を使った
+      if (opts.fromMana) {
+        if (opts.via && opts.via !== 'self') { const src = this.card(opts.via); if (src) src.manaSummonTurn = this.turnNo; }
+        this.say(`${P.name}は${this.nameOf(c)}をマナゾーンから召喚する`, pi);
+      }
       if (opts.free) this.say(`G・ゼロ：${q(useDef.name)}をコストを支払わずに使う`, pi);
       let base = null;
       if (useDef.type === 'evolution') {
         const bases = this.evolutionBases(pi, useDef);
         if (!bases.length) return;
         [base] = await this.chooseCards(pi, bases, 1, 1, `${useDef.name}の進化元を選んでください`, { op: 'evoBase' });
-      }
+      } else if (useDef === c.def) base = await this.askNeoBase(pi, c);
       for (const m of pay) m.tapped = true;
       this.emit({ kind: 'pay', uids: pay.map((m) => m.uid) });
       if (useDef.type === 'spell') {
@@ -648,7 +727,13 @@
     /** 効果でバトルゾーンに出す。ドラグハートのウエポンは、出したクリーチャーに装備する */
     async putFromHyperOrZone(pi, c, source, verb) {
       const weapon = c.def.type === 'dragheart' && !(c.def.races || []).some((r) => /フォートレス/.test(r)) && !/フォートレス/.test(c.def.text || '');
-      await this.putCreature(pi, c, null, verb);
+      let base = null;
+      if (c.def.type === 'evolution') {
+        const bases = this.evolutionBases(pi, c.def);
+        if (!bases.length) return;
+        [base] = await this.chooseCards(pi, bases, 1, 1, `${c.def.name}の進化元を選んでください`, { op: 'evoBase' });
+      } else if (c.zone !== 'hyper') base = await this.askNeoBase(pi, c);
+      await this.putCreature(pi, c, base, verb);
       if (weapon && source && source.zone === 'battle' && this.isCreature(source) && source.owner === pi && c.zone === 'battle') {
         c.equippedTo = source.uid;
         this.say(`${this.nameOf(c)}を${this.nameOf(source)}に装備した`, pi);
@@ -660,6 +745,11 @@
      * @param opts.summoned 召喚によって出たか（「召喚した時」「ヨビニオン」「カードを使った時」に関係する）
      */
     async putCreature(pi, c, base, verb, opts = {}) {
+      if (!this.canEnter(pi, c)) { this.say(`${this.nameOf(c)}は同じ名前のカードがあるので出せない`, pi); return; }
+      if (opts.summoned) {
+        if (!this.canUseMore(pi)) { this.say(`このターンはもう召喚できない（相手の能力の制限）`, pi); return; }
+        this.players[pi].usesThisTurn = (this.players[pi].usesThisTurn || 0) + 1;
+      }
       if (base) {
         const bArr = this.players[base.owner].battle;
         const idx = bArr.indexOf(base);
@@ -680,6 +770,7 @@
       this.emit({ kind: 'summon', uid: c.uid, player: pi });
       await this.pace({ kind: 'summon', uid: c.uid });
       this.fireSelf(c, 'cip');
+      if (this.kw(c, 'soulRaid')) this.pendingTriggers.push({ card: c, controller: c.owner, effects: [{ op: 'soulRaid' }], when: 'cip' });
       if (opts.summoned) {
         this.fireSelf(c, 'summoned');
         if (this.kw(c, 'yobinion')) this.pendingTriggers.push({ card: c, controller: c.owner, effects: [{ op: 'yobinion' }], when: 'summoned' });
@@ -696,6 +787,8 @@
      */
     async castSpell(pi, c, opts = {}) {
       const sdef = spellView(c.def);
+      if (!this.canCast(pi, sdef)) { this.say(`${q(sdef.name)}は唱えられない（相手の能力の制限）`, pi); return; }
+      this.players[pi].usesThisTurn = (this.players[pi].usesThisTurn || 0) + 1;
       if (!opts.keepCard) {
         // 唱えている間は「解決中」の場所に置き、効果が終わったら墓地へ
         const arr = this.zoneArr(c);
@@ -711,9 +804,11 @@
         await this.resolveEffects(pi, abilitiesOf(sdef).spell, c, sdef);
       } finally {
         if (!opts.keepCard && c.zone === 'stack') {
-          c.zone = 'grave';
-          this.players[c.owner].grave.push(c);
-          this.emit({ kind: 'move', uid: c.uid, from: 'stack', to: 'grave', owner: c.owner });
+          // チャージャー：唱えた後、墓地のかわりにマナゾーンに置く
+          const to = abilitiesOf(sdef).keywords.charger ? 'mana' : 'grave';
+          c.zone = 'nowhere';
+          this.move(c, to);
+          if (to === 'mana') { this.say(`チャージャー：${q(sdef.name)}をマナゾーンに置いた`, pi); this.fireEvent('manaPut', { player: pi }); }
         }
       }
       await this.flushTriggers();
@@ -740,12 +835,13 @@
               case 'oppManaPut': hit = kind === 'manaPut' && !mine; break;
               case 'oppUseCard': hit = kind === 'useCard' && !mine; break;
               case 'oppAttack': hit = kind === 'attack' && !mine; break;
+              case 'anyCreatureEnters': hit = kind === 'creatureEnters'; break;
               case 'selfCastFromHand': hit = kind === 'castSpell' && mine && data.fromHand; break;
               case 'selfCastSpell': hit = kind === 'castSpell' && mine; break;
               default:
             }
             if (hit && t.oppTurnOnly && this.active === c.owner) hit = false;
-            if (hit && data.card === c) hit = false; // 自分自身の登場には反応しない
+            if (hit && data.card === c && t.when !== 'anyCreatureEnters') hit = false; // 自分自身の登場には反応しない（「クリーチャーが出た時」は自分も含む）
             if (hit) this.pendingTriggers.push({ card: c, controller: c.owner, effects: t.effects, when: t.when, event: data });
           }
         }
@@ -835,11 +931,12 @@
       const have = new Set(this.players[pi].battle.flatMap((c) => c.def.civs || []));
       return ALL_CIVS.every((k) => have.has(k));
     }
-    checkCond(pi, c) {
+    checkCond(pi, c, source = null) {
       const P = this.players[pi];
       switch (c.kind) {
         case 'manaCivGE': return P.mana.filter((m) => c.civs.some((k) => m.def.civs.includes(k))).length >= c.n;
-        case 'battleHas': return P.battle.filter((x) => this.matches(x, c.filter)).length >= c.n;
+        case 'manaFilterGE': return P.mana.filter((m) => this.matches(m, c.filter)).length >= c.n;
+        case 'battleHas': return P.battle.filter((x) => this.matches(x, c.filter, source)).length >= c.n;
         case 'manaLE': return P.mana.length <= c.n;
         case 'manaGE': return P.mana.length >= c.n;
         case 'handLE': return P.hand.length <= c.n;
@@ -864,7 +961,7 @@
       const label = TextParser.describeEffect(Object.assign({}, e, { optional: false }));
       switch (e.op) {
         case 'draw': {
-          let n = e.n;
+          let n = e.nPer === 'cardsInThis' ? 1 + (source.zone === 'battle' ? source.under.length : 0) : e.n;
           if (e.upTo) n = await this.askNumber(pi, 0, Math.min(e.n, P.deck.length), `カードを何枚引きますか？（0〜${e.n}）`);
           await this.draw(pi, n);
           break;
@@ -908,7 +1005,12 @@
         }
         case 'putToBattle': {
           const zoneArr = { grave: P.grave, hand: P.hand, mana: P.mana, hyper: P.hyperZone }[e.from];
-          const cands = zoneArr.filter((c) => (e.from === 'hyper' ? isHyperDef(c.def) : c.def.type === 'creature') && this.matches(c, e.filter, source));
+          const cands = zoneArr.filter((c) => {
+            if (e.from === 'hyper') return isHyperDef(c.def) && this.matches(c, e.filter, source);
+            if (!isElementDef(c.def) || isHyperDef(c.def) || isGrDef(c.def) || !this.canEnter(pi, c)) return false;
+            if (c.def.type === 'evolution' && !this.evolutionBases(pi, c.def).length) return false;
+            return this.matches(c, Object.assign({ type: 'creature' }, e.filter), source);
+          });
           const picked = await this.chooseCards(pi, cands, e.upTo ? 0 : e.n, e.n, `バトルゾーンに出すカードを選んでください`, { op: 'putToBattle' });
           for (const c of picked) await this.putFromHyperOrZone(pi, c, source, `${ZONE_NAMES[e.from]}からバトルゾーンに出した`);
           break;
@@ -955,7 +1057,7 @@
           for (const pk of e.picks) {
             const cands = rest.filter((c) => this.matches(c, pk.filter || {}, source));
             const n = Math.min(pk.count, cands.length);
-            const picked = await this.chooseCards(pi, cands, pk.upTo ? 0 : n, n, `見たカードから${ZONE_NAMES[pk.to]}に置くカードを選んでください（${pk.count}枚${pk.upTo ? 'まで' : ''}）`, { op: 'look', to: pk.to });
+            const picked = pk.all ? cands : await this.chooseCards(pi, cands, pk.upTo ? 0 : n, n, `見たカードから${ZONE_NAMES[pk.to]}に置くカードを選んでください（${pk.count}枚${pk.upTo ? 'まで' : ''}）`, { op: 'look', to: pk.to });
             for (const c of picked) { this.place(c, pk.to, pi); this.say(`${this.nameOf(c)}を${ZONE_NAMES[pk.to]}に置いた`, pi); }
             rest = rest.filter((c) => !picked.includes(c));
           }
@@ -982,7 +1084,7 @@
           break;
         }
         case 'if':
-          if (this.checkCond(pi, e.cond)) await this.resolveEffects(pi, e.effects, source, null, event);
+          if (this.checkCond(pi, e.cond, source)) await this.resolveEffects(pi, e.effects, source, null, event);
           break;
         case 'choose': {
           let picks = [];
@@ -1019,16 +1121,50 @@
           for (const c of ts) { c.cantAttackTurn = this.turnNo; this.say(`${this.nameOf(c)}はこのターン攻撃できない`, pi); }
           break;
         }
-        case 'destroy': case 'toGrave': case 'bounce': case 'toMana': case 'tap': case 'untap': {
+        case 'destroy': case 'toGrave': case 'bounce': case 'toMana': case 'tap': case 'untap': case 'toShield': {
           const ts = await this.selectCreatures(pi, e.target, source, `${label}：対象を選んでください`, e.op);
           if (!ts.length) break;
           if (e.op === 'destroy') { for (const c of ts) this.say(`${this.nameOf(c)}は破壊された`, pi); await this.destroyCards(ts); }
           else if (e.op === 'tap' || e.op === 'untap') { for (const c of ts) { c.tapped = e.op === 'tap'; this.emit({ kind: 'tap', uid: c.uid, tapped: c.tapped }); } this.say(`${ts.map((c) => this.nameOf(c)).join('、')}を${e.op === 'tap' ? 'タップ' : 'アンタップ'}した`, pi); }
           else {
-            const to = { toGrave: 'grave', bounce: 'hand', toMana: 'mana' }[e.op];
+            const to = { toGrave: 'grave', bounce: 'hand', toMana: 'mana', toShield: 'shield' }[e.op];
             for (const c of ts) { const dest = isHyperDef(c.def) ? 'hyper' : isGrDef(c.def) ? 'gr' : to; if (await this.leaveBattle(c, to)) this.say(`${this.nameOf(c)}は${ZONE_NAMES[dest]}に置かれた`, pi); }
           }
           await this.pace({ kind: e.op });
+          break;
+        }
+        case 'banSpells': {
+          // 次の相手のターンの終わりまで、相手は呪文を唱えられない
+          O.banSpellsUntil = this.active === pi ? this.turnNo + 1 : this.turnNo + 2;
+          this.say(`${O.name}は次のターンの終わりまで呪文を唱えられない`, pi);
+          break;
+        }
+        case 'lockAllAttack':
+          O.lockAttackTurn = this.turnNo;
+          this.say(`このターン、${O.name}のクリーチャーは攻撃できない`, pi);
+          break;
+        case 'untapGrantBlocker': {
+          const cands = P.battle.filter((c) => this.isCreature(c) && c.tapped);
+          const picked = await this.chooseCards(pi, cands, 0, cands.length, 'アンタップして「ブロッカー」を与えるクリーチャーを選んでください（好きな数）', { op: 'untapBlocker' });
+          for (const c of picked) { c.tapped = false; c.tempBlockerTurn = this.turnNo; this.emit({ kind: 'tap', uid: c.uid, tapped: false }); }
+          if (picked.length) this.say(`${picked.map((c) => this.nameOf(c)).join('、')}をアンタップし、このターン「ブロッカー」を与えた`, pi);
+          break;
+        }
+        case 'soulRaid': {
+          // 超魂レイド：山札の上から3枚を表向きにし、進化元になれるカードを1枚、このクリーチャーの下に置いてよい
+          if (source.zone !== 'battle') break;
+          const shown = [];
+          for (let i = 0; i < 3 && P.deck.length; i++) { const c = P.deck.pop(); c.zone = 'look'; shown.push(c); }
+          const evo = abilitiesOf(source.def).neo || abilitiesOf(source.def).evolution || { civs: [], races: [] };
+          const ok = shown.filter((c) => (isCreatureDef(c.def) || (c.def.type === 'tamaseed' && abilitiesOf(c.def).keywords.sinkarize))
+            && (!evo.civs.length || evo.civs.some((k) => c.def.civs.includes(k)))
+            && (!evo.races.length || evo.races.some((r) => (c.def.races || []).some((x) => x.includes(r)))));
+          this.say(`超魂レイド：山札の上から${shown.length}枚を表向きにした`, pi);
+          const [u] = await this.chooseCards(pi, ok, 0, 1, `${source.def.name}の下に置くカードを選べます（置くとすぐ攻撃できる）`, { op: 'soulRaid' });
+          if (u) { u.zone = 'under'; source.under.push(u); this.say(`${this.nameOf(u)}を${this.nameOf(source)}の下に置いた`, pi); this.emit({ kind: 'move', uid: u.uid, from: 'deck', to: 'under', owner: pi }); }
+          const rest = shown.filter((c) => c !== u);
+          this.shuffle(rest);
+          for (const c of rest) this.move(c, 'deckBottom');
           break;
         }
         case 'skipTurn':
@@ -1050,7 +1186,7 @@
         case 'castFree': {
           // 「〜の呪文を1枚、自分の手札からコストを支払わずに唱えてもよい」
           const zones = e.from === 'handOrGrave' ? [P.hand, P.grave] : e.from === 'grave' ? [P.grave] : [P.hand];
-          const cands = zones.flat().filter((c) => { const sv = spellView(c.def); return sv && this.defMatches(sv, e.filter); });
+          const cands = zones.flat().filter((c) => { const sv = spellView(c.def); return sv && this.defMatches(sv, e.filter) && this.canCast(pi, sv); });
           const max = Math.min(e.n || 1, cands.length);
           if (!max) break;
           const picked = await this.chooseCards(pi, cands, e.optional ? 0 : max, max, `タダで唱える呪文を選んでください（${TextParser.describeFilter(e.filter)}）`, { op: 'castFree' });
@@ -1108,7 +1244,7 @@
      * 破壊する（同時に）。置換効果（セイバー・破壊される時のかわりの行き先・エスケープ）を適用し、
      * 破壊された時・離れた時の能力を予約する
      */
-    async destroyCards(list) {
+    async destroyCards(list, cause = 'destroy') {
       let alive = list.filter((c) => c.zone === 'battle');
       // セイバー：自分の他のクリーチャーが破壊される時、かわりにセイバーを持つクリーチャーを破壊してよい
       const swapped = [];
@@ -1119,7 +1255,7 @@
         if (s) { this.say(`セイバー！ ${this.nameOf(c)}のかわりに${this.nameOf(s)}が破壊される`, c.owner); alive = alive.map((x) => (x === c ? s : x)); swapped.push(s); }
       }
       const gone = [];
-      for (const c of alive) if (!(await this.escapeOrStay(c, 'destroy'))) gone.push(c);
+      for (const c of alive) if (!(await this.escapeOrStay(c, cause))) gone.push(c);
       for (const c of gone) this.emit({ kind: 'destroy', uid: c.uid });
       if (gone.length) await this.pace({ kind: 'destroy', uids: gone.map((c) => c.uid) });
       for (const c of gone) {
@@ -1142,6 +1278,7 @@
     async escapeOrStay(c, cause) {
       if (c.zone !== 'battle') return true;
       if (this.kw(c, 'cantLeave') && cause !== 'rule') { this.say(`${this.nameOf(c)}はバトルゾーンを離れない`, c.owner); return true; }
+      if (this.kw(c, 'stayIfPower') && cause !== 'rule' && this.power(c) > 0) { this.say(`${this.nameOf(c)}はパワーが0より大きいので、離れるかわりにとどまった`, c.owner); return true; }
       const P = this.players[c.owner];
       if (this.kw(c, 'escape') && P.shields.length) {
         if (await this.askYesNo(c.owner, `エスケープ：${c.def.name}がバトルゾーンを離れるかわりに、自分のシールドを1つ手札に加えますか？`, { op: 'escape', uid: c.uid })) {
@@ -1183,7 +1320,7 @@
         await this.flushTriggers();
         // ── アタック・チャンス（手札の呪文をタダで唱える）とスマッシュ・バースト（自分の呪文側を唱える）
         await this.attackChance(pi, att);
-        if (att.zone === 'battle' && this.kw(att, 'smashBurst') && spellSideDef(att.def)) {
+        if (att.zone === 'battle' && this.kw(att, 'smashBurst') && spellSideDef(att.def) && this.canCast(pi, spellSideDef(att.def))) {
           const sv = spellSideDef(att.def);
           if (await this.askYesNo(pi, `スマッシュ・バースト：${q(sv.name)}をコストを支払わずに唱えますか？`, { op: 'smashBurst', uid: att.uid })) {
             this.say(`スマッシュ・バースト！ ${P.name}は${q(sv.name)}を唱えた`, pi);
@@ -1237,7 +1374,8 @@
           await this.pace({ kind: 'direct' });
           throw new GameOver(pi, `${this.nameOf(att)}のダイレクトアタック`);
         }
-        const n = Math.min(this.kw(att, 'breaker') || 1, D.shields.length);
+        const powered = this.kw(att, 'poweredBreaker') ? 1 + Math.floor(this.power(att) / 6000) : 0;
+        const n = Math.min(Math.max(this.kw(att, 'breaker') || 1, powered), D.shields.length);
         const picked = await this.chooseCards(pi, D.shields, n, n, `ブレイクするシールドを${n}つ選んでください`, { op: 'breakShield' });
         await this.breakShields(pi, picked, att);
       } finally {
@@ -1312,7 +1450,7 @@
         if (att.zone !== 'battle' || c.zone !== 'hand') continue;
         const sv = spellView(c.def);
         const ac = sv && abilitiesOf(sv).attackChance;
-        if (!ac) continue;
+        if (!ac || !this.canCast(pi, sv)) continue;
         if (ac.civs.length && !ac.civs.every((k) => att.def.civs.includes(k))) continue;
         if (ac.races.length && !ac.races.some((r) => (att.def.races || []).some((x) => x.includes(r) || r.includes(x)))) continue;
         if (!(await this.askYesNo(pi, `アタック・チャンス：${q(sv.name)}をコストを支払わずに唱えますか？`, { op: 'attackChance', uid: c.uid }))) continue;
@@ -1357,8 +1495,9 @@
         const sv = s.def.type !== 'spell' && spellSideDef(s.def);
         const spellKw = sv ? abilitiesOf(sv).keywords : {};
         const sides = [];
-        if (mainKw.shieldTrigger && !(s.def.type === 'evolution' && !this.evolutionBases(di, s.def).length)) sides.push('main');
-        if (spellKw.shieldTrigger) sides.push('spell');
+        if (mainKw.shieldTrigger && !(s.def.type === 'evolution' && !this.evolutionBases(di, s.def).length)
+          && (s.def.type === 'spell' ? this.canCast(di, s.def) : this.canUseMore(di) && this.canEnter(di, s))) sides.push('main');
+        if (spellKw.shieldTrigger && this.canCast(di, sv)) sides.push('spell');
         if (sides.length) {
           let side = sides[0];
           if (sides.length === 2) {
