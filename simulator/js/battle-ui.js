@@ -25,6 +25,14 @@
       return new Promise((resolve, reject) => {
         if (g !== game) return reject(new Aborted());
         ui.req = req; ui.sel = []; ui.attacker = null;
+        // ドラッグでシールドの上に落とした時は、そのシールドをブレイクする
+        if (req.type === 'target' && req.purpose && req.purpose.op === 'breakShield' && ui.pendingShield && req.candidates.includes(ui.pendingShield)) {
+          const u = ui.pendingShield;
+          ui.pendingShield = null;
+          if (req.max === 1) { ui.req = null; resolve([u]); return; }
+          ui.sel = [u];
+        }
+        ui.pendingShield = null;
         ui.resolve = (v) => {
           ui.req = null; ui.resolve = null; ui.sel = []; ui.attacker = null;
           render();
@@ -106,7 +114,7 @@
     switch (req.type) {
       case 'charge':
         req.candidates.forEach((u) => out.selectable.add(u));
-        out.prompt = 'マナチャージ：手札から1枚選んで、マナゾーンに置けます';
+        out.prompt = 'マナチャージ：手札のカードを左下のマナへドラッグ（置かない時は「置かない」）';
         out.buttons.push({ label: '置かない', act: 'none' });
         break;
       case 'main': {
@@ -114,7 +122,7 @@
         const n = req.actions.length - 1;
         const hyper = req.actions.some((a) => a.kind === 'hyper');
         const fromMana = req.actions.filter((a) => a.fromMana);
-        out.prompt = n ? `メイン：光っているカードを使えます（クリックで召喚／呪文${hyper ? '／バトルゾーンのクリーチャーはハイパー化' : ''}${fromMana.length ? '／「マナから召喚」も使えます' : ''}）` : 'メイン：今使えるカードはありません';
+        out.prompt = n ? `メイン：光っているカードをバトルゾーンへドラッグして使う（召喚／呪文${hyper ? '／バトルゾーンのクリーチャーはハイパー化' : ''}${fromMana.length ? '／「マナから召喚」も使えます' : ''}）` : 'メイン：今使えるカードはありません';
         out.buttons.push({ label: '攻撃へ進む ▶', act: 'toAttack', cls: 'primary' });
         if (fromMana.length) out.buttons.push({ label: `マナから召喚（${fromMana.length}）`, act: 'manaSummon' });
         break;
@@ -123,7 +131,7 @@
         const acts = req.actions.filter((a) => a.kind === 'attack');
         if (ui.attacker == null) {
           acts.forEach((a) => out.selectable.add(a.attacker));
-          out.prompt = acts.length ? '攻撃：攻撃するクリーチャーを選んでください' : '攻撃できるクリーチャーはいません';
+          out.prompt = acts.length ? '攻撃：クリーチャーを攻撃先（相手のシールド、またはタップしているクリーチャー）へドラッグ' : '攻撃できるクリーチャーはいません';
         } else {
           out.picked.add(ui.attacker);
           for (const a of acts) if (a.attacker === ui.attacker) { if (a.target === 'player') out.playerTarget = true; else out.selectable.add(a.target); }
@@ -238,6 +246,7 @@
     $('#bt-extra-btn').hidden = !(me.hyperZone.length || me.grZone.length || op.hyperZone.length || op.grZone.length || me.battle.concat(op.battle).some((c) => Engine.isHyperDef(c.def) || Engine.isGrDef(c.def)));
     $('#bt-extra-n').textContent = `${me.hyperZone.length}/${me.grZone.length}`;
     $('#bt-opp-shields').classList.toggle('sel-target', it.playerTarget);
+    $('#bt-my-mana').classList.toggle('charge-target', !!(ui.req && ui.req.type === 'charge'));
     const pr = $('#bt-prompt');
     pr.textContent = it.prompt;
     pr.title = it.prompt;
@@ -251,6 +260,153 @@
     if (!st) return;
     const sc = Math.min(window.innerWidth / 1600, window.innerHeight / 900);
     st.style.setProperty('--s', sc.toFixed(4));
+  }
+
+  // ───────────── ドラッグ操作 ─────────────
+  /*
+   * ・マナチャージ … 手札のカードを、左下のマナのカウンターへドラッグ
+   * ・召喚・呪文   … 手札のカードを、自分のバトルゾーンへドラッグ
+   * ・攻撃         … 自分のクリーチャーを、相手のシールド（プレイヤー）か相手のタップしているクリーチャーへドラッグ
+   * 8px より動かさなければ「クリック」として扱う（クリックでの操作もそのまま使える）。
+   * マウスでも指でも同じように動くよう、Pointer Events を使う。
+   */
+  const drag = { active: null, suppressClick: false };
+  /** 画面の座標を、1600×900 の卓の座標に直す（卓は拡大縮小されているため） */
+  function stageXY(e) {
+    const r = $('#bt-stage').getBoundingClientRect();
+    const s = r.width / 1600;
+    return { x: (e.clientX - r.left) / s, y: (e.clientY - r.top) / s };
+  }
+  function centerOf(el) {
+    const r = el.getBoundingClientRect();
+    return stageXY({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+  }
+  /** そのカードを今ドラッグできるか、できるなら何の操作か */
+  function dragKind(uid) {
+    const req = ui.req;
+    if (!req || !game) return null;
+    const c = game.card(uid);
+    if (!c || c.owner !== 0) return null;
+    if (req.type === 'charge' && c.zone === 'hand') return 'charge';
+    if (req.type === 'main' && c.zone === 'hand') return 'play';
+    if (req.type === 'attack' && req.actions.some((a) => a.attacker === uid)) return 'attack';
+    return null;
+  }
+  function onPointerDown(e) {
+    if (e.button != null && e.button !== 0) return;
+    if (document.querySelector('#modals .modal-wrap')) return;
+    const el = e.target.closest('.card[data-uid]');
+    if (!el) return;
+    const uid = +el.dataset.uid;
+    const kind = dragKind(uid);
+    if (!kind) return;
+    drag.active = { uid, kind, el, startX: e.clientX, startY: e.clientY, moved: false, pointerId: e.pointerId, hover: null };
+  }
+  function startDrag(d) {
+    d.moved = true;
+    hideDetail();
+    const stage = $('#bt-stage');
+    if (d.kind === 'attack') {
+      ui.attacker = d.uid;
+      draw(); // 攻撃できる相手を光らせる
+      const el = document.querySelector(`#screen-battle .card[data-uid="${d.uid}"]`);
+      d.from = el ? centerOf(el) : { x: 800, y: 550 };
+      d.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      d.svg.setAttribute('class', 'drag-arrow');
+      d.svg.setAttribute('viewBox', '0 0 1600 900');
+      d.svg.innerHTML = '<defs><marker id="arrowhead" markerWidth="10" markerHeight="10" refX="6" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker></defs><line x1="0" y1="0" x2="0" y2="0" stroke="currentColor" stroke-width="7" stroke-linecap="round" marker-end="url(#arrowhead)"></line>';
+      stage.appendChild(d.svg);
+    } else {
+      d.ghost = d.el.cloneNode(true);
+      d.ghost.classList.add('drag-ghost');
+      d.ghost.classList.remove('sel', 'dim');
+      d.ghost.removeAttribute('data-uid');
+      d.ghost.style.cssText = '';
+      stage.appendChild(d.ghost);
+      d.el.classList.add('dragging');
+      $(d.kind === 'charge' ? '#bt-my-mana' : '#bt-my-battle').classList.add('drop-zone');
+    }
+  }
+  /** ドラッグ中の指（マウス）の下にある、落とせる場所 */
+  function dropTarget(d, e) {
+    if (d.ghost) d.ghost.style.visibility = 'hidden';
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    if (d.ghost) d.ghost.style.visibility = '';
+    if (!hit) return null;
+    if (d.kind === 'charge') return hit.closest('#bt-my-mana') ? { el: $('#bt-my-mana') } : null;
+    if (d.kind === 'play') {
+      const p = stageXY(e);
+      const inZone = hit.closest('#bt-my-battle') || (p.x > 230 && p.x < 1370 && p.y > 420 && p.y < 690 && !hit.closest('#bt-my-hand'));
+      return inZone ? { el: $('#bt-my-battle') } : null;
+    }
+    // 攻撃：相手のシールド・紋章ならプレイヤー、相手のクリーチャーなら攻撃先として正しいか確かめる
+    const acts = ui.req.actions.filter((a) => a.attacker === d.uid);
+    const cardEl = hit.closest('#bt-opp-battle .card[data-uid]');
+    if (cardEl && acts.some((a) => a.target === +cardEl.dataset.uid)) return { el: cardEl, target: +cardEl.dataset.uid };
+    if (hit.closest('#bt-opp-shields, #bt-opp-emblem') && acts.some((a) => a.target === 'player')) {
+      const sh = hit.closest('#bt-opp-shields .card[data-uid]');
+      return { el: sh || $('#bt-opp-shields'), target: 'player', shield: sh ? +sh.dataset.uid : null };
+    }
+    return null;
+  }
+  function onPointerMove(e) {
+    const d = drag.active;
+    if (!d || e.pointerId !== d.pointerId) return;
+    if (!d.moved) {
+      if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 8) return;
+      startDrag(d);
+    }
+    e.preventDefault();
+    const p = stageXY(e);
+    if (d.ghost) { d.ghost.style.left = `${p.x}px`; d.ghost.style.top = `${p.y}px`; }
+    if (d.svg) {
+      const line = d.svg.querySelector('line');
+      line.setAttribute('x1', d.from.x); line.setAttribute('y1', d.from.y);
+      line.setAttribute('x2', p.x); line.setAttribute('y2', p.y);
+    }
+    const t = dropTarget(d, e);
+    const el = t && t.el;
+    if (d.hover !== el) {
+      if (d.hover) d.hover.classList.remove('drop-hover');
+      if (el) el.classList.add('drop-hover');
+      d.hover = el;
+    }
+    if (d.svg) d.svg.classList.toggle('ok', !!t);
+  }
+  function endDrag(d) {
+    if (d.ghost) d.ghost.remove();
+    if (d.svg) d.svg.remove();
+    if (d.hover) d.hover.classList.remove('drop-hover');
+    if (d.el) d.el.classList.remove('dragging');
+    for (const z of ['#bt-my-mana', '#bt-my-battle']) $(z).classList.remove('drop-zone');
+  }
+  function onPointerUp(e) {
+    const d = drag.active;
+    if (!d || e.pointerId !== d.pointerId) return;
+    drag.active = null;
+    if (!d.moved) return; // 動かしていなければクリックとして扱う
+    drag.suppressClick = true; // この後に来るクリックは無視する
+    setTimeout(() => { drag.suppressClick = false; }, 300);
+    const t = e.type === 'pointerup' ? dropTarget(d, e) : null;
+    endDrag(d);
+    const req = ui.req;
+    if (!req) return;
+    if (d.kind === 'charge') {
+      if (t) answer(d.uid);
+    } else if (d.kind === 'play') {
+      if (!t) {
+        const hit = document.elementFromPoint(e.clientX, e.clientY);
+        if (hit && hit.closest('#bt-my-mana')) UI.toast('マナに置けるのは、ターンのはじめのマナチャージの時だけです', 'bad');
+        return;
+      }
+      const acts = req.actions.filter((x) => x.uid === d.uid);
+      if (acts.length === 1) answer(acts[0]);
+      else if (acts.length > 1) chooseAction(req, game.card(d.uid), acts);
+      else UI.toast(whyNot(game.card(d.uid)), 'bad');
+    } else if (d.kind === 'attack') {
+      if (t) { ui.pendingShield = t.shield || null; answer({ kind: 'attack', attacker: d.uid, target: t.target }); }
+      else { ui.attacker = null; render(); }
+    }
   }
 
   // ───────────── ダイアログで答える質問 ─────────────
@@ -306,6 +462,7 @@
   // ───────────── クリックの処理 ─────────────
   function onClick(e) {
     if (!game) return;
+    if (drag.suppressClick) { drag.suppressClick = false; return; } // ドラッグの直後のクリックは無視
     const btn = e.target.closest('#bt-buttons button');
     if (btn) return onButton(btn.dataset.act);
     const grave = e.target.closest('[data-grave]');
@@ -403,7 +560,7 @@
     else if (act === 'atkPlayer') answer({ kind: 'attack', attacker: ui.attacker, target: 'player' });
     else if (act === 'confirmSel') answer([...ui.sel]);
     else if (act === 'emptySel') answer([]);
-    else if (act === 'autoSel') answer(req.candidates.slice(0, req.max));
+    else if (act === 'autoSel') answer([...ui.sel, ...req.candidates.filter((u) => !ui.sel.includes(u))].slice(0, req.max));
     else if (act === 'manaSummon') chooseManaSummon(req);
   }
 
@@ -519,6 +676,10 @@
   function init() {
     const scr = $('#screen-battle');
     scr.addEventListener('click', onClick);
+    scr.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
     scr.addEventListener('mouseover', (e) => {
       const c = e.target.closest('.card[data-uid]');
       if (c && !c.classList.contains('back')) { clearTimeout(hideDetail.t); showDetail(+c.dataset.uid); }

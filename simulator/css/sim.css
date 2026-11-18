@@ -339,6 +339,18 @@ body[data-screen="battle"] { overflow: hidden; }
 .bt-menu { position: absolute; left: 116px; top: 330px; z-index: 30; width: 260px; padding: 14px; border-radius: 14px; background: #0b1630f5; border: 1px solid #3d64a8; box-shadow: 0 12px 40px #000c; display: flex; flex-direction: column; gap: 10px; }
 .bt-menu[hidden] { display: none; }
 
+/* ドラッグ操作 */
+#screen-battle .bt-hand .card, #screen-battle .bt-zone.me .card { touch-action: none; cursor: grab; }
+.drag-ghost { position: absolute; --cw: 132px; z-index: 40; pointer-events: none; transform: translate(-50%, -45%) rotate(-5deg) scale(1.06); box-shadow: 0 24px 50px #000d, 0 0 0 3px var(--sel); opacity: .96; }
+.card.dragging { opacity: .25; }
+.drag-arrow { position: absolute; inset: 0; width: 1600px; height: 900px; z-index: 39; pointer-events: none; color: #ffffff88; filter: drop-shadow(0 0 8px #000); }
+.drag-arrow.ok { color: var(--op); filter: drop-shadow(0 0 12px var(--op)); }
+.bt-mana.charge-target { box-shadow: 0 0 0 4px #08122a, 0 0 0 7px var(--sel), 0 0 30px var(--sel); animation: selPulse 1.4s ease-in-out infinite; }
+.bt-mana.drop-hover { transform: scale(1.08); box-shadow: 0 0 0 4px #08122a, 0 0 0 8px var(--pick), 0 0 44px var(--pick); }
+.bt-zone.me.drop-zone { outline: 3px dashed #59f3ff88; outline-offset: 6px; border-radius: 20px; background: #59f3ff0d; }
+.bt-zone.me.drop-hover { outline-color: var(--pick); background: #ffd16614; }
+.bt-zone .card.drop-hover, .bt-shields.drop-hover { box-shadow: 0 0 0 4px var(--op), 0 0 36px var(--op) !important; }
+
 /* 選べるカード・選んだカード */
 .card.sel { cursor: pointer; box-shadow: 0 0 0 3px var(--sel), 0 0 18px #59f3ffaa; animation: selPulse 1.4s ease-in-out infinite; }
 .card.sel:hover { filter: brightness(1.15); }
