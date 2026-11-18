@@ -1088,7 +1088,7 @@
           break;
         case 'choose': {
           let picks = [];
-          if (e.allIfFullCivs && this.hasAllCivs(pi)) {
+          if (e.allIfFullCivs && this.hasAllCivs(pi) && (!e.allOptional || await this.askYesNo(pi, `${sname}：すべての文明がそろっています。${e.times}回選ぶかわりに、すべてを1回ずつ使いますか？`, { op: 'allIfFullCivs', effect: e }))) {
             picks = e.options.map((_, i) => i);
             this.say(`${sname}：すべての文明がそろっているので、すべてを1回ずつ選ぶ`, pi);
           } else {

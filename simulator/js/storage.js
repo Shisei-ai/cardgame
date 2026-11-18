@@ -75,6 +75,19 @@
       for (const d of root.SampleCards.DECKS) this.decks.set(d.id, d);
       for (const c of await DB.all('cards')) this.cards.set(c.id, c);
       for (const d of await DB.all('decks')) this.decks.set(d.id, d);
+      await this.preload(root.PRELOAD_LIBRARY);
+    },
+    /**
+     * 最初から入れておくカードとデッキ（公開ページなどで、別のファイルから渡されたもの）。
+     * 同じ id のものがまだ無い時だけ保存し、一度入れたら（あとで消しても）もう入れない。
+     */
+    async preload(data) {
+      if (!data || data.format !== 'duel-sim-library' || !data.id) return;
+      const done = Settings.get().preloaded || [];
+      if (done.includes(data.id)) return;
+      for (const c of data.cards || []) if (!this.cards.has(c.id)) await this.saveCard(Object.assign({}, c));
+      for (const d of data.decks || []) if (!this.decks.has(d.id)) await this.saveDeck(Object.assign({}, d));
+      Settings.set({ preloaded: [...done, data.id] });
     },
     card(id) { return this.cards.get(id); },
     allCards() { return [...this.cards.values()]; },

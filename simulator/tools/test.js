@@ -869,6 +869,60 @@ function put(g, pi, id, zone, opts = {}) {
     assert.strictEqual(b.zone, 'hand');
   });
 
+  console.log('\n[3e] 同じ意味の別の言い回し（実際のカードに多い書き方）');
+  {
+    // 見本カードの文章と、同じ意味の別の書き方が、同じ効果として読めるか
+    const strip = (o) => JSON.stringify(o, (k, v) => (k === 'labels' || k === 'allOptional' ? undefined : v));
+    const same = (id, text, type) => {
+      const d = byId['s_' + id];
+      assert.strictEqual(strip(TextParser.parse(text, type || d.type)), strip(TextParser.parse(d.text, d.type)), d.name);
+    };
+    await check('「1体表向きにし、手札に加えてもよい」', () => same('blueprint', '■S・トリガー\n■自分の山札の上から5枚を見る。その中からクリーチャーを1体表向きにし、手札に加えてもよい。その後、残りを好きな順序で山札の下に置く。'));
+    await check('「その枚数より1枚多くカードを引く」', () => same('pact', '■S・トリガー\n■次のうちいずれか1つを選ぶ。\n▶自分の手札を2枚まで、好きな順序で山札の下に置く。その後、その枚数より1枚多くカードを引く。\n▶相手のクリーチャーを1体選び、持ち主の手札に戻す。'));
+    await check('「マナゾーンのカードが5枚以下であれば」', () => same('harvest', '■自分の山札の上から1枚目をマナゾーンに置く。その後、自分のマナゾーンのカードが5枚以下であれば、カードを1枚引く。'));
+    await check('「シンカライズ：〜」「捨て、〜引き、もう一度〜捨てる」「マナゾーンに置いた時、アンタップする」', () => same('sigil', '■G・ストライク\n■シンカライズ：このタマシードがクリーチャーであるかのように、この上に進化クリーチャーを置いてもよい。\n■このタマシードが出た時、自分の手札を1枚捨て、カードを3枚まで引き、もう一度自分の手札を1枚捨てる。\n■このタマシードを自分の手札からマナゾーンに置いた時、アンタップする。'));
+    await check('「それらを1枚ずつ、手札、マナゾーン、墓地、山札の下に置く」', () => same('tune', '■自分の山札の上から4枚を見る。それらを1枚ずつ、手札、マナゾーン、墓地、山札の下に置く。'));
+    await check('「その呪文を自分の墓地からもう一度、コストを支払わずに唱えてもよい」', () => same('lunaris', byId.s_lunaris.text.replace('その呪文を墓地からコストを支払わずにもう一度唱えてもよい。', 'その呪文を自分の墓地からもう一度、コストを支払わずに唱えてもよい。')));
+    await check('「アタック・チャンス：水と闇と自然を持つ〜」「残りの1枚を」「〜1枚につき、そのクリーチャーのパワーを」', () => same('finale', '■アタック・チャンス：水と闇と自然を持つ《縫合獣》（自分の水と闇と自然を持つ《縫合獣》が攻撃する時、この呪文をコストを支払わずに唱えてもよい）\n■自分の山札の上から3枚を見る。その中から2枚をマナゾーンに置き、残りの1枚を手札に加える。\n■相手のクリーチャーを1体選ぶ。このターン、自分のマナゾーンのカード1枚につき、そのクリーチャーのパワーを－1000する。'));
+    await check('「同じものを選んでもよい。〜揃っていれば、かわりにすべてを1回ずつ使ってもよい」など', () => {
+      const t = '■次の中から2回選ぶ。同じものを選んでもよい。自分のエレメントにすべての文明が揃っていれば、かわりにすべてを1回ずつ使ってもよい。\n▶自分の山札の上から1枚をシールド化する。\n▶カードを2枚引く。\n▶相手の手札を1枚見ないで選び、捨てさせる。\n▶相手のコスト5以下のエレメントを1つ選び、破壊する。\n▶自分の山札の上から1枚をマナゾーンに置く。その後、カードを1枚、自分のマナゾーンから手札に戻してもよい。';
+      same('oath', t);
+      const e = TextParser.parse(t, 'spell').spell[0];
+      assert.ok(e.allIfFullCivs && e.allOptional, '「使ってもよい」は任意');
+      assert.ok(!TextParser.parse(byId.s_oath.text, 'spell').spell[0].allOptional, '「選ぶ」は強制');
+    });
+    await check('「その相手のクリーチャーが自分より3体以上多く、自分の《〜》がなければ」', () => same('neptus', byId.s_neptus.text.replace('相手のクリーチャーが自分のクリーチャーより3体以上多く、自分の《蒼の衝撃波ネプトゥス》がバトルゾーンになければ', 'その相手のクリーチャーが自分より3体以上多く、自分の《蒼の衝撃波ネプトゥス》がなければ')));
+    await check('すべての文明が揃っていても「使ってもよい」なら、使わずに2回選べる', async () => {
+      const t = TextParser.parse('■次の中から2回選ぶ。同じものを選んでもよい。自分のエレメントにすべての文明が揃っていれば、かわりにすべてを1回ずつ使ってもよい。\n▶カードを2枚引く。\n▶自分の山札の上から1枚をマナゾーンに置く。', 'spell').spell;
+      for (const yes of [false, true]) {
+        const g = fresh(ans({ yesno: (game, req) => (req.purpose.op === 'allIfFullCivs' ? yes : undefined), option: () => 0 }));
+        for (const id of ['alba', 'nerei', 'imp', 'raider', 'golm']) put(g, 0, id, 'battle');
+        const P = g.players[0], h = P.hand.length, m = P.mana.length;
+        await g.resolveEffects(0, t, put(g, 0, 'oath', 'grave'));
+        assert.deepStrictEqual([P.hand.length - h, P.mana.length - m], yes ? [2, 1] : [4, 0], yes ? 'すべて1回ずつ' : '1つ目を2回');
+      }
+    });
+  }
+  {
+    // 公開ページなどで最初から入れておくカード・デッキ
+    const mem = new Map();
+    global.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)) };
+    await check('最初から入れておくデッキ：1回だけ保存し、消した後はもう入れない', async () => {
+      global.SampleCards = require('../js/sample-cards.js');
+      const { Library } = require('../js/storage.js').Store;
+      const saved = [];
+      Library.saveCard = async (c) => { saved.push(c.id); Library.cards.set(c.id, c); };
+      Library.saveDeck = async (d) => { saved.push(d.id); Library.decks.set(d.id, d); };
+      const data = { format: 'duel-sim-library', id: 'pre1', cards: [{ id: 'u_x', name: 'X' }, { id: 's_alba', name: '上書きしない' }], decks: [{ id: 'u_d', name: 'D', cards: [] }] };
+      Library.cards.set('s_alba', byId.s_alba);
+      await Library.preload(data);
+      assert.deepStrictEqual(saved, ['u_x', 'u_d'], '無いものだけ保存');
+      Library.cards.delete('u_x');
+      await Library.preload(data);
+      assert.deepStrictEqual(saved, ['u_x', 'u_d'], '2回目は入れない');
+    });
+  }
+
   console.log(`\n[4] 大量の対戦（${GAMES}戦ずつ）`);
   for (const [label, mk] of [['CPU 対 CPU', () => new CpuAgent()], ['ランダム 対 ランダム', () => new RandomAgent()]]) {
     await check(label + '：エラー・無限ループ・カードの消失なし', async () => {

@@ -120,7 +120,6 @@
   const DECKS = [
     D('見本：守りの光水', [['alba', 4], ['serafina', 4], ['gardion', 2], ['flashpray', 4], ['lightseal', 2], ['milka', 2], ['poppo', 4], ['nerei', 4], ['whirl', 4], ['wisdom', 2], ['levia', 2], ['crystal', 2], ['lume', 4]]),
     D('見本：速攻の火自然', [['raider', 4], ['garo', 4], ['volka', 3], ['arrow', 4], ['brawler', 3], ['zelga', 2], ['banner', 2], ['pipi', 4], ['grower', 4], ['golm', 4], ['baoran', 2], ['gabra', 4]]),
-    D('見本：多色コントロール', [['shatter', 3], ['blueprint', 3], ['pact', 2], ['farewell', 2], ['harvest', 4], ['sigil', 2], ['tune', 3], ['lunaris', 4], ['garmund', 4], ['finale', 3], ['oath', 3], ['chimera', 2], ['neptus', 1], ['vigil', 2], ['observer', 2]]),
     D('見本：超次元とGR', [['pico', 3], ['warden2', 2], ['wingdragon', 2], ['zepha', 2], ['lili', 4], ['garan', 2], ['phene', 2], ['hermit', 2], ['farewell2', 2], ['baldio', 2], ['blaze', 2], ['hayate', 2], ['amate', 1], ['grim', 3], ['psycall', 2], ['psygate', 1], ['doran', 3], ['colon', 2], ['bell', 1],
       ['psy_sol', 2], ['psy_flare', 2], ['psy_gaia', 2], ['blade', 1], ['fortress', 1],
       ['gr_mini', 2], ['gr_draw', 2], ['gr_guard', 2], ['gr_boost', 2], ['gr_sa', 2], ['gr_wb', 2]]),

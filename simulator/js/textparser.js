@@ -144,11 +144,11 @@
   // ───────────── 条件（〜なら） ─────────────
   function parseCondition(c) {
     let m;
-    if ((m = c.match(/自分のマナゾーンに(?:ある)?カードが(\d+)枚以下/))) return { kind: 'manaLE', n: +m[1] };
-    if ((m = c.match(/自分のマナゾーンに(?:ある)?カードが(\d+)枚以上/))) return { kind: 'manaGE', n: +m[1] };
+    if ((m = c.match(/自分のマナゾーン(?:に(?:ある)?|の)カードが(\d+)枚以下/))) return { kind: 'manaLE', n: +m[1] };
+    if ((m = c.match(/自分のマナゾーン(?:に(?:ある)?|の)カードが(\d+)枚以上/))) return { kind: 'manaGE', n: +m[1] };
     if ((m = c.match(/自分の手札が(\d+)枚以下/))) return { kind: 'handLE', n: +m[1] };
     if ((m = c.match(/自分のシールドが(\d+)つ以下/))) return { kind: 'shieldLE', n: +m[1] };
-    if ((m = c.match(/相手のクリーチャーが自分のクリーチャーより(\d+)体以上多/))) return { kind: 'oppMoreCreatures', n: +m[1] };
+    if ((m = c.match(/相手のクリーチャーが自分(?:のクリーチャー)?より(\d+)体以上多/))) return { kind: 'oppMoreCreatures', n: +m[1] };
     // マナ武装など：「自分のマナゾーンに火のカードが5枚以上」
     if ((m = c.match(new RegExp(`自分のマナゾーンに((?:${CIV_NAMES})(?:または(?:${CIV_NAMES}))*)の(?:カード)?が(\\d+)枚以上`)))) return { kind: 'manaCivGE', civs: m[1].split('または').map(civKey), n: +m[2] };
     if ((m = c.match(/自分のマナゾーンに(.+?)(?:・)?カードが(\d+)枚以上/))) return { kind: 'manaFilterGE', filter: parseCondFilter(m[1]), n: +m[2] };
@@ -165,7 +165,7 @@
    */
   function parseSentence(raw) {
     const { text: s0, optional } = stripOptional(raw);
-    let s = s0.replace(/^(このターン、|その後、|次に、)/, '').replace(/^自分は/, '').replace(/。$/, '');
+    let s = s0.replace(/^(このターン、|その後、|次に、|もう一度、?)/, '').replace(/^自分は/, '').replace(/。$/, '');
     const done = (e) => (optional ? Object.assign(e, { optional: true }) : e);
     let m;
 
@@ -179,7 +179,7 @@
     if (/その攻撃の後、?(?:相手は)?ターンの残りをとばす/.test(s)) return done({ op: 'skipAfterAttack' });
     if (/^(?:相手は|自分は)?ターンの残りをとばす$/.test(s)) return done({ op: 'skipTurn' });
     // ── 唱えた呪文を墓地からもう一度唱える
-    if (/その呪文を(?:自分の)?墓地からコストを支払わずに(?:もう一度)?唱える/.test(s) || /その呪文をもう一度(?:自分の)?墓地からコストを支払わずに唱える/.test(s))
+    if (/その呪文を(?:自分の)?墓地から(?:もう一度、?)?コストを支払わずに(?:もう一度)?唱える/.test(s) || /その呪文をもう一度(?:自分の)?墓地からコストを支払わずに唱える/.test(s))
       return done({ op: 'recastEvent' });
     // ── 手札・墓地からタダで唱える
     if ((m = s.match(/^(.*?)呪文を(\d+)枚、?自分の(手札|墓地|手札または墓地|手札か墓地)からコストを支払わずに唱える$/))) {
@@ -215,8 +215,8 @@
       return done({ op: 'addShield', n: +m[1] });
     if ((m = s.match(/シールドを(\d+)つ(?:追加|増や)/))) return done({ op: 'addShield', n: +m[1] });
     // ── 手札を捨てる
-    if ((m = s.match(/相手の手札を見ないで(\d+)枚選び、捨てさせる/))) return done({ op: 'discard', side: 'opp', n: +m[1], how: 'random' });
-    if ((m = s.match(/相手の手札を見て(\d+)枚選び、捨てさせる/))) return done({ op: 'discard', side: 'opp', n: +m[1], how: 'controller' });
+    if ((m = s.match(/相手の手札を見ないで(\d+)枚選び、捨てさせる/)) || (m = s.match(/相手の手札を(\d+)枚見ないで選び、捨てさせる/))) return done({ op: 'discard', side: 'opp', n: +m[1], how: 'random' });
+    if ((m = s.match(/相手の手札を見て(\d+)枚選び、捨てさせる/)) || (m = s.match(/相手の手札を(\d+)枚見て選び、捨てさせる/))) return done({ op: 'discard', side: 'opp', n: +m[1], how: 'controller' });
     if ((m = s.match(/相手は(?:自身の|自分の)?手札を(\d+)枚(?:選んで|選び、)?捨てる/))) return done({ op: 'discard', side: 'opp', n: +m[1], how: 'owner' });
     if ((m = s.match(/相手の手札をすべて捨てさせる/))) return done({ op: 'discard', side: 'opp', n: 99, how: 'all' });
     if ((m = s.match(/^自分の手札を(\d+)枚(?:選んで|選び、)?捨てる$/))) return done({ op: 'discard', side: 'self', n: +m[1], how: 'owner' });
@@ -248,6 +248,11 @@
     if ((m = s.match(/(?:自分の)?(墓地|マナゾーン)から(.*?)を(\d+)(?:体|枚)(まで)?、?(?:選び、)?(?:自分の)?手札に(?:戻す|加える)/))) {
       const from = { 墓地: 'grave', マナゾーン: 'mana' }[m[1]];
       return done({ op: 'recover', from, filter: parseFilter(m[2]), n: +m[3], upTo: !!m[4] });
+    }
+    // 「カードを1枚、自分のマナゾーンから手札に戻す」（言葉の順番が逆の形）
+    if ((m = s.match(/^(.*?)を(\d+)(?:体|枚)(まで)?、?(?:自分の)?(墓地|マナゾーン)から(?:自分の)?手札に(?:戻す|加える)$/))) {
+      const from = { 墓地: 'grave', マナゾーン: 'mana' }[m[4]];
+      return done({ op: 'recover', from, filter: parseFilter(m[1]), n: +m[2], upTo: !!m[3] });
     }
     // ── パワーを変える（このターンの間）。「〜1枚につき」も読む
     if ((m = s.match(/^(.*?)のパワーを、?(.+?)(?:1枚|1体|1つ)につき([+-]\d+)する$/))) {
@@ -292,7 +297,7 @@
 
   /** 文のかたまり（誘発の後ろ・呪文の1行など）を効果の配列にする。読めない文があれば null */
   function parseEffects(text) {
-    let s = text;
+    let s = text.replace(/表向きにし、/g, '表向きにして');
     const effects = [];
     const pre = (re, build) => {
       const m = s.match(re);
@@ -307,12 +312,20 @@
     pre(/(?:自分の)?山札を見る。その中から(.+?)を(\d+)(?:体|枚)(まで)?(?:選び、)?(?:相手に見せてから)?(?:自分の)?手札に加え(?:る|てもよい)。?(?:その後、)?山札をシャッフルする。?/,
       (m) => ({ op: 'search', filter: parseFilter(m[1]), n: +m[2], upTo: true }));
     // ・山札の上から何枚か見て振り分ける
-    pre(/(?:自分の)?山札の上から(\d+)枚を見る。その中から(.+?)(?:置き|置く|加え|加える)?(?:。|、)(?:その後、)?残りを(?:好きな順序で)?(?:自分の)?(手札に加える|山札の(?:一番)?下に(?:好きな順序で)?置く|墓地に置く|マナゾーンに置く)。?/,
+    pre(/(?:自分の)?山札の上から(\d+)枚を見る。その中から(.+?)(?:置き|置く|加え|加える)?(?:。|、)(?:その後、)?残り(?:の\d+枚)?を(?:好きな順序で)?(?:自分の)?(手札に加える|山札の(?:一番)?下に(?:好きな順序で)?置く|墓地に置く|マナゾーンに置く)。?/,
       (m) => {
         const picks = parsePicks(m[2]);
         if (!picks) return null;
         const rest = /手札/.test(m[3]) ? 'hand' : /墓地/.test(m[3]) ? 'grave' : /マナ/.test(m[3]) ? 'mana' : 'deckBottom';
         return { op: 'look', n: +m[1], picks, rest };
+      });
+    // ・「それらを1枚ずつ、手札、マナゾーン、墓地、山札の下に置く」（最後の行き先は残りすべて）
+    pre(/(?:自分の)?山札の上から(\d+)枚を見る。それらを1枚ずつ、?((?:(?:手札|マナゾーン|墓地|山札の(?:一番)?下)、?)+)に(?:置く|加える)。?/,
+      (m) => {
+        const zones = m[2].split('、').filter(Boolean).map((z) => ZONE_WORD[z]);
+        if (zones.length < 2 || zones.length > +m[1] || zones.some((z) => !z)) return null;
+        const rest = zones.pop();
+        return { op: 'look', n: +m[1], picks: zones.map((to) => ({ to, count: 1, upTo: false, filter: {} })), rest };
       });
     // ・山札の上から何枚か表向きにして（見せて）、条件に合うカードをすべて手札に加える
     pre(/(?:自分の)?山札の上から(\d+)枚を、?(?:表向きにする|すべてのプレイヤーに見せる|相手に見せる)。その中から、?(.+?)をすべて(?:自分の)?手札に加え、?残りを(?:好きな順序で)?(?:自分の)?(山札の(?:一番)?下に置く|墓地に置く|マナゾーンに置く)。?/,
@@ -331,7 +344,7 @@
     pre(/プレイヤーを1人選ぶ。そのプレイヤーは、?自身の墓地のカードをすべてシャッフルし、?山札の下に置く。?/, () => ({ op: 'graveToDeckBottom', who: 'choose' }));
     pre(/(自分|相手)の墓地のカードをすべて(?:シャッフルし、?)?(?:持ち主の)?山札の下に置く。?/, (m) => ({ op: 'graveToDeckBottom', who: m[1] === '自分' ? 'self' : 'opp' }));
     // ・手札を山札の下に置いて、その枚数より多く引く
-    pre(/自分の手札を(\d+)枚まで、?(?:好きな順序で)?山札の(?:一番)?下に(?:好きな順序で)?置く。?(?:その後、)?こうして(?:山札の下に)?置いた(?:カードの)?枚数より(\d+)枚多く、?カードを引く。?/,
+    pre(/自分の手札を(\d+)枚まで、?(?:好きな順序で)?山札の(?:一番)?下に(?:好きな順序で)?置く。?(?:その後、)?(?:こうして(?:山札の下に)?置いた(?:カードの)?|その)枚数より(\d+)枚多く、?カードを引く。?/,
       (m) => ({ op: 'cycleHand', max: +m[1], extra: +m[2] }));
     // ・「相手のクリーチャーを1体選ぶ。このターン、そのクリーチャーのパワーを〜につき-1000する」
     pre(/(相手の|自分の)?([^。]*?)クリーチャーを(\d+)体選ぶ。?(?:このターン、)?そのクリーチャーのパワーを、?(.+?)(?:1枚|1体|1つ)につき([+-]\d+)する。?/,
@@ -341,12 +354,20 @@
         const t = parseSelector(`${m[1] || ''}${m[2]}クリーチャーを${m[3]}体`);
         return { op: 'power', amount: +m[5], per, target: t };
       });
+    // ・「相手のクリーチャーを1体選ぶ。このターン、自分のマナゾーンのカード1枚につき、そのクリーチャーのパワーを-1000する」（言葉の順番が逆の形）
+    pre(/(相手の|自分の)?([^。]*?)クリーチャーを(\d+)体選ぶ。?(?:このターン、)?([^。]+?)(?:1枚|1体|1つ)につき、?そのクリーチャーのパワーを([+-]\d+)する。?/,
+      (m) => {
+        const per = /マナゾーン/.test(m[4]) ? 'myMana' : /墓地/.test(m[4]) ? 'myGrave' : /手札/.test(m[4]) ? 'myHand' : /クリーチャー/.test(m[4]) ? 'myCreatures' : null;
+        if (!per) return null;
+        return { op: 'power', amount: +m[5], per, target: parseSelector(`${m[1] || ''}${m[2]}クリーチャーを${m[3]}体`) };
+      });
     // ・「相手のクリーチャーを1体選ぶ。このターン、そのクリーチャーは攻撃できない」
     pre(/相手のクリーチャーを(\d+)体選ぶ。?(?:このターン|次の相手のターン(?:の終わりまで|中))、?そのクリーチャーは攻撃(?:もブロックも)?できない。?/,
       (m) => ({ op: 'lockAttack', target: { side: 'opp', count: +m[1], upTo: false, filter: { type: 'creature' } } }));
 
     const sentences = s
       .replace(/引き、/g, '引く。')
+      .replace(/捨て、/g, '捨てる。')
       .split(/。|、その後、/)
       .map((x) => x.trim())
       .filter(Boolean);
@@ -392,12 +413,13 @@
     if (/^このクリーチャーはバトルゾーンを離れない$/.test(l)) return (kw.cantLeave = true);
     if (/^ガードマン$/.test(l)) return (kw.guardman = true);
     if (/^スマッシュ・?バースト$/.test(l)) return (kw.smashBurst = true);
-    if (/^(?:G・?ストライク)?シンカライズ$/.test(l)) { if (/G・?ストライク/.test(l)) kw.gStrike = true; return (kw.sinkarize = true); }
+    if (/^(?:G・?ストライク)?シンカライズ(?::.*)?$/.test(l)) { if (/G・?ストライク/.test(l)) kw.gStrike = true; return (kw.sinkarize = true); }
     if (/^このクリーチャーは攻撃できない$/.test(l)) return (kw.cantAttack = true);
     if (/^このクリーチャーは(?:相手)?プレイヤーを攻撃できない$/.test(l)) return (kw.cantAttackPlayers = true);
     if (/^このクリーチャーは(?:相手に)?ブロックされない$/.test(l)) return (kw.unblockable = true);
     if (/^このクリーチャーはアンタップしている(?:相手の)?クリーチャーを攻撃できる$/.test(l)) return (kw.attackUntapped = true);
     if (/マナゾーンに置く(?:時|際)、?(?:タップしてではなく|タップせずに|タップするかわりに)?アンタップ(?:して|状態で|したまま)置く$/.test(l)) return (kw.manaUntapped = true);
+    if (/^この(?:タマシード|カード|クリーチャー)を(?:自分の)?手札からマナゾーンに置いた時、?アンタップする$/.test(l)) return (kw.manaUntapped = true);
     return false;
   }
 
@@ -471,7 +493,7 @@
   function parseAttackChance(line) {
     const m = line.match(/^アタック・?チャンス-?:?(.+?)。?$/);
     if (!m) return null;
-    const c = m[1].match(new RegExp(`^((?:${CIV_NAMES})(?:と(?:${CIV_NAMES}))*)の(.+)$`));
+    const c = m[1].match(new RegExp(`^((?:${CIV_NAMES})(?:と(?:${CIV_NAMES}))*)(?:の|を持つ)(.+)$`));
     if (c) {
       const race = c[2].replace(/[《》]/g, '');
       return { civs: c[1].split('と').map(civKey), races: /^クリーチャー$/.test(race) ? [] : [race] };
@@ -480,6 +502,7 @@
   }
 
   const CHOOSE_RE = /次のうちいずれか(\d+)つを選ぶ|次の中から(\d+)回選ぶ|次のうち(\d+)つを選ぶ/;
+  const ALL_CIVS_RE = /すべての文明.*?(?:かわりに|代わりに).*?(?:すべて|全部)(?:を|の選択肢を)?1回ずつ(?:選ぶ|使う|選んでもよい|使ってもよい)?/;
 
   /**
    * カード1枚分のテキストを読む。
@@ -513,6 +536,9 @@
         if (!opts.length || opts.some((o) => !o)) return null;
         const times = Number(chooseM[1] || chooseM[2] || chooseM[3]);
         const e = { op: 'choose', times, repeat: !!chooseM[2], options: opts, labels: options.map((o) => o.replace(/。$/, '')) };
+        // 同じ行に「すべての文明が揃っていれば、かわりにすべてを1回ずつ使ってもよい」がある形
+        const am = body.match(ALL_CIVS_RE);
+        if (am) { e.allIfFullCivs = true; if (/てもよい$/.test(am[0])) e.allOptional = true; }
         lastChoose = e;
         return [...effects, e];
       };
@@ -605,13 +631,13 @@
         continue;
       }
       // 「すべての文明があれば、2回選ぶかわりにすべてを1回ずつ選ぶ」
-      if (/すべての文明.*(?:かわりに|代わりに).*(?:すべて|全部)(?:を|の選択肢を)?1回ずつ/.test(line) && lastChoose) { lastChoose.allIfFullCivs = true; continue; }
+      if ((m = line.match(ALL_CIVS_RE)) && lastChoose) { lastChoose.allIfFullCivs = true; if (/てもよい$/.test(m[0])) lastChoose.allOptional = true; continue; }
       // 手札にある時に働く：「相手のターンの終わりに、〜なら、このクリーチャーを召喚してもよい」
       if ((m = line.match(/^相手のターンの(?:終わり|おわり)に、(.+?)、このクリーチャーを(?:コストを支払わずに)?召喚してもよい。?$/))) {
         const cond = {};
-        const c1 = m[1].match(/相手のクリーチャーが自分のクリーチャーより(\d+)体以上多/);
+        const c1 = m[1].match(/相手のクリーチャーが自分(?:のクリーチャー)?より(\d+)体以上多/);
         if (c1) cond.oppMoreCreatures = +c1[1];
-        const c2 = m[1].match(/自分の《(.+?)》がバトルゾーンに(?:い|あ)?なければ/);
+        const c2 = m[1].match(/自分の《(.+?)》が(?:バトルゾーンに)?(?:い|あ)?なければ/);
         if (c2) cond.noneNamed = c2[1];
         if (c1 || c2) { ab.handTriggers.push({ when: 'oppTurnEnd', cond, effects: [{ op: 'summonSelf', optional: true }] }); continue; }
       }
@@ -712,7 +738,7 @@
       grSummon: () => `GR召喚を${e.n}回する`,
       putHyperTotal: () => `超次元ゾーンから${describeFilter(e.filter)}をコストの合計${e.maxTotal}以下になるように好きな数バトルゾーンに出す`,
       if: () => `${describeCond(e.cond)}なら：${e.effects.map(describeEffect).join(' → ')}`,
-      choose: () => `${e.repeat ? `次から${e.times}回選ぶ` : `次から${e.times}つ選ぶ`}${e.allIfFullCivs ? '（すべての文明があれば全部）' : ''}：${e.options.map((o, i) => `[${i + 1}] ${o.map(describeEffect).join(' → ')}`).join(' ／ ')}`,
+      choose: () => `${e.repeat ? `次から${e.times}回選ぶ` : `次から${e.times}つ選ぶ`}${e.allIfFullCivs ? (e.allOptional ? '（すべての文明があれば全部でもよい）' : '（すべての文明があれば全部）') : ''}：${e.options.map((o, i) => `[${i + 1}] ${o.map(describeEffect).join(' → ')}`).join(' ／ ')}`,
     }[e.op];
     return (d ? d() : e.op) + opt;
   }

@@ -212,6 +212,7 @@
       }
       const e = p.effect || {};
       const P = game.players[pi];
+      if (p.op === 'allIfFullCivs') return P.deck.length > 6; // すべて使うと山札が4枚減る
       if (e.op === 'skipTurn') return game.active !== pi; // 相手のターンだけとばす
       if (e.op === 'summonSelf') return true;
       // 山札が少ない時は、引く・マナに置く効果を使わない（山札切れで負けないように）
