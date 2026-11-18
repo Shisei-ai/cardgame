@@ -480,6 +480,9 @@
     const cardEl = e.target.closest('.card[data-uid]');
     if (!cardEl) return;
     const uid = +cardEl.dataset.uid;
+    const hc = game.card(uid);
+    // 自分の手札は、クリックすると拡大表示する（効果の対象として手札を選んでいる時を除く）
+    if (hc && hc.zone === 'hand' && hc.owner === 0 && !(ui.req && ui.req.type === 'target' && interaction().selectable.has(uid))) { hideDetail(); zoomHand(uid); return; }
     if (!cardEl.classList.contains('back')) { showDetail(uid); clearTimeout(hideDetail.t); hideDetail.t = setTimeout(hideDetail, 2500); }
     const req = ui.req;
     if (!req) return;
@@ -528,11 +531,71 @@
     });
     if (picked && ui.req === req) answer(picked);
   }
-  /** 同じカードで複数の使い方がある時（ツインパクトの両面）に選んでもらう */
-  async function chooseAction(req, c, acts) {
+  /** 行動のボタンの文字（「〜を召喚する（コスト5）」など） */
+  function actionLabel(c, a) {
     const sv = Engine.spellSideDef(c.def);
     const qn = (n) => (/^「.*」$/.test(n) ? n : `「${n}」`);
-    const label = (a) => (a.kind === 'cast' ? `呪文側${qn(sv ? sv.name : c.def.name)}を唱える（コスト${(sv || c.def).cost}）` : a.kind === 'hyper' ? 'ハイパー化する' : `${qn(c.def.name)}を召喚する（コスト${c.def.cost}）`);
+    if (a.kind === 'hyper') return 'ハイパー化する';
+    if (a.kind === 'cast') return `${sv ? `呪文側${qn(sv.name)}` : qn(c.def.name)}を唱える（コスト${game.costOf(0, c, sv || undefined)}）`;
+    return `${qn(c.def.name)}を召喚する（コスト${game.costOf(0, c)}）`;
+  }
+  /**
+   * 手札の拡大表示。カードを大きく見せ、今できること（マナに置く・召喚する・唱える）のボタンも出す。
+   * ◀ ▶（キーボードの ← →）で、手札の隣のカードに切り替えられる。
+   */
+  function zoomHand(uid) {
+    const P = game.players[0];
+    let cur = uid;
+    UI.modal({
+      wide: true, buttons: [{ label: '閉じる', value: null }],
+      html: '<div class="zoom-view"></div>',
+      onOpen(m, close) {
+        m.classList.add('zoom-modal');
+        const view = m.querySelector('.zoom-view');
+        let acts = [];
+        const draw = () => {
+          const c = game.card(cur);
+          if (!c || c.zone !== 'hand') { close(null); return; }
+          const req = ui.req, i = P.hand.indexOf(c);
+          acts = [];
+          let hint = '';
+          if (req && req.type === 'charge') {
+            if (interaction().selectable.has(cur)) acts.push({ label: 'マナに置く', value: cur });
+          } else if (req && req.type === 'main') {
+            for (const a of req.actions.filter((x) => x.uid === cur)) acts.push({ label: actionLabel(c, a), value: a });
+            if (!acts.length) hint = whyNot(c);
+          } else hint = req ? '' : '相手の番の間は、見るだけです。';
+          view.innerHTML = `<div class="detail zoom">${UI.detailHTML(c.def)}</div>
+            <div class="zoom-bar">
+              <button class="btn zoom-nav" data-nav="-1" ${i <= 0 ? 'disabled' : ''} aria-label="前のカード">◀</button>
+              <span class="zoom-pos">手札 ${i + 1} / ${P.hand.length}</span>
+              <button class="btn zoom-nav" data-nav="1" ${i >= P.hand.length - 1 ? 'disabled' : ''} aria-label="次のカード">▶</button>
+              <span class="zoom-acts">${acts.map((a, k) => `<button class="btn primary" data-act="${k}">${esc(a.label)}</button>`).join('')}${hint ? `<span class="hint">${esc(hint)}</span>` : ''}</span>
+            </div>`;
+        };
+        const go = (d) => { const i = P.hand.findIndex((c) => c.uid === cur) + d; if (P.hand[i]) { cur = P.hand[i].uid; draw(); } };
+        view.addEventListener('click', (e) => {
+          const nav = e.target.closest('[data-nav]');
+          if (nav) return go(+nav.dataset.nav);
+          const b = e.target.closest('[data-act]');
+          if (!b) return;
+          const req = ui.req, v = acts[+b.dataset.act].value;
+          close(null);
+          if (req && ui.req === req) answer(v);
+        });
+        const onKey = (e) => {
+          if (!m.isConnected) return document.removeEventListener('keydown', onKey);
+          if (e.key === 'ArrowLeft') go(-1);
+          else if (e.key === 'ArrowRight') go(1);
+        };
+        document.addEventListener('keydown', onKey);
+        draw();
+      },
+    });
+  }
+  /** 同じカードで複数の使い方がある時（ツインパクトの両面）に選んでもらう */
+  async function chooseAction(req, c, acts) {
+    const label = (a) => actionLabel(c, a);
     const v = await UI.modal({
       title: 'どちらで使いますか？', wide: true,
       html: `<div class="detail">${UI.detailHTML(c.def)}</div>`,

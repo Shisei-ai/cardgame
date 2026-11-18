@@ -125,6 +125,18 @@ textarea { resize: vertical; line-height: 1.6; }
 .ab-list li { margin-bottom: 3px; }
 .ab-list.ng li { color: #ffb0b0; list-style: none; margin-left: -18px; }
 
+/* 手札の拡大表示 */
+.modal.zoom-modal { width: min(1000px, 100%); }
+.detail.zoom { gap: 22px; }
+.detail.zoom .detail-card .card { --cw: min(360px, 40vw); }
+.detail.zoom .detail-info { font-size: 15px; }
+.detail.zoom .detail-info h3 { font-size: 21px; }
+.detail.zoom .ab-list { font-size: 14.5px; }
+.zoom-bar { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.zoom-pos { color: var(--muted); font-size: 13px; min-width: 76px; text-align: center; }
+.zoom-acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-left: auto; }
+.zoom-acts .hint { margin: 0; }
+
 /* ═════════ カード一覧 ═════════ */
 .lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 14px; }
 .lib-item { background: none; border: 0; padding: 6px; border-radius: 10px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 6px; transition: background .15s; }
@@ -421,6 +433,9 @@ button.pick:hover { background: #ffffff0d; }
   .editor { grid-template-columns: 1fr; }
   .ed-img { width: 100%; }
   .modal .detail { flex-direction: column; }
+  .detail.zoom { align-items: center; }
+  .detail.zoom .detail-card .card { --cw: min(300px, 72vw); }
+  .zoom-acts { margin-left: 0; width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
