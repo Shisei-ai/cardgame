@@ -773,7 +773,7 @@
       if (this.kw(c, 'soulRaid')) this.pendingTriggers.push({ card: c, controller: c.owner, effects: [{ op: 'soulRaid' }], when: 'cip' });
       if (opts.summoned) {
         this.fireSelf(c, 'summoned');
-        if (this.kw(c, 'yobinion')) this.pendingTriggers.push({ card: c, controller: c.owner, effects: [{ op: 'yobinion' }], when: 'summoned' });
+        if (this.kw(c, 'yobinion')) this.pendingTriggers.push({ card: c, controller: c.owner, effects: [{ op: 'yobinion', optional: true }], when: 'summoned' });
         this.fireEvent('useCard', { player: pi, card: c });
       }
       if (this.isCreature(c)) this.fireEvent('creatureEnters', { player: pi, card: c });
@@ -1201,7 +1201,7 @@
           if (source.zone === 'hand') await this.putCreature(pi, source, null, 'コストを支払わずに召喚した', { summoned: true });
           break;
         case 'yobinion': {
-          // ヨビニオン：山札の上から、このクリーチャーよりコストが小さいクリーチャーが出るまで表向きにする
+          // ヨビニオン：山札の上から、このクリーチャーよりコストが小さいクリーチャーが出るまで表向きにする（「〜してもよい」なので任意）
           const shown = [];
           let found = null;
           while (P.deck.length) {

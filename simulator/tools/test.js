@@ -403,6 +403,15 @@ function put(g, pi, id, zone, opts = {}) {
     assert.ok(P.battle.length >= before + 2, 'ガルムンドと、めくったクリーチャーが出た');
     assert.strictEqual(P.deck.length + P.battle.length + P.grave.length + P.hand.length + P.mana.length + P.shields.length, deckBefore + 5 + 5 + 2 + (before) , 'カードの数は変わらない');
   });
+  await check('ヨビニオンは「表向きにしてもよい」：使わなければ山札はそのまま', async () => {
+    const g = fresh(ans({ yesno: (game, req) => (req.purpose.op === 'yobinion' ? false : undefined) }));
+    const P = g.players[0];
+    put(g, 0, 'golm', 'deck'); g.move(P.deck[0], 'deck');
+    const top = P.deck[P.deck.length - 1], n = P.deck.length, b = P.battle.length;
+    await g.putCreature(0, put(g, 0, 'garmund', 'hand'), null, '召喚した', { summoned: true });
+    assert.strictEqual(P.battle.length, b + 1, 'ガルムンドだけ');
+    assert.strictEqual(P.deck.length, n); assert.strictEqual(P.deck[P.deck.length - 1], top, '山札の上も同じ');
+  });
   await check('キーワードを与える：出たばかりのクリーチャーもスピードアタッカーで攻撃できる', async () => {
     const g = fresh();
     put(g, 0, 'garmund', 'battle');
@@ -907,19 +916,28 @@ function put(g, pi, id, zone, opts = {}) {
     // 公開ページなどで最初から入れておくカード・デッキ
     const mem = new Map();
     global.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)) };
-    await check('最初から入れておくデッキ：1回だけ保存し、消した後はもう入れない', async () => {
+    await check('最初から入れておくデッキ：1回だけ保存し、消した後はもう入れない／手を加えていないものだけ新しくする', async () => {
       global.SampleCards = require('../js/sample-cards.js');
-      const { Library } = require('../js/storage.js').Store;
+      const { Library, DB } = require('../js/storage.js').Store;
+      DB.put = async () => {};
+      let clock = 100;
       const saved = [];
-      Library.saveCard = async (c) => { saved.push(c.id); Library.cards.set(c.id, c); };
-      Library.saveDeck = async (d) => { saved.push(d.id); Library.decks.set(d.id, d); };
+      Library.saveCard = async (c) => { c.updatedAt = ++clock; saved.push(c.id + ':' + c.name); Library.cards.set(c.id, c); return c; };
+      Library.saveDeck = async (d) => { d.updatedAt = ++clock; saved.push(d.id); Library.decks.set(d.id, d); return d; };
       const data = { format: 'duel-sim-library', id: 'pre1', cards: [{ id: 'u_x', name: 'X' }, { id: 's_alba', name: '上書きしない' }], decks: [{ id: 'u_d', name: 'D', cards: [] }] };
       Library.cards.set('s_alba', byId.s_alba);
+      Library.cards.set('u_old', { id: 'u_old', name: '目印の前に入れた', updatedAt: 50 });
+      Library.cards.set('u_new', { id: 'u_new', name: '自分で直した', updatedAt: 500 });
       await Library.preload(data);
-      assert.deepStrictEqual(saved, ['u_x', 'u_d'], '無いものだけ保存');
+      assert.deepStrictEqual(saved, ['u_x:X', 'u_d'], '無いものだけ保存（見本は上書きしない）');
       Library.cards.delete('u_x');
       await Library.preload(data);
-      assert.deepStrictEqual(saved, ['u_x', 'u_d'], '2回目は入れない');
+      assert.deepStrictEqual(saved, ['u_x:X', 'u_d'], '2回目は入れない');
+      Library.cards.set('u_x', Object.assign({}, Library.cards.get('u_x') || { id: 'u_x', name: 'X', updatedAt: 101, preloadAt: 101 }));
+      Library.cards.set('u_y', { id: 'u_y', name: 'Y', updatedAt: 999, preloadAt: 101 }); // 自動で入れた後に手を加えた
+      saved.length = 0;
+      await Library.preload({ format: 'duel-sim-library', id: 'pre2', replaceBefore: 60, cards: ['u_x', 'u_y', 'u_old', 'u_new'].map((id) => ({ id, name: id + '2' })), decks: [] });
+      assert.deepStrictEqual(saved, ['u_x:u_x2', 'u_old:u_old2'], '手を加えていないものだけ新しくする');
     });
   }
 

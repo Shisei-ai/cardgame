@@ -79,14 +79,23 @@
     },
     /**
      * 最初から入れておくカードとデッキ（公開ページなどで、別のファイルから渡されたもの）。
-     * 同じ id のものがまだ無い時だけ保存し、一度入れたら（あとで消しても）もう入れない。
+     * data.id ごとに一度だけ保存する（あとで消しても、もう入れない）。
+     * 同じ id のものがすでにある時は、前に自動で入れたまま手を加えていないものだけ新しい内容にする
+     * （data.replaceBefore より前に保存されたもの＝目印が付く前に自動で入れたものも、手を加えていないとみなす）。
      */
     async preload(data) {
       if (!data || data.format !== 'duel-sim-library' || !data.id) return;
       const done = Settings.get().preloaded || [];
       if (done.includes(data.id)) return;
-      for (const c of data.cards || []) if (!this.cards.has(c.id)) await this.saveCard(Object.assign({}, c));
-      for (const d of data.decks || []) if (!this.decks.has(d.id)) await this.saveDeck(Object.assign({}, d));
+      const untouched = (ex) => !ex || (ex.preloadAt != null ? ex.preloadAt === ex.updatedAt : !ex.sample && (ex.updatedAt || 0) <= (data.replaceBefore || 0));
+      for (const [list, map, save, store] of [[data.cards, this.cards, 'saveCard', 'cards'], [data.decks, this.decks, 'saveDeck', 'decks']]) {
+        for (const x of list || []) {
+          if (!untouched(map.get(x.id))) continue;
+          const copy = await this[save](Object.assign({}, x));
+          copy.preloadAt = copy.updatedAt;
+          if (DB.put) await DB.put(store, copy);
+        }
+      }
       Settings.set({ preloaded: [...done, data.id] });
     },
     card(id) { return this.cards.get(id); },
